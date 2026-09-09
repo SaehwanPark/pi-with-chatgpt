@@ -57,3 +57,48 @@ Toolchain is fixed in M0. Until then this repo is specification-only and has no 
 
 Use `.agents/skills/pwc-milestone-orchestrator/SKILL.md` for any milestone or roadmap-item
 implementation, and `.agents/skills/pwc-invariant-review/SKILL.md` before calling one done.
+
+## Subagents
+
+Use subagents proactively to reduce main-context growth.
+
+* Delegate bounded, self-contained investigation or implementation tasks when the parent mainly needs the result, not the working process.
+* Prefer subagents for work that requires reading many files, logs, tests, documentation, or other large intermediate context.
+* Give subagents only the context and scope needed for their task; avoid copying the full parent conversation unless necessary.
+* Ask subagents to return concise findings, evidence/references, risks, and recommended actions rather than raw working context.
+* Keep architectural decisions, cross-component integration, and final verification with the parent agent.
+* Avoid redundant subagents inspecting the same scope unless independent review is intentional.
+* If a subagent's scope expands substantially, it should escalate back to the parent rather than absorbing unrelated work.
+* Use the main context for decisions; use subagent contexts for discovery.
+
+See `docs/subagents_policy.md` for detailed delegation patterns and guidance.
+
+## Asynchronous GitHub Communication
+
+Use GitHub proactively as the durable communication channel when human collaborators are unavailable or work may continue across sessions.
+
+* Prefer remote branches, commits, PRs, and GitHub discussions/comments over keeping important state only in local context.
+* Push meaningful work to a remote branch regularly when it is safe and useful to preserve progress.
+* Open a draft PR early for non-trivial work when it provides a useful place for status, design notes, review, and human steering.
+* Keep PR descriptions and comments updated with current status, key decisions, unresolved questions, risks, and next steps.
+* Use commits and PRs to leave a durable trail that another human or agent can resume without reconstructing the full conversation.
+* When blocked on a human decision, record the question and relevant context in the PR or issue rather than leaving it only in transient agent context.
+* Prefer small, reviewable commits and branches with clear scope.
+* Do not merge, close, force-push shared work, or perform other irreversible repository actions unless explicitly authorized or clearly permitted by project policy.
+* Never commit secrets, credentials, private data, or machine-specific sensitive artifacts.
+
+Use local context for active reasoning; use GitHub for durable project state and asynchronous human communication.
+
+## Agentic Loop
+
+Use agentic loops for long-running tasks or when pursuing goals.
+
+One loop is defined by
+
+1. Select target slice (what to implement/examine/do)
+2. Design a plan
+3. Execute the plan
+4. Test and verify
+5. Update documents if necessary
+6. PR handoff and merge autonomously
+7. Move on to the next task or slice
