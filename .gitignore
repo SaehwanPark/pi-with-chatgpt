@@ -1,0 +1,55 @@
+# Dependencies / package managers
+node_modules/
+.pnpm-store/
+.npm/
+package-lock.json.bak
+
+# Build output
+dist/
+build/
+out/
+*.tsbuildinfo
+.tsc-info/
+
+# Test / coverage / benchmark output
+coverage/
+.nyc_output/
+testdata/**/actual/
+*.lcov
+bench/results/*.csv
+
+# Caches and scratch
+.cache/
+.tmp/
+tmp/
+*.log
+*.tsbuild
+
+# Local agent harness scratch (durable handoffs stay local)
+_workspace/
+
+# Pi local state / machine-specific settings
+.pi/cache/
+.pi/settings.local.json
+.pi/*.log
+
+# Adviser/browser runtime state if ever pointed inside the worktree
+.adviser-state/
+chatgpt-profile/
+user-data/
+
+# Secrets and local environment (never commit credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+keyring-test.json
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.schema.json
+*.swp
