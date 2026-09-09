@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["extension/**/*.ts", "git/**/*.ts", "auth/**/*.ts", "browser/**/*.ts", "chatgpt/**/*.ts", "jobs/**/*.ts", "protocol/**/*.ts", "ledger/**/*.ts", "drift/**/*.ts", "config/**/*.ts", "ui/**/*.ts"],
+  "exclude": ["**/*.test.ts", "node_modules", "dist", "_workspace", "test/**/*.ts"]
+}

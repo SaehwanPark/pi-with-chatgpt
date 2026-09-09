@@ -32,6 +32,9 @@ _workspace/
 .pi/cache/
 .pi/settings.local.json
 .pi/*.log
+# Goal pool / agent runtime state is machine-specific and never part of the release
+.pi/goals/
+.pi/.goals-pool-snapshot.json
 
 # Adviser/browser runtime state if ever pointed inside the worktree
 .adviser-state/
