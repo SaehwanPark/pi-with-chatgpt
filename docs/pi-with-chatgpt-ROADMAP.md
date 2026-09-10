@@ -23,50 +23,71 @@
 ---
 
 # M0 — Repository and Architecture Foundation
+## M0 Evidence
+
+- **Package:** `pi-with-chatgpt@0.0.1` (npm name unreserved at M0), ESM, `engines.node >= 22.19.0`,
+  `pi.extensions = ["./dist/extension/index.js"]`, `keywords: ["pi-package", …]`, MIT `LICENSE`
+  (dependencies reviewed: MIT/BSD-2/Apache-2.0; no reused source code).
+- **Pi floor:** `MIN_PI_VERSION = 0.85.1` (`extension/pi-api.ts`), asserted against the installed Pi
+  by `npm run smoke:pi`.
+- **Toolchain:** `npm run typecheck | lint | build | test | smoke:pi` (all green locally;
+  `npm run verify` runs the whole set). CI is defined in `ci/ci.yml` for `ubuntu-latest` and
+  `macos-latest`; it is staged outside `.github/workflows/` only because the available GitHub
+  credential lacks the `workflow` scope (see `ci/README.md` for the one-command maintainer fix).
+- **Modules:** `extension/ git/ auth/ browser/ chatgpt/ jobs/ protocol/ ledger/ drift/ config/ ui/`,
+  each with a documented barrel; `test/module-boundaries.test.ts` forbids sibling trees.
+- **Invariants:** `docs/ARCHITECTURE.md` (INV-01…INV-16 prose) + `protocol/invariants.ts` index;
+  guards `protocol/{sha,checkpoint,context-channel,provider,trust,dependency}.ts`, `git/authority.ts`,
+  `auth/identity.ts`, `browser/profile.ts`, `chatgpt/scope.ts`, `jobs/state.ts`, `ledger/record.ts`,
+  `config/schema.ts`, `ui/worker-facing.ts`; `INV-04` and `INV-14` are explicitly `planned:M1`/
+  `planned:M6` and asserted to stay that way by `protocol/invariants.test.ts`.
+- **Exit criteria:** `test/pi-smoke.mjs` proves `pi install` + clean activation with zero
+  registrations; 160 vitest tests across 18 files; prohibited-by-construction source scan in
+  `git/authority.test.ts`.
 
 ## Project Skeleton
 
-- [ ] Create the repository/package structure.
-- [ ] Choose final package/repository name.
-- [ ] Add MIT-compatible licensing after confirming reused dependencies/code.
-- [ ] Define supported Pi version floor.
-- [ ] Define supported Node/Bun runtime floor.
-- [ ] Establish TypeScript build/test/lint configuration.
-- [ ] Add CI for supported operating systems.
-- [ ] Add conventional package metadata for Pi extension installation.
+- [x] Create the repository/package structure.
+- [x] Choose final package/repository name.
+- [x] Add MIT-compatible licensing after confirming reused dependencies/code.
+- [x] Define supported Pi version floor.
+- [x] Define supported Node/Bun runtime floor.
+- [x] Establish TypeScript build/test/lint configuration.
+- [x] Add CI for supported operating systems.
+- [x] Add conventional package metadata for Pi extension installation.
 
 ## Suggested Module Boundaries
 
-- [ ] Create `extension/` for Pi-facing registration and lifecycle.
-- [ ] Create `git/` for repository/checkpoint resolution.
-- [ ] Create `auth/` for OpenAI identity and browser-session bootstrap.
-- [ ] Create `browser/` for isolated ChatGPT runtime.
-- [ ] Create `chatgpt/` for Project/conversation interaction.
-- [ ] Create `jobs/` for synchronous/asynchronous consultation state.
-- [ ] Create `protocol/` for request/response contracts.
-- [ ] Create `ledger/` for durable consultation state.
-- [ ] Create `drift/` for checkpoint-to-current analysis.
-- [ ] Create `config/` for global/project-safe configuration.
-- [ ] Create `ui/` for TUI status and compact user messaging.
-- [ ] Keep browser/ChatGPT internals outside agent prompt instructions.
+- [x] Create `extension/` for Pi-facing registration and lifecycle.
+- [x] Create `git/` for repository/checkpoint resolution.
+- [x] Create `auth/` for OpenAI identity and browser-session bootstrap.
+- [x] Create `browser/` for isolated ChatGPT runtime.
+- [x] Create `chatgpt/` for Project/conversation interaction.
+- [x] Create `jobs/` for synchronous/asynchronous consultation state.
+- [x] Create `protocol/` for request/response contracts.
+- [x] Create `ledger/` for durable consultation state.
+- [x] Create `drift/` for checkpoint-to-current analysis.
+- [x] Create `config/` for global/project-safe configuration.
+- [x] Create `ui/` for TUI status and compact user messaging.
+- [x] Keep browser/ChatGPT internals outside agent prompt instructions.
 
 ## Architecture Invariants
 
-- [ ] Encode and document: ChatGPT has no execution ownership.
-- [ ] Encode and document: source-code context reaches ChatGPT only through GitHub in V1.
-- [ ] Encode and document: every consultation resolves to an immutable full commit SHA.
-- [ ] Encode and document: adviser output is non-authoritative.
-- [ ] Encode and document: consultation does not imply permission to commit or push.
-- [ ] Encode and document: adviser failure is non-blocking by default.
-- [ ] Encode and document: one ChatGPT Project maps to one GitHub repository.
-- [ ] Encode and document: unrelated tasks use separate adviser conversations.
+- [x] Encode and document: ChatGPT has no execution ownership.
+- [x] Encode and document: source-code context reaches ChatGPT only through GitHub in V1.
+- [x] Encode and document: every consultation resolves to an immutable full commit SHA.
+- [x] Encode and document: adviser output is non-authoritative.
+- [x] Encode and document: consultation does not imply permission to commit or push.
+- [x] Encode and document: adviser failure is non-blocking by default.
+- [x] Encode and document: one ChatGPT Project maps to one GitHub repository.
+- [x] Encode and document: unrelated tasks use separate adviser conversations.
 
 ## Exit Criteria
 
-- [ ] Package installs into Pi.
-- [ ] Extension loads without side effects.
-- [ ] Unit-test harness exists.
-- [ ] Architectural invariants are represented in tests or typed boundaries where practical.
+- [x] Package installs into Pi.
+- [x] Extension loads without side effects.
+- [x] Unit-test harness exists.
+- [x] Architectural invariants are represented in tests or typed boundaries where practical.
 
 ---
 

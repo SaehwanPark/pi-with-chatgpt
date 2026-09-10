@@ -15,8 +15,9 @@ model consult a stronger ChatGPT model as an external adviser.
 - `.agents/skills/` — repo-local skills: `pwc-milestone-orchestrator` (take one milestone to
   done), `pwc-consultation-protocol` (checkpoint/ledger/drift), `pwc-adviser-runtime`
   (auth + isolated browser + Project/conversation + jobs), `pwc-invariant-review` (diff gate).
-- Planned module boundaries (M0): `extension/`, `git/`, `auth/`, `browser/`, `chatgpt/`,
-  `jobs/`, `protocol/`, `ledger/`, `drift/`, `config/`, `ui/`. Do not create sibling trees.
+- Module boundaries (created in M0): `extension/`, `git/`, `auth/`, `browser/`, `chatgpt/`,
+  `jobs/`, `protocol/`, `ledger/`, `drift/`, `config/`, `ui/`. Each has a documented `index.ts`
+  barrel. Do not create sibling trees (`test/module-boundaries.test.ts` enforces this).
 
 ## Why these rules stay in every session
 
@@ -41,12 +42,26 @@ The full numbered invariant list (INV-01…INV-16) is in
 
 ## How
 
-Toolchain is fixed in M0. Until then this repo is specification-only and has no build to run.
+Toolchain is fixed (M0): **TypeScript + Node 22 (`>=22.19.0`) + npm + vitest**, Playwright over the
+system Chrome, ESLint flat config. Sources and tests live in the eleven module trees at the repo root
+(no `src/`), build to `dist/`, and Pi loads `dist/extension/index.js`. Linux and macOS are the V1
+platforms; Windows is post-V1.
 
-- After M0, keep these commands authoritative here (build, test, lint, typecheck) and prefer
-  the runtime the project standardises on (`bun` vs `npm`) rather than mixing them.
-- Verify with the smallest stage that covers the change (`verify_code`), and run the full
-  suite before closing a milestone.
+```bash
+npm ci
+npm run typecheck   # tsc --noEmit over sources and tests
+npm run lint        # eslint (type-aware)
+npm run build       # tsc -> dist/
+npm test            # vitest
+npm run smoke:pi    # build, load in Pi, `pi install` (needs Pi on PATH)
+npm run verify      # all of the above
+```
+
+- Use npm, not bun/yarn, and never mix package managers in one checkout.
+- Verify with the smallest stage that covers the change (`verify_code`), and run `npm run verify`
+  plus `npm run smoke:pi` before closing a milestone.
+- Live ChatGPT, browser, and GitHub interactions are never required by unit tests; they are covered
+  by documented manual drills.
 - Roadmap discipline: one roadmap item at a time; tick the checkbox in
   `docs/pi-with-chatgpt-ROADMAP.md` only with a named test or artifact as evidence.
 - Doc sync: a change to protocol, state layout, commands, or invariants updates the matching

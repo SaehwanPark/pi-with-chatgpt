@@ -1,0 +1,46 @@
+---
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# V1 supports Linux and macOS. Windows is explicitly out of scope for V1 (see docs/ARCHITECTURE.md).
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node floor matches engines in package.json and the Pi 0.85 requirement.
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Pi (for the extension-load smoke test)
+        run: npm install --global @earendil-works/pi-coding-agent
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Pi installation and load smoke test
+        run: npm run smoke:pi

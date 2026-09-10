@@ -14,9 +14,16 @@ The relationship is deliberately asymmetric:
 | **Pi** | edits, shell, tests, git, commits, pushes, and the final decision |
 | **ChatGPT** | advisory reasoning only — no execution, no orchestration, no write access |
 
-**Status:** design complete, implementation not started. See
-[`docs/pi-with-chatgpt-ROADMAP.md`](docs/pi-with-chatgpt-ROADMAP.md) (M0–M10). The architecture
-contract is [`docs/pi-with-chatgpt-PROPOSAL.md`](docs/pi-with-chatgpt-PROPOSAL.md).
+**Status:** M0 complete — the package builds, installs into Pi, activates with zero side effects,
+and enforces its architecture invariants in code and tests. Milestones M1–M10 (checkpoint
+resolution, authentication, browser automation, consultation protocol, UI, release) are still open.
+See [`docs/pi-with-chatgpt-ROADMAP.md`](docs/pi-with-chatgpt-ROADMAP.md) for the roadmap,
+[`docs/pi-with-chatgpt-PROPOSAL.md`](docs/pi-with-chatgpt-PROPOSAL.md) for the product contract,
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the invariant authority, and
+[`docs/SECURITY.md`](docs/SECURITY.md) for the security contract.
+
+There is **no usable adviser surface yet**: `/advisor*` commands arrive in M8, and the extension
+registers nothing until then by design.
 
 ## Why
 
@@ -134,30 +141,50 @@ profile. Normal use needs essentially no configuration.
 ## Repository layout
 
 ```text
-AGENTS.md                              repo-wide agent contract
-.agents/skills/                        repo-local agent skills (harness)
-docs/                                  proposal, roadmap, harness team spec
-extension/ git/ auth/ browser/         planned module boundaries (M0)
-chatgpt/ jobs/ protocol/ ledger/
-drift/ config/ ui/
+AGENTS.md                       repo-wide agent contract
+.agents/skills/                 repo-local agent skills (harness)
+docs/                           proposal, roadmap, architecture, security, harness spec
+extension/                      Pi activation, commands, agent-facing tool surface
+git/                            read-only git, GitHub remote/SHA/branch inspection
+auth/                           OpenAI identity discovery and manual login guidance
+browser/                        isolated Playwright + system Chrome lifecycle
+chatgpt/                        Project/conversation scoping; later UI adapters
+jobs/                           synchronous and asynchronous job state machines
+protocol/                       checkpoints, briefs, responses, ledger schemas, invariants
+ledger/                         durable advice records and dispositions
+drift/                          anchor-vs-HEAD classification
+config/                         validated configuration (cannot carry credentials)
+ui/                             TUI status + worker-facing advice projection
+test/                           cross-cutting tests and the Pi-load smoke test
 ```
+
+Each module exposes a documented `index.ts` barrel; `test/module-boundaries.test.ts` keeps the tree
+flat and forbids competing source roots.
 
 ## Development
 
 Work is milestone-driven; pick one roadmap item, implement it, verify, and tick the checkbox with
 a named test or artifact as evidence.
 
+The toolchain is locked in M0: **TypeScript + Node 22 + npm + vitest**.
+
 ```bash
-bun install          # toolchain is fixed in M0; update this file if it changes
-bun run build
-bun test
-bun run lint
-bun run typecheck
+npm ci
+npm run typecheck      # tsc --noEmit over sources and tests
+npm run lint           # eslint (typescript-eslint, type-aware)
+npm run build          # tsc -> dist/ (what Pi loads)
+npm test               # vitest
+npm run smoke:pi       # build + load in Pi + `pi install` (needs Pi on PATH)
+npm run verify         # all of the above
 ```
+
+CI runs `verify` plus the Pi-load smoke test on `ubuntu-latest` and `macos-latest`. V1 supports
+Linux and macOS only; Windows is a post-V1 platform.
 
 Contributors and coding agents should read [`AGENTS.md`](AGENTS.md) first, then
 [`docs/harness/pi-with-chatgpt/team-spec.md`](docs/harness/pi-with-chatgpt/team-spec.md).
 
 ## License
 
-To be finalised in M0 (MIT-compatible, after confirming reused dependencies and code).
+MIT — see [`LICENSE`](LICENSE). Reused dependencies are MIT, BSD-2-Clause, or Apache-2.0 licensed;
+no third-party source code is vendored.

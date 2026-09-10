@@ -1,0 +1,63 @@
+{
+  "name": "pi-with-chatgpt",
+  "version": "0.0.1",
+  "description": "Pi extension that lets an inexpensive or local worker model consult a stronger ChatGPT adviser, anchored to immutable git checkpoints and GitHub-only repository context.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SaehwanPark/pi-with-chatgpt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SaehwanPark/pi-with-chatgpt/issues"
+  },
+  "homepage": "https://github.com/SaehwanPark/pi-with-chatgpt#readme",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "chatgpt",
+    "adviser",
+    "git",
+    "checkpoint"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/extension/index.js"
+    ]
+  },
+  "main": "./dist/extension/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/extension/index.d.ts",
+      "import": "./dist/extension/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke:pi": "npm run build && node test/pi-smoke.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify": "npm run typecheck && npm run lint && npm run build && npm test && npm run smoke:pi"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
+    "vitest": "^2.1.8"
+  }
+}
