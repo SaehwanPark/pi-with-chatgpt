@@ -64,7 +64,9 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     id: "INV-01",
     summary: "ChatGPT has no execution ownership: adviser text never reaches shell, edit, git, or scheduler calls.",
     source: "docs/ARCHITECTURE.md#inv-01",
-    guard: "protocol/trust.ts",
+    // The browser runtime is the surface most likely to hand execution power to the adviser, so it
+    // exposes no page/driver/selector accessor at all (asserted structurally in runtime.test.ts).
+    guard: "protocol/trust.ts + browser/runtime.ts + browser/chatgpt-dom.ts",
   },
   {
     id: "INV-02",
@@ -126,7 +128,7 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     source: "docs/ARCHITECTURE.md#inv-11",
     // The login port has no interaction method at all, so automation is impossible by construction
     // rather than by convention.
-    guard: "browser/profile.ts + auth/login-flow.ts + browser/cookie-import.ts",
+    guard: "browser/profile.ts + browser/runtime.ts + auth/login-flow.ts + browser/cookie-import.ts",
   },
   {
     id: "INV-12",

@@ -11,6 +11,8 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | Pi worker model → extension | A consultation request (question, mode, dependency) | Credentials, browser state, job machinery internals |
 | ChatGPT → Pi | An advisory report (markdown + action items) | Executable authority, tool results, git/merge authority |
 | Browser → disk | Session state inside the extension-owned profile | Cookies/tokens into logs, telemetry, git, or model context |
+| ChatGPT page → Pi worker | A surface state, a bounded scrubbed `explanation`, and the answer text | Raw DOM, input values, cookies, unscrubbed page text, a page/driver/selector the worker could drive |
+| Extension → browser | A prompt string and a resolved model id, typed into the composer as data | Selectors or scripts supplied by the worker, navigation to non-ChatGPT hosts, coordinate/script injection |
 | Git → repository | Explicit, staged, user-authorised commits | `git add -A`, auto-push, merge, force-push, token disclosure |
 | Repository → ChatGPT | Nothing directly; only what is visible on GitHub | Archives, file uploads, tunnels, workspace bridges |
 | Extension → GitHub API | Read-only `GET` of commit/PR existence for the selected `owner/repo`, over TLS, with an injected token | Write scopes, non-`api.github.com` hosts, redirect targets (`redirect: "manual"`), tokens in errors and diagnostics |
@@ -19,15 +21,16 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 
 | ID | Property | Enforced by |
 | --- | --- | --- |
+| INV-01 | The adviser has no execution ownership | `browser/runtime.ts` + `browser/runtime-types.ts` (`AdviserBrowserRuntime` exposes only `status`/`ensureReady`/`probeSurface`/`discoverModels`/`consult`/`shutdown`; no page, context, driver, selector, or script accessor — asserted by `runtime.test.ts` "exposes no accessor that could address the page") |
 | INV-02 | No non-GitHub source transport in V1 | `protocol/context-channel.ts` (`V1_CONTEXT_CHANNELS === ["github"]`), `protocol/repo.ts` (`supportedGitHubHosts`, `credentials-in-url` rejection), `git/authority.test.ts` (prohibited-path source scan) |
-| INV-05 | Adviser output is untrusted, non-authoritative input | `protocol/trust.ts` (`AdviserText` provenance brand, `assertNotAdviserAuthored`, `ApprovedAction` requires a `WorkerDecision`) |
+| INV-05 | Adviser output is untrusted, non-authoritative input | `protocol/trust.ts` (`AdviserText` provenance brand, `assertNotAdviserAuthored`, `ApprovedAction` requires a `WorkerDecision`), `browser/playwright-driver.ts` (`safeSelectorFragment`: text read off the page — a model id from the picker — can never address an element other than a model option) |
 | INV-06 | A consultation implies no git authority | `git/authority.ts` (`READ_ONLY_GIT_INVOCATIONS` allowlist, `FORBIDDEN_GIT_ARG_TOKENS` incl. file-write/exec arguments such as `--output`, `--ext-diff`, `--upload-pack`, `-c`) |
 | INV-04 | The adviser is never shown work that is not published on GitHub | `git/remote-availability.ts` (`assessCheckpointAvailability`, `isDispatchPermitted`), `git/github-api.ts` (exact-object probe; a 404 is only `absent` when the repository itself is visible), `protocol/checkpoint.ts` (`checkDispatchReadiness` refuses `unknown` and `unavailable`) |
 | INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) |
 | INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (**single authority** `resolveAccountIdentity` answers every case; `compareAccountIdentity`, namespace-scoped `accountIdNamespace`, pair-bound `decideAccountMismatch` — only a `keep-current` minted for this account pair resolves a mismatch, and there is no boolean override), `auth/adviser-auth.ts` (`resolveAdviserAuth` delegates to it and holds no second copy of the rule) |
-| INV-11 | Isolated, extension-owned browser runtime | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker read before any write, `0700`/`0600`, `writePrivateFileNoFollow`/`symlink-refused`, `assertPrivateDirectory`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination / path escape, `Local State` scrub, `authorizeChromeStateImport` → `applyChromeStateImport(plan, authorization)`), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method), `protocol/adviser.ts` (`import-chrome-state` is human-gated) |
-| INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse), `protocol/masking.ts` + `browser/chrome-state.ts` (account metadata masked while parsing) |
-| INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`) |
+| INV-11 | Isolated, extension-owned browser runtime; the user's active browser is never automated | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker read before any write, `0700`/`0600`, `writePrivateFileNoFollow`/`symlink-refused`, `assertPrivateDirectory`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination / path escape, `Local State` scrub, `authorizeChromeStateImport` → `applyChromeStateImport(plan, authorization)`), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method), `protocol/adviser.ts` (`import-chrome-state` is human-gated), `browser/runtime.ts` (`consult()` refuses on a non-actionable surface rather than pushing through a challenge; observation stays available so a completed manual login can be detected), `browser/chatgpt-dom.ts` (a Cloudflare interstitial is `human-verification`, never `unknown` a caller retries through) |
+| INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse), `protocol/masking.ts` + `browser/chrome-state.ts` (account metadata masked while parsing), `browser/diagnostics.ts` (DOM dumps redact credential-shaped attributes; screenshots refused before login) |
+| INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`), `browser/chatgpt-dom.ts` (`scrubPageText` strips credential shapes from page-derived strings), `browser/playwright-driver.ts` (`#snapshot` reads presence only) |
 | INV-15 | Provenance persists before dispatch and before wake-up, and is never auto-published | `ledger/record.ts` (`assertPersistenceOrder`, `LEDGER_PUBLICATION_TARGETS === ["none"]`) |
 
 The canonical statement of each invariant is
@@ -80,6 +83,39 @@ refuses an import that carries no human authorization, and `authorizeChromeState
 the caller states the confirmation phrase — so the gate cannot be reached by plumbing that never asked a
 person, and `rg -n confirmedByHuman` lists every call site that may. An action is not gated because it is
 named in a table.
+
+## Browser runtime containment (M3)
+
+- **The page is untrusted input.** The DOM probe reads *presence* only — is a composer, sign-in affordance,
+  error banner, or challenge here — never input values, cookies, or full page text. Text that survives to a
+  caller is the short `explanation`, run through `scrubPageText` (JWT/`sk-`/`Bearer`/`cookie=` shapes).
+  Where this text later enters worker context it is bounded and treated as adviser-authored (INV-05); M6's
+  prompt assembler must not paste raw `explanation` fields without that provenance.
+  The one exception is the consultation answer itself (`ConsultationOutcome.text`): it is adviser-authored
+  page text and is deliberately *not* scrubbed or truncated, because a cut-off or mangled answer is a
+  failed consultation. It is bounded by nothing on this side of the boundary, so it must reach a worker only
+  through `protocol/trust.ts` branding (M6) and never through `ui/worker-facing.ts`'s projection unchanged.
+- **The surface is ChatGPT or nothing.** `classifySurface` returns `unknown`/not-actionable for any non-
+  ChatGPT host, so a page that redirected elsewhere is never used as an adviser channel.
+  The navigation test pins the one URL the driver can visit.
+- **Page text never becomes a selector.** The only selector built from a string is the model-menu match,
+  and `safeSelectorFragment` reduces it to model-name characters or refuses it outright: the driver never
+  emits `:has-text("")` (which matches every menu entry) and never lets a label containing `")` open a new
+  selector clause. Model ids arrive from `listModels()`, i.e. from the page, so this is page input reaching
+  an interaction path, and it is treated as such (INV-05).
+- **A human gate blocks consultation, never observation** (INV-11). Solving a challenge is a human act, so
+  `consult()` refuses while the surface is non-actionable and no automatic retry is offered. Reading the page
+  to ask "has the person finished?" is not automating the challenge and must stay possible — latching the gate
+  as a blanket refusal would deadlock manual login, because opening the window is itself a `signed-out`
+  observation. Only the launch-retry circuit breaker refuses `ensureReady`, and it trips on a proven transport
+  failure rather than on a page the human may still be fixing.
+
+- **Diagnostics refuse to capture a login screen.** Screenshots are written only for surface states past
+  login; DOM dumps redact credential-shaped attribute values; everything is `0600` inside the git-ignored
+  diagnostics dir; retention is bounded by age and count. The key test asserts the pre-login screenshot is
+  refused, because that is the one mistake that would publish a credential.
+  The diagnostics dir is part of the owned state tree: `prepareStateStorage` creates it `0700` and re-reads
+  its mode, because `mkdir`'s mode is umask-masked and ignored for a directory that already exists.
 
 ## Prompt injection posture
 

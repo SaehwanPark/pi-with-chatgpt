@@ -119,6 +119,20 @@ describe("readPiOpenAiCredential", () => {
     expect(unreadable.failure).toBe("auth-file-unreadable");
   });
 
+  it("reports an explicitly-named missing file as missing, not unparsable", async () => {
+    // Regression: with an explicit authPath the Pi package is never consulted, so its availability is
+    // irrelevant. A latent bug returned "pi-package-unavailable" (rendered as "unparsable") whenever the
+    // caller named a file that did not exist and Pi was absent from the import path — telling the user to
+    // re-run sign-in for what was simply a wrong path.
+    const read = await readPiOpenAiCredential({
+      authPath: "/definitely/absent/auth.json",
+      loadPiModule: moduleUnavailable(),
+      readFile: () => Promise.reject(Object.assign(new Error("nope"), { code: "ENOENT" })),
+    });
+    if (read.ok) throw new Error("expected a missing explicit file to fail");
+    expect(read.failure).toBe("auth-file-missing");
+  });
+
   it("refuses a credential shape it does not recognise instead of guessing", async () => {
     const read = await readPiOpenAiCredential({
       loadPiModule: moduleUnavailable(),
