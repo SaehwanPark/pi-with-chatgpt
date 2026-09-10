@@ -52,7 +52,10 @@ function fakeDriver(script: DriverScript = {}) {
       calls.push("observeSurface");
       return Promise.resolve(surface);
     },
-    openChatGPT: () => Promise.resolve(surface),
+    openChatGPT: () => {
+      calls.push("openChatGPT");
+      return Promise.resolve(surface);
+    },
     listModels: () => {
       calls.push("listModels");
       return Promise.resolve(script.models ?? [{ modelId: "gpt-5.5", displayName: "GPT-5.5", available: true }]);
@@ -287,6 +290,15 @@ describe("AdviserRuntime status and shutdown", () => {
     for (const forbidden of ["driver", "page", "context", "browser", "evaluate", "click", "navigate"]) {
       expect((instance as unknown as Record<string, unknown>)[forbidden]).toBeUndefined();
     }
+  });
+
+  it("opens the ChatGPT surface before classifying it", async () => {
+    // A freshly launched tab is about:blank; classifying it without navigating reports "not ChatGPT"
+    // about a page the runtime never opened. The live probe caught exactly this.
+    const { instance, calls } = runtime();
+    await instance.probeSurface();
+    expect(calls).toContain("openChatGPT");
+    expect(calls.indexOf("openChatGPT")).toBeGreaterThanOrEqual(0);
   });
 
   it("survives a listener that throws", async () => {

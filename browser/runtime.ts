@@ -135,8 +135,9 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
         actionable: false,
       };
     }
-    const observation = await this.#driver.observeSurface();
-    return this.#noteHumanGate(observation);
+    // Open the ChatGPT surface before classifying it: a freshly launched tab is `about:blank`, and a
+    // classifier that ran there would report "not ChatGPT" about a page it never navigated to.
+    return this.#surface();
   }
 
   async discoverModels(): Promise<{
@@ -146,7 +147,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }> {
     const ready = await this.ensureReady({ purpose: "model-discovery" });
     if (!ready.ok) return { ok: false, rejection: ready.rejection ?? "launch-failed" };
-    const surface = this.#noteHumanGate(await this.#driver.observeSurface());
+    const surface = await this.#surface();
     if (!surface.actionable) return { ok: false, rejection: "needs-human" };
     return { ok: true, models: await this.#driver.listModels() };
   }
@@ -187,7 +188,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       return { ok: false, failure };
     }
 
-    const surface = this.#noteHumanGate(await this.#driver.observeSurface());
+    const surface = await this.#surface();
     if (!surface.actionable) {
       this.#lastFailure = "needs-human";
       this.#emit({ type: "turn-failed", failure: "needs-human" });
@@ -270,6 +271,17 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       }
       return { ok: false, rejection };
     }
+  }
+
+  /**
+   * The ChatGPT surface, opened if the current tab is not already on it.
+   *
+   * `openChatGPT` is idempotent: it re-reads an on-surface tab instead of reloading and losing a partial
+   * login state. Routing every classification through it is what stops `about:blank` from being reported
+   * as "not the ChatGPT surface".
+   */
+  async #surface(): Promise<SurfaceObservation> {
+    return this.#noteHumanGate(await this.#driver.openChatGPT());
   }
 
   async #safeHealth(): Promise<boolean> {
