@@ -45,14 +45,77 @@ change invalidates (see `AGENTS.md`).
   ids, `docs/ARCHITECTURE.md` invariant headings are addressable anchors, and `AGENTS.md` records the
   fixed toolchain instead of the pre-M0 "specification-only / bun vs npm" wording.
 
+### Added — M1 (Git/GitHub checkpoint subsystem)
+
+- `git/exec.ts`: the only place this subsystem spawns git. Enforces the read-only allowlist before
+  spawn, runs non-interactive and locale/timezone-neutral (`GIT_TERMINAL_PROMPT=0`,
+  `GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_LFS_SKIP_SMUDGE=1`, `GIT_PAGER=cat`, `LC_ALL=C`,
+  `TZ=UTC`), kills on a bounded timeout, never passes a shell, and redacts user info, passwords,
+  URL-embedded credentials, GitHub tokens, and Authorization headers out of the error text that
+  reaches a worker transcript. Raw stdout/stderr is never returned on failure because git quotes the
+  command it failed on, and the ref the worker supplied is attacker-influenced text.
+- `git/repository.ts` (repository/HEAD/worktree/shallow/dirt/remote inspection, deterministic GitHub
+  remote selection with `upstream` beating `origin` for forks), `git/ref-resolution.ts` (ref → full
+  commit SHA, with structural ref validation before the value reaches git), and `git/ancestry.ts`
+  (ahead / behind / diverged / unrelated, treating "could not compare" as its own answer).
+- `git/remote-availability.ts` + `git/checkpoint-resolution.ts`: the INV-04 decision. Availability is
+  answered by whether the exact commit object is readable on the selected GitHub remote; a missing
+  object, an unreadable remote, an unsupported host, a non-GitHub remote, and a failed probe stay
+  distinct, and only "available" permits dispatch. Unknown failures are never collapsed into "absent",
+  because "not pushed yet" and "we could not tell" produce opposite and equally harmful worker advice.
+- `git/github-api.ts` implements `GET` and nothing else; `listOpenPullRequestsForHead` returns
+  `inconclusive` rather than "no pull request" for anything it cannot rule out, including 404 (which
+  GitHub also returns for a private repository the token cannot see). `redactGitHubSecrets` is the
+  shared token scrubber and the constructor of `GitHubApiError` is the one place it is guaranteed to run.
+- `git/pr-detection.ts`: open-PR detection and PR-head drift as advisory metadata. `hasOpenPr === false`
+  is asserted only when the lookup was conclusive; an anchor never moves because a PR head moved.
+- `git/checkpoint-resolution.ts:resolveCheckpoint` is the pipeline the extension layer will call: total,
+  structured, non-throwing, and it spends API calls on PR metadata only for a consultation that is
+  actually being dispatched.
+- `docs/CHECKPOINT_PROTOCOL.md`: repository/remote selection, the five-case availability table, git
+  safety, and the stable consultation identity.
+- 137 new tests in `git/` plus `test/git-integration.test.ts`, which drives real git repositories
+  (linked worktrees, shallow clones, detached HEAD, tag and abbreviated resolution, divergence, and a
+  real `file://` force-push) so allowlist spellings and porcelain formats are confirmed against real git
+  rather than only against fixtures.
+
+### Hardened after invariant review (M1)
+
+- `redactGitOutput` (INV-12) redacts URL userinfo with or without a colon — a token used as the URL
+  username, which git echoes back in `fatal: Authentication failed for '…'` — plus `ghp_…`/`ghs_…`/
+  `github_pat_…` token shapes and bare `bearer <token>` material.
+- The GitHub API client pins the host that may receive the bearer token and decide INV-04 dispatch:
+  `assertSafeGitHubApiBaseUrl` + `ALLOWED_GITHUB_API_HOSTS` reject a non-https, credential-bearing, or
+  unallowed base URL by throwing at construction (GitHub Enterprise is an explicit `allowedHosts`
+  opt-in), and requests use `redirect: "manual"` so a bearer token is never replayed to a redirect
+  target (a 3xx is an inconclusive probe, not an answer).
+- `aheadBehind` takes `base`/`head` instead of positional `left`/`right` and documents which side is
+  "ahead": the previous naming invited an inverted count, which tells the user to push when the branch
+  is actually behind.
+- Checkpoint refs reject the whole C0/C1 control-character range and U+2028/U+2029 (not just CR/LF/TAB/
+  NUL/backtick), and every echoed ref goes through `sanitizeRefForDisplay`, so a refusal string cannot
+  forge terminal output (INV-12).
+- `git/authority.ts` also refuses `-p` (short `--paginate`, runs `core.pager`), `--exec`, and
+  `--push`.
+- Docs: `docs/SECURITY.md` gains the Extension → GitHub API trust boundary and an INV-04 row;
+  `docs/CHECKPOINT_PROTOCOL.md` documents the probe's network envelope; `docs/ARCHITECTURE.md` INV-04
+  no longer says the probe "lands in M1"; the roadmap's M0 invariant note records the INV-04 promotion.
+
 ### Changed
 
 - Toolchain fixed to TypeScript + Node 22 + npm + vitest (previously "to be fixed in M0");
   `README.md` development commands updated from the provisional `bun` examples.
-- Roadmap M0 checkboxes ticked with a named artifact/test per item.
+- Roadmap M0 and M1 checkboxes ticked with a named artifact/test per item.
+- INV-04 is no longer a deferred guard: `protocol/invariants.ts` points at
+  `git/remote-availability.ts` + `git/checkpoint-resolution.ts`, leaving INV-14 (M6 prompt assembler)
+  as the only planned guard. `docs/ARCHITECTURE.md` INV-04 is marked implemented.
+- `protocol/checkpoint.ts` gains `"probe-inconclusive"`: a probe that completed without a decisive
+  answer is neither a verdict about the commit nor a transport failure.
 
 ### Not yet implemented
 
-No adviser behaviour yet: checkpoint resolution (M1), authentication (M2), browser automation
-(M3–M4), consultation protocol (M5–M7), commands/UI (M8), and hardening/release (M9–M10). Until
-then the extension registers no commands and no tools, by design.
+No adviser behaviour yet: authentication (M2), browser automation (M3–M4), consultation protocol
+(M5–M7), commands/UI (M8), and hardening/release (M9–M10). Until then the extension registers no
+commands and no tools, by design. The checkpoint subsystem exists but nothing calls it yet, and
+`GitHubApi.fetch` still defaults to `globalThis.fetch`, which M9 replaces with a key-redacting
+wrapper before any token can meet a redirected request.

@@ -13,6 +13,7 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | Browser → disk | Session state inside the extension-owned profile | Cookies/tokens into logs, telemetry, git, or model context |
 | Git → repository | Explicit, staged, user-authorised commits | `git add -A`, auto-push, merge, force-push, token disclosure |
 | Repository → ChatGPT | Nothing directly; only what is visible on GitHub | Archives, file uploads, tunnels, workspace bridges |
+| Extension → GitHub API | Read-only `GET` of commit/PR existence for the selected `owner/repo`, over TLS, with an injected token | Write scopes, non-`api.github.com` hosts, redirect targets (`redirect: "manual"`), tokens in errors and diagnostics |
 
 ## Invariants that are security properties
 
@@ -21,6 +22,7 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | INV-02 | No non-GitHub source transport in V1 | `protocol/context-channel.ts` (`V1_CONTEXT_CHANNELS === ["github"]`), `protocol/repo.ts` (`supportedGitHubHosts`, `credentials-in-url` rejection), `git/authority.test.ts` (prohibited-path source scan) |
 | INV-05 | Adviser output is untrusted, non-authoritative input | `protocol/trust.ts` (`AdviserText` provenance brand, `assertNotAdviserAuthored`, `ApprovedAction` requires a `WorkerDecision`) |
 | INV-06 | A consultation implies no git authority | `git/authority.ts` (`READ_ONLY_GIT_INVOCATIONS` allowlist, `FORBIDDEN_GIT_ARG_TOKENS` incl. file-write/exec arguments such as `--output`, `--ext-diff`, `--upload-pack`, `-c`) |
+| INV-04 | The adviser is never shown work that is not published on GitHub | `git/remote-availability.ts` (`assessCheckpointAvailability`, `isDispatchPermitted`), `git/github-api.ts` (exact-object probe; a 404 is only `absent` when the repository itself is visible), `protocol/checkpoint.ts` (`checkDispatchReadiness` refuses `unknown` and `unavailable`) |
 | INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) |
 | INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (`compareAccountIdentity`, `resolveAccountMismatch` — only `continue-with-user-approval` resolves a mismatch) |
 | INV-11 | Isolated, extension-owned browser runtime | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`) |

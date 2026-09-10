@@ -82,7 +82,7 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     id: "INV-04",
     summary: "Remote reachability on the selected GitHub remote is verified before dispatch; otherwise a structured result is returned.",
     source: "docs/ARCHITECTURE.md#inv-04",
-    guard: "planned:M1",
+    guard: "git/remote-availability.ts + git/checkpoint-resolution.ts",
   },
   {
     id: "INV-05",
