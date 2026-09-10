@@ -94,7 +94,11 @@ is never retargeted. Encoded in `protocol/sha.ts` (only a 40-character lowercase
 **Remote reachability precedes dispatch.** (implemented: `git/remote-availability.ts`, `git/checkpoint-resolution.ts`)
 
 `checkDispatchReadiness` refuses dispatch unless the anchor reports `available`, including the
-`unknown` case; the git probe that produces `RemoteAvailability` lands in M1.
+`unknown` case. The probe that produces `RemoteAvailability` (`git/remote-availability.ts` +
+`git/github-api.ts`) asks GitHub about the exact object; an ambiguous answer — a 404 from a token that
+cannot see the repository, a redirect, a timeout — stays `unknown` and is never promoted to
+`available`. Because that host decides dispatch and holds the bearer credential, its hostname is
+pinned (`ALLOWED_GITHUB_API_HOSTS`).
 
 ### INV-05
 

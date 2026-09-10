@@ -17,12 +17,12 @@ type Reply =
   | { error: Error };
 
 function fakeFetch(replies: Record<string, Reply>) {
-  const requests: { url: string; headers: Record<string, string> }[] = [];
+  const requests: { url: string; headers: Record<string, string>; redirect?: string }[] = [];
 
   // Not `async`: an unmatched URL or a simulated transport error must reject, matching how the real
   // `fetch` reports them, and the linter should not have to pretend there is an await here.
   const fetchImpl: GitHubFetch = (url, init) => {
-    requests.push({ url, headers: { ...init.headers } });
+    requests.push({ url, headers: { ...init.headers }, redirect: init.redirect });
     const key = Object.keys(replies).find((candidate) => url.includes(candidate));
     if (key === undefined) return Promise.reject(new Error(`unhandled url: ${url}`));
     const reply = replies[key]!;
@@ -56,15 +56,66 @@ describe("createGitHubApi authentication", () => {
     expect(requests[0]?.headers["authorization"]).toBe(`Bearer ${TOKEN}`);
   });
 
-  it("refuses to send a token to a non-TLS endpoint", async () => {
-    const { api: client, requests } = api({}, { baseUrl: "http://api.internal" });
+  it("never follows a redirect, so the bearer token cannot be replayed to another host", async () => {
+    const { api: client, requests } = api({ "/commits/": { status: 302 } });
 
     const outcome = await client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA);
+
+    // One request only: a redirect target is never contacted, and a 3xx is not an answer about
+    // whether the commit exists, so the caller must not be allowed to treat it as presence.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.redirect).toBe("manual");
+    // A redirect is reported as an inconclusive probe, which INV-04 refuses to dispatch on.
     expect(outcome.ok).toBe(false);
-    if (outcome.ok) return;
-    expect(outcome.failure.reason).toBe("github-auth-failed");
-    // Refused before the request existed.
-    expect(requests).toHaveLength(0);
+    expect(outcome.ok === false && outcome.failure.reason).toBe("probe-inconclusive");
+  });
+
+  it("refuses to build a client for a non-TLS endpoint", () => {
+    // Constructing throws: the refusal cannot be swallowed by a caller that ignores outcomes.
+    const { fetchImpl } = fakeFetch({});
+    expect(() =>
+      createGitHubApi({ fetchImpl, token: TOKEN, baseUrl: "http://api.internal" }),
+    ).toThrow(/not https/u);
+  });
+
+  it("refuses an API host that is not an allowed GitHub API host", () => {
+    // Whoever answers the commit probe decides INV-04 dispatch, so the host is pinned, not inferred.
+    const { fetchImpl } = fakeFetch({});
+    expect(() =>
+      createGitHubApi({ fetchImpl, token: TOKEN, baseUrl: "https://api.evil.example" }),
+    ).toThrow(/not an allowed GitHub API host/u);
+    expect(() =>
+      createGitHubApi({ fetchImpl, token: TOKEN, baseUrl: "https://api.github.com.evil.example" }),
+    ).toThrow(/not an allowed GitHub API host/u);
+  });
+
+  it("accepts a reviewed enterprise host only when explicitly allowed", () => {
+    const { fetchImpl } = fakeFetch({});
+    expect(() =>
+      createGitHubApi({
+        fetchImpl,
+        token: TOKEN,
+        baseUrl: "https://ghe.example.com/api/v3",
+        allowedHosts: ["ghe.example.com"],
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses credentials embedded in the API base URL", () => {
+    const { fetchImpl } = fakeFetch({});
+    expect(() =>
+      createGitHubApi({ fetchImpl, token: TOKEN, baseUrl: "https://oauth:@api.github.com" }),
+    ).toThrow(/credentials in the API base URL/u);
+  });
+
+  it("never leaks the token through a configuration error message", () => {
+    const { fetchImpl } = fakeFetch({});
+    try {
+      createGitHubApi({ fetchImpl, token: TOKEN, baseUrl: "https://api.evil.example" });
+      expect.unreachable("expected configuration to be refused");
+    } catch (error) {
+      expect(String(error)).not.toContain(TOKEN);
+    }
   });
 });
 

@@ -15,6 +15,9 @@ describe("validateRefShape", () => {
     ["flag-like", "--upload-pack=/bin/sh", "ref-looks-like-a-flag"],
     ["newline", "main\nquit", "ref-contains-control-characters"],
     ["backtick", "`id`", "ref-contains-control-characters"],
+    ["escape", "main\u001b[2J", "ref-contains-control-characters"],
+    ["unicode line separator", "main\u2028echo pwned", "ref-contains-control-characters"],
+    ["delete", "main\u007f", "ref-contains-control-characters"],
     ["too long", "a".repeat(MAX_REF_LENGTH + 1), "ref-too-long"],
   ])("rejects a %s ref before git sees it", (_label, ref, reason) => {
     expect(validateRefShape(ref)?.reason).toBe(reason);

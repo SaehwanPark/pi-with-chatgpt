@@ -130,7 +130,21 @@ invocations plus a forbidden-argument list, enforced in `git/exec.ts` before a p
   `GIT_OPTIONAL_LOCKS=0` (a read-only probe does not take a lock a human is waiting on), and
   `GIT_CONFIG_NOSYSTEM=1` (a system-wide `url.<base>.insteadOf` may not silently retarget a remote);
 - process output is redacted of credential-shaped material before it becomes an error message, an
-  interface string, or adviser context (INV-12).
+  interface string, or adviser context (INV-12). That covers URL userinfo with **or without** a colon
+  (`https://<token>@github.com/o/r`, which git echoes back verbatim) and GitHub token shapes
+  (`ghp_…`, `github_pat_…`) wherever they appear;
+- a repository's own `.git/config` is inside git's trust boundary, not this extension's: running git
+  against a repository the user does not trust is out of scope, and the flags that would opt a single
+  invocation into config-declared programs (`--ext-diff`, `--textconv`, `-p`/`--paginate`,
+  `--upload-pack`, `-c`) are refused outright.
+
+The GitHub half of the probe has its own envelope, because it decides dispatch and holds a bearer
+token: the API **hostname is pinned** (`ALLOWED_GITHUB_API_HOSTS`, default `api.github.com`; a
+reviewed GitHub Enterprise host is an explicit `allowedHosts` option) and an unallowed or non-https
+base URL throws at construction rather than returning a failure a caller might paper over; requests
+use `redirect: "manual"` so the token is never replayed to a redirect target, which makes a 3xx an
+inconclusive probe instead of a second request; `owner` and `repo` are percent-encoded into the path,
+so no repository string can traverse out of `/repos/…`; and the client issues `GET` and nothing else.
 
 When the checkpoint is not remote, the worker receives a structured result and handles it under its
 **normal** git permissions: it is told the commit, the remote, the reason, and that pushing is its

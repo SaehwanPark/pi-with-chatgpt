@@ -79,6 +79,28 @@ change invalidates (see `AGENTS.md`).
   real `file://` force-push) so allowlist spellings and porcelain formats are confirmed against real git
   rather than only against fixtures.
 
+### Hardened after invariant review (M1)
+
+- `redactGitOutput` (INV-12) redacts URL userinfo with or without a colon — a token used as the URL
+  username, which git echoes back in `fatal: Authentication failed for '…'` — plus `ghp_…`/`ghs_…`/
+  `github_pat_…` token shapes and bare `bearer <token>` material.
+- The GitHub API client pins the host that may receive the bearer token and decide INV-04 dispatch:
+  `assertSafeGitHubApiBaseUrl` + `ALLOWED_GITHUB_API_HOSTS` reject a non-https, credential-bearing, or
+  unallowed base URL by throwing at construction (GitHub Enterprise is an explicit `allowedHosts`
+  opt-in), and requests use `redirect: "manual"` so a bearer token is never replayed to a redirect
+  target (a 3xx is an inconclusive probe, not an answer).
+- `aheadBehind` takes `base`/`head` instead of positional `left`/`right` and documents which side is
+  "ahead": the previous naming invited an inverted count, which tells the user to push when the branch
+  is actually behind.
+- Checkpoint refs reject the whole C0/C1 control-character range and U+2028/U+2029 (not just CR/LF/TAB/
+  NUL/backtick), and every echoed ref goes through `sanitizeRefForDisplay`, so a refusal string cannot
+  forge terminal output (INV-12).
+- `git/authority.ts` also refuses `-p` (short `--paginate`, runs `core.pager`), `--exec`, and
+  `--push`.
+- Docs: `docs/SECURITY.md` gains the Extension → GitHub API trust boundary and an INV-04 row;
+  `docs/CHECKPOINT_PROTOCOL.md` documents the probe's network envelope; `docs/ARCHITECTURE.md` INV-04
+  no longer says the probe "lands in M1"; the roadmap's M0 invariant note records the INV-04 promotion.
+
 ### Changed
 
 - Toolchain fixed to TypeScript + Node 22 + npm + vitest (previously "to be fixed in M0");

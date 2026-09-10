@@ -39,8 +39,9 @@
 - **Invariants:** `docs/ARCHITECTURE.md` (INV-01…INV-16 prose) + `protocol/invariants.ts` index;
   guards `protocol/{sha,checkpoint,context-channel,provider,trust,dependency}.ts`, `git/authority.ts`,
   `auth/identity.ts`, `browser/profile.ts`, `chatgpt/scope.ts`, `jobs/state.ts`, `ledger/record.ts`,
-  `config/schema.ts`, `ui/worker-facing.ts`; `INV-04` and `INV-14` are explicitly `planned:M1`/
-  `planned:M6` and asserted to stay that way by `protocol/invariants.test.ts`.
+  `config/schema.ts`, `ui/worker-facing.ts`; at M0 `INV-04` and `INV-14` were explicitly `planned:M1`/
+  `planned:M6`, and `protocol/invariants.test.ts` asserts the deferred set stays exactly that. M1
+  promoted `INV-04` to implemented, so the test now pins `INV-14` as the only deferred guard.
 - **Exit criteria:** `test/pi-smoke.mjs` proves `pi install` + clean activation with zero
   registrations; 160 vitest tests across 18 files; prohibited-by-construction source scan in
   `git/authority.test.ts`.
@@ -166,11 +167,16 @@
 
 **M1 evidence.** Implemented in `git/` (`repository.ts`, `ref-resolution.ts`, `ancestry.ts`,
 `remote-availability.ts`, `github-api.ts`, `pr-detection.ts`, `checkpoint-resolution.ts`) and specified
-in `docs/CHECKPOINT_PROTOCOL.md`. Verified by `git/*.test.ts` (137 tests across 10 files) and
+in `docs/CHECKPOINT_PROTOCOL.md`. Verified by `git/*.test.ts` (147 tests across 10 files) and
 `test/git-integration.test.ts` (9 tests against real git repositories: worktrees, shallow clones,
 detached HEAD, tag/abbreviated resolution, divergence, and a real `file://` force-push that keeps the
-retained local SHA authoritative). `npm run verify` green: typecheck, lint, build, 293 tests, Pi smoke
-(Pi 0.85.1). Design decision recorded in `docs/CHECKPOINT_PROTOCOL.md` §7: the consultation *identity*
+retained local SHA authoritative). `npm run verify` green: typecheck, lint, build, 303 tests, Pi smoke
+(Pi 0.85.1). Independent invariant review returned *fix-then-merge* with no blocker; its three majors
+(token-shaped output that `redactGitOutput` missed, an `ahead`/`behind` API whose parameter names invited
+an inverted reading, and an unpinned GitHub API host holding a bearer token) and four minors are fixed in
+the same milestone. Review priority 5 — whether promoting INV-04 early leaves a gap — is safe by
+construction: M1 adds no adviser dispatch path at all, so there is nothing that could yet walk past the
+gate. Design decision recorded in `docs/CHECKPOINT_PROTOCOL.md` §7: the consultation *identity*
 is repo + requested ref + full SHA + optional PR + availability; the branch is carried as working-state
 context and is deliberately not part of identity, because a branch can be renamed, deleted, or rebased
 while advice is still being applied (INV-03).

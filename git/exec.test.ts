@@ -119,6 +119,24 @@ describe("redactGitOutput", () => {
     expect(redactGitOutput(input)).not.toContain("ghp_tokenvalue");
   });
 
+  it("redacts a token used as URL userinfo with no colon", () => {
+    // git accepts `https://<token>@host/…` and echoes the URL back verbatim in
+    // `fatal: Authentication failed for '…'`, so the common token-in-URL shape cannot rely on a
+    // `user:pass` colon to be recognised.
+    const input =
+      "fatal: Authentication failed for 'https://ghp_tokenvalue@github.com/owner/repo.git/'";
+    expect(redactGitOutput(input)).not.toContain("ghp_tokenvalue");
+  });
+
+  it("redacts GitHub token shapes that appear outside a URL", () => {
+    expect(redactGitOutput("use github_pat_11ABCDEFG0abcdef_ABCDEFGHIJKLMNOP")).not.toContain(
+      "github_pat_11ABCDEFG0abcdef",
+    );
+    expect(redactGitOutput("hint: ghs_tokenvalueish was found in your config")).not.toContain(
+      "ghs_tokenvalueish",
+    );
+  });
+
   it("leaves ordinary git output untouched", () => {
     const output = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/heads/main";
     expect(redactGitOutput(output)).toBe(output);

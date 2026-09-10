@@ -54,6 +54,11 @@ describe("git safety on the consultation path (INV-06)", () => {
       ["-c", "core.pager=/tmp/evil", "log"],
       ["log", "--exec-path=/tmp/evil"],
       ["--git-dir=/other/repo", "status"],
+      // Short spellings of the same escapes: `-p` runs core.pager exactly like --paginate.
+      ["log", "-p"],
+      ["show", "-p"],
+      ["ls-remote", "--exec=/tmp/evil"],
+      ["ls-remote", "--push"],
     ];
     for (const argv of dangerous) {
       expect(() => assertReadOnlyGitArgs(argv), `git ${argv.join(" ")}`).toThrow(GitAuthorityError);

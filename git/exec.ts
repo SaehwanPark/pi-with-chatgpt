@@ -65,9 +65,17 @@ export class GitExecutionError extends Error {
  */
 export function redactGitOutput(text: string): string {
   return text
-    .replace(/\/\/[^/@\s]+:[^@\s]+@/g, "//[redacted]:[redacted]@")
+    // URL userinfo, with or without a colon. git echoes the whole remote URL back
+    // (`fatal: Authentication failed for 'https://user:pw@github.com/…'`), and a token used as the
+    // username (`https://ghp_xxx@github.com/o/r`, which git accepts) has no colon to anchor on, so
+    // the userinfo class must be matched as a whole.
+    .replace(/\/\/[^/@\s]*@/g, "//[redacted]@")
     .replace(/(proxy-authorization|authorization)\s*[:=][^\r\n]*/gi, "$1: [redacted]")
-    .replace(/(access_token|auth|code|password|token)=([^&\s]+)/gi, "$1=[redacted]");
+    .replace(/(access_token|auth|code|password|token)=([^&\s]+)/gi, "$1=[redacted]")
+    // GitHub token shapes, wherever they appear (remote URL userinfo, proxy URL, pasted hint text).
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,})\b/g, "[redacted-token]")
+    // Generic bearer material in a header-looking context.
+    .replace(/\bbearer\s+[A-Za-z0-9._~+/-]{8,}/giu, "bearer [redacted]");
 }
 
 /** Truncate before display: git can emit kilobytes of hint text, and errors get surfaced inline. */
@@ -81,6 +89,18 @@ function summarize(stderr: string, stdout: string): string {
  * `GIT_CONFIG_NOSYSTEM=1` is not hygiene theatre: a system-level `url.<base>.insteadOf` rewrite would
  * silently point a canonical GitHub remote at another host, which is exactly the retargeting INV-04
  * forbids. Losing a site-wide alias is the cheaper failure.
+ */
+/**
+ * Threat-model boundary for repo-local git configuration.
+ *
+ * `GIT_CONFIG_NOSYSTEM=1` removes *system* config and `-c` is forbidden, so the extension can never
+ * reconfigure an invocation — but a repository's own `.git/config` still applies, and git's own trust
+ * boundary is what covers that: running git against a repository the user does not trust is outside
+ * this extension's threat model. Concretely `core.fsmonitor` (honoured by `git status`) and
+ * `diff.external` (honoured by `diff`/`log -p`/`show`) execute programs named in that config; the
+ * argument-level guards in `authority.ts` block the flags that would opt into them per-invocation.
+ * A change that runs git against an arbitrary, unvetted path must revisit this assumption rather than
+ * inherit it silently.
  */
 const GIT_ENV: Readonly<Record<string, string>> = {
   GIT_TERMINAL_PROMPT: "0",

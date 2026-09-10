@@ -30,6 +30,14 @@ export type AncestryObservations = {
   readonly hasMergeBase: boolean;
 };
 
+/**
+ * Counts read from `<base>...<head>`.
+ *
+ * `ahead` = commits reachable from `head` that `base` lacks; `behind` = the reverse. Always describe
+ * the pair in those words in call sites: with `base = upstream` and `head = local`, `ahead` is "you
+ * need to push" and `behind` is "you need to pull". Naming the parameters anything else (or passing
+ * the pair the other way round) inverts the advice shown to the user.
+ */
 export type AheadBehind = {
   readonly ahead: number;
   readonly behind: number;
@@ -91,24 +99,29 @@ export async function compareCommits(
 }
 
 /**
- * `git rev-list --count --left-right <left>...<right>` prints `<behind>\t<ahead>` relative to
- * `<left>`. Getting the direction backwards sends the user the opposite advice ("push" when the
- * branch actually diverged), so the parse is a named, tested function.
+ * Parse `git rev-list --count --left-right <base>...<head>`.
+ *
+ * git prints `<base-only>\t<head-only>`, i.e. `behind\tahead`. Getting the columns swapped sends the
+ * user the opposite advice ("push" when the branch is behind), so the mapping lives in one named,
+ * tested function rather than inline at each call site.
+ *
+ * Note this is *not* the positional reading of `git status` (`--left-right HEAD...@{u}` puts the
+ * local side first); that form is why this function takes names instead of positions.
  */
 export function parseAheadBehindCounts(output: string): AheadBehind | undefined {
   const match = /^(\d+)\s+(\d+)$/.exec(output.trim());
   if (match === null) return undefined;
-  return { ahead: Number(match[2]), behind: Number(match[1]) };
+  return { behind: Number(match[1]), ahead: Number(match[2]) };
 }
 
 export async function aheadBehind(
   git: GitExecutor,
   cwd: string,
-  left: FullCommitSha,
-  right: FullCommitSha,
+  base: FullCommitSha,
+  head: FullCommitSha,
 ): Promise<AheadBehind | undefined> {
   const result = await git.runAllowingFailure(
-    ["rev-list", "--count", "--left-right", `${left}...${right}`],
+    ["rev-list", "--count", "--left-right", `${base}...${head}`],
     cwd,
   );
   if (result.code !== 0) return undefined;

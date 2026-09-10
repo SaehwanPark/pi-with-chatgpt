@@ -102,6 +102,9 @@ export const FORBIDDEN_GIT_ARG_TOKENS: readonly string[] = [
   "--output", // log/diff/show --output=<path> writes a file
   "--ext-diff", // runs core.git_hooks_path/ext-diff external converters
   "--textconv",
+  "-p", // short spelling of --paginate: runs core.pager, i.e. an arbitrary program
+  "--exec", // --upload-pack's alias in the fetch/ls-remote family
+  "--push", // ls-remote --push asks about push targets; no consultation path needs it
   "--paginate",
   "--upload-pack", // ls-remote --upload-pack=<prog> executes a program
   "--receive-pack",

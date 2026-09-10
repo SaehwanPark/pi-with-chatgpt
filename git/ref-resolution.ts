@@ -57,11 +57,17 @@ export function validateRefShape(rawRef: string): RefRejection | undefined {
       "A checkpoint ref must not begin with '-' (git would read it as an option).",
     );
   }
-  if (/[`\r\n\0\t]/.test(ref)) {
+  // Every C0/C1 control character plus the Unicode line separators, not just the ones we happened to
+  // think of: these values are echoed back into refusal text and later into a terminal, where ESC or
+  // U+2028 forge lines the reader never saw.
+  // Matching control characters is the point, so the lint rule that flags them in a regex does not
+  // apply here.
+  // eslint-disable-next-line no-control-regex
+  if (/[`\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(ref)) {
     return reject(
       rawRef,
       "ref-contains-control-characters",
-      "A checkpoint ref must not contain newlines, tabs, NUL, or backticks.",
+      "A checkpoint ref must not contain control characters, line separators, or backticks.",
     );
   }
   if (ref.length > MAX_REF_LENGTH) {
@@ -74,12 +80,25 @@ export function validateRefShape(rawRef: string): RefRejection | undefined {
   return undefined;
 }
 
+/**
+ * Make a caller-supplied ref safe to echo into a message.
+ *
+ * Rejections quote the ref the user typed, and that text travels to a terminal (and, later, possibly
+ * to adviser context). Control characters are replaced rather than stripped, so a forged escape
+ * sequence is visible as noise instead of executing or silently disappearing.
+ */
+export function sanitizeRefForDisplay(rawRef: string): string {
+  const clipped = rawRef.length > MAX_REF_LENGTH + 16 ? `${rawRef.slice(0, MAX_REF_LENGTH)}…` : rawRef;
+  // eslint-disable-next-line no-control-regex -- replacing control characters is the function's purpose
+  return clipped.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, "\uFFFD");
+}
+
 function reject(
   requestedRef: string,
   reason: RefResolutionRejectionReason,
   explanation: string,
 ): RefRejection {
-  return { requestedRef, reason, explanation };
+  return { requestedRef: sanitizeRefForDisplay(requestedRef), reason, explanation };
 }
 
 /**
@@ -110,7 +129,7 @@ export async function resolveCheckpointRef(
       rejection: reject(
         requestedRef,
         "unresolvable-ref",
-        `"${ref}" does not resolve to a commit in this repository.`,
+        `"${sanitizeRefForDisplay(ref)}" does not resolve to a commit in this repository.`,
       ),
     };
   }

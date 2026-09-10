@@ -20,7 +20,12 @@ import { isFullCommitSha } from "../protocol/sha.js";
 /** Minimal `fetch` surface, so tests inject a fake and callers can pass any implementation. */
 export type GitHubFetch = (
   url: string,
-  init: { readonly headers: Readonly<Record<string, string>>; readonly signal: AbortSignal },
+  init: {
+    readonly headers: Readonly<Record<string, string>>;
+    readonly signal: AbortSignal;
+    /** Always `"manual"`: the bearer token must not be replayed to a redirect target. */
+    readonly redirect: "manual";
+  },
 ) => Promise<GitHubFetchResponse>;
 
 export type GitHubFetchResponse = {
@@ -33,6 +38,62 @@ export type GitHubFetchResponse = {
 
 export const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+/**
+ * The only API host a token may be sent to by default.
+ *
+ * This is not transport hygiene, it is INV-04: the host that answers `GET /repos/…/commits/<sha>`
+ * is the authority that decides whether a consultation is dispatched, and it is also the host that
+ * receives a bearer credential. A caller-configurable `baseUrl` without a pinned host would let a
+ * typo, a malicious repo-local config, or a confused GHES setting turn "GitHub said this commit is
+ * published" into "some server said so". `protocol/repo.ts` accepts `github.com` remotes only in V1,
+ * so `api.github.com` is the only honest default; GitHub Enterprise is an explicit, reviewed opt-in.
+ */
+export const ALLOWED_GITHUB_API_HOSTS: readonly string[] = ["api.github.com"];
+
+/** Thrown when a client cannot be built safely. Construction fails loudly instead of degrading. */
+export class GitHubApiConfigurationError extends Error {
+  constructor(detail: string) {
+    super(`GitHub API client configuration refused: ${detail}`);
+    this.name = "GitHubApiConfigurationError";
+  }
+}
+
+/**
+ * Reject a base URL that would send the bearer token somewhere untrusted.
+ *
+ * Checked at construction: a client that cannot be safe should not exist long enough to be called.
+ */
+export function assertSafeGitHubApiBaseUrl(
+  baseUrl: string,
+  allowedHosts: readonly string[] = ALLOWED_GITHUB_API_HOSTS,
+): string {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new GitHubApiConfigurationError(`"${baseUrl}" is not an absolute URL.`);
+  }
+  if (parsed.protocol !== "https:") {
+    throw new GitHubApiConfigurationError(
+      `"${baseUrl}" is not https; a bearer token must never travel in clear text.`,
+    );
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new GitHubApiConfigurationError("credentials in the API base URL are refused.");
+  }
+  if (!allowedHosts.includes(parsed.hostname)) {
+    throw new GitHubApiConfigurationError(
+      `host "${parsed.hostname}" is not an allowed GitHub API host (${allowedHosts.join(", ")}).`,
+    );
+  }
+  if (parsed.pathname !== "" && parsed.pathname !== "/") {
+    // A path prefix is how GitHub Enterprise roots its API; it is allowed only for an allowed host.
+    return normalized;
+  }
+  return normalized;
+}
 
 export type GitHubProbeFailure = {
   readonly reason: RemoteProbeFailureReason;
@@ -69,6 +130,11 @@ export interface GitHubApiOptions {
    */
   readonly token: string;
   readonly baseUrl?: string;
+  /**
+   * Hosts permitted to receive the token. Only meaningful for a reviewed GitHub Enterprise
+   * deployment; leaving it unset keeps the V1 default of `api.github.com` alone.
+   */
+  readonly allowedHosts?: readonly string[];
   readonly timeoutMs?: number;
 }
 
@@ -98,18 +164,17 @@ function ownerAndRepo(repository: GitHubRepositoryKey): { owner: string; repo: s
 }
 
 export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
-  const baseUrl = (options.baseUrl ?? DEFAULT_GITHUB_API_BASE_URL).replace(/\/+$/, "");
+  // Validated before anything can be called: the host is part of the security envelope, not a URL
+  // detail, so an unsafe configuration throws rather than returning a failure that a caller might
+  // paper over.
+  const baseUrl = assertSafeGitHubApiBaseUrl(
+    options.baseUrl ?? DEFAULT_GITHUB_API_BASE_URL,
+    options.allowedHosts ?? ALLOWED_GITHUB_API_HOSTS,
+  );
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const token = options.token;
 
   async function get(path: string): Promise<GitHubOutcome<unknown>> {
-    // TLS only: this header is a bearer credential and must never travel over a plain connection.
-    if (!baseUrl.startsWith("https://")) {
-      return {
-        ok: false,
-        failure: failure("github-auth-failed", `Refusing to send a bearer token to ${baseUrl}`),
-      };
-    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -122,6 +187,10 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
           "x-github-api-version": "2022-11-28",
         },
         signal: controller.signal,
+        // Manual redirects: `Authorization` is a bearer credential, and following a redirect would
+        // replay it to whatever host GitHub points at. A 3xx is therefore not an answer about the
+        // checkpoint, so it surfaces as an inconclusive probe rather than a silent second request.
+        redirect: "manual",
       });
 
       if (response.status === 401 || response.status === 403) {
