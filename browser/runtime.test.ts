@@ -18,7 +18,8 @@ import { AdviserRuntime, type RuntimeEvent } from "./runtime.js";
 interface DriverScript {
   healthy?: boolean[];
   startResults?: Array<{ ok: boolean; error?: string }>;
-  surface?: SurfaceObservation;
+  /** A single surface, or a sequence consumed per observation (last value repeats). */
+  surface?: SurfaceObservation | SurfaceObservation[];
   models?: readonly ModelOption[];
   selectOk?: boolean;
   turn?: ConsultationOutcome | (() => Promise<ConsultationOutcome>);
@@ -28,7 +29,10 @@ function fakeDriver(script: DriverScript = {}) {
   const calls: string[] = [];
   const healthAnswers = [...(script.healthy ?? [true])];
   const startResults = [...(script.startResults ?? [{ ok: true as const }])];
-  const surface: SurfaceObservation = script.surface ?? { state: "conversation-ready", actionable: true };
+  const scripted = script.surface ?? [{ state: "conversation-ready", actionable: true }];
+  const surfaces = Array.isArray(scripted) ? [...scripted] : [scripted];
+  const nextSurface = (): SurfaceObservation =>
+    surfaces.length > 1 ? surfaces.shift()! : surfaces[0]!;
 
   // None of these fakes await anything, so they return resolved promises rather than being declared
   // `async`: the runtime only ever calls them through `await`, and an empty async body trips lint.
@@ -50,11 +54,11 @@ function fakeDriver(script: DriverScript = {}) {
     },
     observeSurface: () => {
       calls.push("observeSurface");
-      return Promise.resolve(surface);
+      return Promise.resolve(nextSurface());
     },
     openChatGPT: () => {
       calls.push("openChatGPT");
-      return Promise.resolve(surface);
+      return Promise.resolve(nextSurface());
     },
     listModels: () => {
       calls.push("listModels");
@@ -262,12 +266,35 @@ describe("AdviserRuntime human gate", () => {
     expect((await instance.status()).humanAttentionRequired).toBe(true);
   });
 
-  it("reports needs-human from the gate rather than relaunching", async () => {
+  it("keeps observing while gated so a completed login can be noticed", async () => {
+    // The gate must not close the door it opened through. Manual login opens a window precisely while the
+    // page reads `signed-out`; if that observation refused later reads, the runtime could never learn the
+    // human finished. Observing asks nothing of the page, so it stays available; `consult` is what refuses.
+    const signedOut = { state: "signed-out", explanation: "log in", actionable: false } as const;
+    const ready = { state: "conversation-ready", actionable: true } as const;
+    const { instance, events } = runtime({ surface: [signedOut, signedOut, ready] });
+
+    await instance.probeSurface();
+    expect((await instance.status()).humanAttentionRequired).toBe(true);
+
+    // Still able to try again: that is how the login completion is discovered.
+    expect(await instance.probeSurface()).toStrictEqual(signedOut);
+    expect((await instance.status()).humanAttentionRequired).toBe(true);
+
+    const cleared = await instance.probeSurface();
+    expect(cleared.actionable).toBe(true);
+    expect((await instance.status()).humanAttentionRequired).toBe(false);
+    expect(events.filter((event) => event.type === "human-cleared")).toHaveLength(1);
+  });
+
+  it("refuses to consult through a human gate", async () => {
+    // INV-09 lives here rather than in the launch path: asking the adviser a question while a challenge
+    // is up is the thing that must never happen, not looking at the page.
     const { instance } = runtime({
       surface: { state: "human-verification", explanation: "challenge", actionable: false },
     });
-    await instance.probeSurface();
-    expect(await instance.ensureReady()).toStrictEqual({ ok: false, rejection: "needs-human" });
+    const outcome = await instance.consult(REQUEST);
+    expect(outcome).toMatchObject({ ok: false, failure: "needs-human" });
   });
 });
 

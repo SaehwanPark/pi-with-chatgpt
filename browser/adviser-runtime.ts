@@ -74,7 +74,12 @@ export async function createAdviserBrowser(paths: StateStoragePaths): Promise<Ad
  * it ensures a *headed* browser and loads ChatGPT; to observe a session it reads the surface and maps the
  * four terminal states. There is deliberately no method that could complete a login.
  */
-function loginPortFor(profile: AdviserProfile, runtime: AdviserBrowserRuntime): AdviserLoginPort {
+/**
+ * Exported for tests: this seam is where M2's login flow meets M3's runtime, and the contract between
+ * them (open while signed out, then observe until signed in) is exactly the kind of thing that breaks
+ * silently when either side latches state.
+ */
+export function loginPortFor(profile: AdviserProfile, runtime: AdviserBrowserRuntime): AdviserLoginPort {
   return {
     async openAdviserWindow(_profile: AdviserProfile): Promise<void> {
       // Headed on purpose: a background window a person cannot see or type into is not a login path.

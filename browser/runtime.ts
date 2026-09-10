@@ -15,7 +15,21 @@
  * 2. **A human-gated state is terminal for this runtime.** Once a login or challenge is observed the
  *    runtime stops trying and says so; retry loops through a CAPTCHA are how an agent automates a human.
  */
-import { DIAGNOSTIC_POLICY, type AdviserBrowserRuntime, type AdviserPageDriver, type ConsultationFailure, type ConsultationOutcome, type ConsultationRequest, type ModelOption, type RuntimePhase, type RuntimeRejection, type RuntimeStartOptions, type RuntimeStatus, type SurfaceObservation } from "./runtime-types.js";
+import {
+  DIAGNOSTIC_POLICY,
+  type AdviserBrowserRuntime,
+  type AdviserPageDriver,
+  type ConsultationFailure,
+  type ConsultationOutcome,
+  type ConsultationRequest,
+  type ModelOption,
+  type RuntimePhase,
+  type RuntimeRejection,
+  type RuntimeStartOptions,
+  type RuntimeStatus,
+  type SurfaceObservation,
+  type SurfaceState,
+} from "./runtime-types.js";
 
 export interface RuntimeClock {
   now(): number;
@@ -51,6 +65,8 @@ export type RuntimeEvent =
   | { readonly type: "launch-failed"; readonly rejection: RuntimeRejection; readonly attempt: number }
   | { readonly type: "recovered"; readonly reason: "unhealthy" | "stale-tab" }
   | { readonly type: "needs-human"; readonly explanation: string }
+  /** A previously latched human gate cleared itself: someone signed in or solved a challenge. */
+  | { readonly type: "human-cleared"; readonly state: SurfaceState }
   | { readonly type: "turn-failed"; readonly failure: ConsultationFailure };
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
@@ -113,9 +129,10 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     readonly ok: boolean;
     readonly rejection?: RuntimeRejection;
   }> {
-    if (this.#humanAttentionRequired) {
-      // A challenge does not resolve itself; report rather than relaunch into the same page.
-      return { ok: false, rejection: "needs-human" };
+    if (this.#phase === "failed") {
+      // Launch retries are exhausted. This is the only latch that refuses a launch attempt: it is a
+      // proven transport failure, unlike the human gate, which is only an expectation about the page.
+      return { ok: false, rejection: "launch-failed" };
     }
     if (this.#phase === "ready") {
       if (await this.#driver.isHealthy()) return { ok: true };
@@ -182,7 +199,10 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   async #runTurn(request: ConsultationRequest): Promise<ConsultationOutcome> {
     const ready = await this.ensureReady({ purpose: "consultation" });
     if (!ready.ok) {
-      const failure = this.#humanAttentionRequired ? "needs-human" : "browser-lost";
+      // Report the reason the browser could not start. A remembered human gate is not the cause here,
+      // and reporting it would send the user to fix a login while Chrome is what is actually missing.
+      const failure: ConsultationFailure =
+        ready.rejection === "needs-human" ? "needs-human" : "browser-lost";
       this.#lastFailure = failure;
       this.#emit({ type: "turn-failed", failure });
       return { ok: false, failure };
@@ -281,7 +301,10 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
    * as "not the ChatGPT surface".
    */
   async #surface(): Promise<SurfaceObservation> {
-    return this.#noteHumanGate(await this.#driver.openChatGPT());
+    const observation = await this.#driver.openChatGPT();
+    // Opening the surface is itself an observation: if it came back actionable, whoever was needed has
+    // acted. Latching the first `signed-out` forever would deadlock the login flow it just enabled.
+    return this.#noteHumanGate(observation);
   }
 
   async #safeHealth(): Promise<boolean> {
@@ -292,11 +315,23 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     }
   }
 
-  /** Record, and report once, that a person is now required. */
+  /**
+   * Track whether a person is required, from a fresh observation rather than from a latch.
+   *
+   * The gate has to be *re-evaluated*, not remembered as a refusal. A login window is opened precisely
+   * while the page reads `signed-out`; if that observation closed the door, the later observation that
+   * must notice the human finished would be refused, and manual login could never complete. Reading the
+   * page again is not automating a challenge — it asks nothing of it — so observation stays available
+   * while `consult()` refuses, which is where the real "do not push through a human gate" rule bites.
+   */
   #noteHumanGate(observation: SurfaceObservation): SurfaceObservation {
-    if (observation.state === "human-verification" || observation.state === "signed-out") {
+    const needsHuman = !observation.actionable;
+    if (needsHuman && !this.#humanAttentionRequired) {
       this.#humanAttentionRequired = true;
       this.#emit({ type: "needs-human", explanation: observation.explanation ?? observation.state });
+    } else if (!needsHuman && this.#humanAttentionRequired) {
+      this.#humanAttentionRequired = false;
+      this.#emit({ type: "human-cleared", state: observation.state });
     }
     return observation;
   }

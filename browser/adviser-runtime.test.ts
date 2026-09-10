@@ -7,7 +7,8 @@ import { readdir, readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { toSessionObservation } from "./adviser-runtime.js";
+import type { AdviserBrowserRuntime, SurfaceObservation } from "./runtime-types.js";
+import { loginPortFor, toSessionObservation } from "./adviser-runtime.js";
 
 describe("toSessionObservation", () => {
   it("maps a usable surface to signed-in", () => {
@@ -61,5 +62,68 @@ describe("Playwright stays a deep import", () => {
       .map(([name]) => name)
       .sort();
     expect(importers).toEqual(["adviser-runtime.ts"]);
+  });
+});
+
+describe("login port over the runtime", () => {
+  const PROFILE = {
+    kind: "extension-owned",
+    profileId: "chatgpt-adviser",
+    userDataDir: "/state/browser/chatgpt-profile",
+    stateRoot: "/state",
+  } as const;
+
+  /** A runtime whose surface becomes ready after `signedOutReads`, counting every navigation. */
+  function stubRuntime(signedOutReads: number) {
+    const observations: SurfaceObservation[] = [];
+    let reads = 0;
+    const signedOut: SurfaceObservation = { state: "signed-out", explanation: "log in", actionable: false };
+    const ready: SurfaceObservation = { state: "conversation-ready", actionable: true };
+    // None of these stubs await anything, so they return resolved promises instead of being declared
+    // `async`: the runtime only calls them through `await`, and an empty async body trips lint.
+    const instance: AdviserBrowserRuntime = {
+      status: () =>
+        Promise.resolve({
+          phase: "ready",
+          processAlive: true,
+          headed: true,
+          profileDir: PROFILE.userDataDir,
+          launchCount: 1,
+          humanAttentionRequired: false,
+        }),
+      ensureReady: () => Promise.resolve({ ok: true }),
+      probeSurface: () => {
+        reads += 1;
+        const observation = reads <= signedOutReads ? signedOut : ready;
+        observations.push(observation);
+        return Promise.resolve(observation);
+      },
+      discoverModels: () => Promise.resolve({ ok: true, models: [] }),
+      consult: () => Promise.resolve({ ok: false, failure: "needs-human" }),
+      shutdown: () => Promise.resolve(),
+    };
+    return { instance, observations };
+  }
+
+  it("observes a completed login rather than refusing after the first signed-out read", async () => {
+    // The regression this pins: opening the window observes `signed-out`, and if that closed the runtime
+    // for later reads, observeSession would never see the login finish and manual login would time out
+    // while the user sat signed in at a working window.
+    // Reads: 1 = opening the window, 2 = observing while the human is still typing, 3 = after they signed in.
+    const { instance, observations } = stubRuntime(2);
+    const port = loginPortFor(PROFILE, instance);
+
+    await port.openAdviserWindow(PROFILE);
+    expect(await port.observeSession(PROFILE)).toStrictEqual({ kind: "signed-out" });
+
+    // The human signs in at the window, and the next read is allowed to notice.
+    expect(await port.observeSession(PROFILE)).toStrictEqual({ kind: "signed-in" });
+    expect(observations).toHaveLength(3);
+  });
+
+  it("seals only a live browser", async () => {
+    const { instance } = stubRuntime(0);
+    const port = loginPortFor(PROFILE, instance);
+    await expect(port.sealSession(PROFILE)).resolves.toBeUndefined();
   });
 });
