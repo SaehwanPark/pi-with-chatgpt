@@ -75,8 +75,12 @@ export function classifySurface(snapshot: SurfaceSnapshot): {
       actionable: false,
     };
   }
-  if (snapshot.showsVerification) {
-    return { state: "human-verification", explanation: "Human verification is required.", actionable: false };
+  // A Cloudflare/interstitial challenge is often only visible in the document title — "Just a moment..."
+  // and "Attention Required" are its standard signatures, and a fresh headless profile hits it constantly.
+  // Detecting it here is what turns a blank-looking page into a terminal human gate rather than an
+  // "unknown" the caller might retry through.
+  if (snapshot.showsVerification || titleIndicatesChallenge(snapshot.title)) {
+    return { state: "human-verification", explanation: `Human verification required (${snapshot.title.trim() || "challenge"}).`, actionable: false };
   }
   // A sign-in prompt is signed out unless a real conversation is on screen. The signed-out landing shell
   // *does* offer a text box, but a question typed there is discarded after login, so a composer does not
@@ -153,6 +157,22 @@ export function scrubPageText(text: string, maxLength = 240): string {
   return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 3)}...` : collapsed;
 }
 
+/** Cloudflare / bot-management interstitial titles, matched case-insensitively on the page title. */
+const CHALLENGE_TITLE_PATTERNS: readonly RegExp[] = [
+  /just a moment/iu,
+  /attention required/iu,
+  /verify you are human/iu,
+  /checking (?:your browser|if the)/iu,
+  /one more step/iu,
+  /puzzle (?:captcha|challenge)/iu,
+];
+
+export function titleIndicatesChallenge(title: string): boolean {
+  const value = title.trim();
+  if (value.length === 0) return false;
+  return CHALLENGE_TITLE_PATTERNS.some((pattern) => pattern.test(value));
+}
+
 function isChatGptUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -195,10 +215,17 @@ export const CHATGPT_SELECTORS = Object.freeze({
     '[data-testid="stop-button"]',
     '[aria-label*="Stop" i]',
   ],
+  // Observed on the live signed-out home page: the affordance reads "Log in" (US build) and links point at
+  // /login and /signup, not /sign-in. Keeping both spellings so a locale or copy change does not blind the
+  // classifier into reading a signed-out shell as a ready conversation.
   signInPrompt: [
     '[data-testid="login-button"]',
     'a[href*="sign-in"]',
+    'a[href$="/login"]',
+    'a[href*="/signup"]',
     'button:has-text("Sign in")',
+    'button:has-text("Log in")',
+    'a:has-text("Log in")',
   ],
   verification: [
     '[name^="cf-chl"]',

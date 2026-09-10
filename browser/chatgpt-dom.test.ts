@@ -38,6 +38,16 @@ describe("classifySurface", () => {
     expect(result).toMatchObject({ state: "human-verification", actionable: false });
   });
 
+  it("recognises a Cloudflare interstitial from the document title alone", () => {
+    // A fresh headless profile routinely hits "Just a moment..." before any element renders. Treating it
+    // as `unknown` invites a retry loop through the challenge; it is a human gate, full stop.
+    for (const title of ["Just a moment...", "Attention Required! | Cloudflare", "Puzzle CAPTCHA"]) {
+      const result = classifySurface(snapshot({ title }));
+      expect(result.state, title).toBe("human-verification");
+      expect(result.actionable, title).toBe(false);
+    }
+  });
+
   it("treats a sign-in shell as signed out, composer or not", () => {
     expect(classifySurface(snapshot({ showsSignInPrompt: true, hasComposer: false })).state).toBe("signed-out");
     // The signed-out landing page *does* show a text box; sending into it loses the question after login.
