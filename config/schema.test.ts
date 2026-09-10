@@ -24,6 +24,13 @@ describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
     expect(() => parseAdviserConfig({ [key]: value })).toThrow(/authentication lives in the extension-owned browser profile/u);
   });
 
+  it("keeps blocking authority out of project-scope configuration (INV-07)", () => {
+    // A cloned repository must not be able to make the worker stop when the adviser is unavailable.
+    expect(() => parseAdviserConfig({ dependencyDefault: "required" }, "project")).toThrow(ConfigError);
+    expect(parseAdviserConfig({ dependencyDefault: "required" }, "global").dependencyDefault).toBe("required");
+    expect(parseAdviserConfig({ dependencyDefault: "advisory" }, "project").dependencyDefault).toBe("advisory");
+  });
+
   it("rejects unknown options so typos cannot hide behind defaults", () => {
     expect(() => parseAdviserConfig({ dependnecyDefault: "required" })).toThrow(ConfigError);
   });

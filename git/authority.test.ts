@@ -40,6 +40,28 @@ describe("git safety on the consultation path (INV-06)", () => {
     expect(() => assertReadOnlyGitArgs(["diff", "--force-with-lease"])).toThrow(GitAuthorityError);
   });
 
+  it("refuses file-writing and program-executing arguments on read-only subcommands", () => {
+    // Every one of these is accepted by a nominally read-only git subcommand.
+    const dangerous: readonly (readonly string[])[] = [
+      ["log", "--output=/tmp/leak"],
+      ["diff", "--output=/tmp/leak"],
+      ["show", "--ext-diff"],
+      ["diff", "--textconv"],
+      ["log", "--paginate"],
+      ["ls-remote", "--upload-pack=/tmp/evil"],
+      ["ls-remote", "--receive-pack=/tmp/evil"],
+      ["log", "-c", "core.pager=/tmp/evil"],
+      ["-c", "core.pager=/tmp/evil", "log"],
+      ["log", "--exec-path=/tmp/evil"],
+      ["--git-dir=/other/repo", "status"],
+    ];
+    for (const argv of dangerous) {
+      expect(() => assertReadOnlyGitArgs(argv), `git ${argv.join(" ")}`).toThrow(GitAuthorityError);
+    }
+    // The prefix-only helper is not the gate, and must not be mistaken for one.
+    expect(isReadOnlyGitInvocation(["log", "--output=/tmp/leak"])).toBe(true);
+  });
+
   it("keeps the allowlist free of mutating subcommands", () => {
     const mutating = ["add", "commit", "push", "pull", "fetch", "merge", "rebase", "reset", "checkout", "clean", "apply"];
     for (const command of mutating) {

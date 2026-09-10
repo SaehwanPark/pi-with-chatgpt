@@ -55,4 +55,13 @@ describe("task conversation isolation (INV-09)", () => {
     expect(isConsultationKind("consult")).toBe(true);
     expect(isConsultationKind("vibe-check")).toBe(false);
   });
+  it("cannot be collided by a task id containing the key separator", () => {
+    const base = { repository: canonicalRepositoryKey("owner", "repo"), kind: "consult" } as const;
+    const weird = conversationKeyForTask({ ...base, taskId: "a:task:b:plan" });
+    const plain = conversationKeyForTask({ ...base, taskId: "a" });
+    const other = conversationKeyForTask({ ...base, taskId: "b" });
+    expect(weird).not.toBe(plain);
+    expect(weird.split(":task:")[1]).toContain("%3A");
+    expect(new Set([weird, plain, other]).size).toBe(3);
+  });
 });

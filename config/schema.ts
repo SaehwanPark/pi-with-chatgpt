@@ -89,6 +89,11 @@ export function parseAdviserConfig(raw: Record<string, unknown>, scope: ConfigSc
         if (value !== "advisory" && value !== "required") {
           throw new ConfigError('dependencyDefault must be "advisory" or "required"');
         }
+        // `required` turns an adviser outage into a hard stop, so it is a user-level decision only.
+        // A cloned repository must not be able to make the worker block on adviser availability.
+        if (scope === "project" && value === "required") {
+          throw new ConfigError("a project cannot require adviser availability; that is a user-level decision");
+        }
         config.dependencyDefault = value;
         break;
       case "defaultMode":

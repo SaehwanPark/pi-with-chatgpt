@@ -19,7 +19,13 @@ export type GitHubRemoteRejection =
   | "not-a-github-remote"
   | "unsupported-host"
   /** The remote has no usable `owner/repo` path. */
-  | "malformed-path";
+  | "malformed-path"
+  /**
+   * The remote embeds credentials (`https://user:token@github.com/owner/repo`). Such a URL is a
+   * credential container, and the canonical key is derived from host + path only, so the only safe
+   * handling is to refuse it rather than silently discard a secret (INV-12).
+   */
+  | "credentials-in-url";
 
 const GITHUB_HOSTS = ["github.com", "www.github.com"] as const;
 
@@ -46,6 +52,7 @@ export interface GitHubRemoteParseResult {
  */
 export function parseGitHubRemote(remoteUrl: string): GitHubRemoteParseResult {
   const trimmed = remoteUrl.trim().replace(/\/+$/, "");
+  if (hasEmbeddedCredentials(trimmed)) return { ok: false, rejection: "credentials-in-url" };
   const path = scpLikePath(trimmed) ?? schemePath(trimmed);
   if (path === undefined) return { ok: false, rejection: "not-a-github-remote" };
 
@@ -81,6 +88,20 @@ function scpLikePath(url: string): [string, string] | undefined {
     return [scpLike[1], scpLike[2]];
   }
   return undefined;
+}
+
+/**
+ * True when a scheme URL carries credential material in its userinfo. A username alone is normal and
+ * not a credential (`ssh://git@github.com/owner/repo`), a password never is, and HTTP(S) authentication
+ * in a remote URL is always a secret (`https://<token>@github.com/…`), so HTTP(S) userinfo is refused
+ * wholesale while SSH userinfo is allowed only when it carries no password.
+ */
+function hasEmbeddedCredentials(url: string): boolean {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/]*)/iu.exec(url);
+  const userinfo = match?.[1];
+  if (userinfo === undefined || !userinfo.includes("@")) return false;
+  if (userinfo.includes(":")) return true;
+  return /^https?:/iu.test(url);
 }
 
 /** `https://github.com/owner/repo.git` (credentials in the URL are rejected, never used). */

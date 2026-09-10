@@ -60,6 +60,7 @@ export const SENSITIVE_VALUE_PATTERNS: readonly RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{16,}/u,
   /set-cookie\s*:/iu,
   /cookie\s*:[^\n]{8,}/iu,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
 ];
 
 export class UnsafeLedgerRecordError extends Error {
@@ -101,13 +102,33 @@ function walk(value: unknown, visit: (key: string, value: unknown) => void, ance
 export const PERSISTENCE_STEPS = ["job-persisted", "dispatched", "response-persisted", "delivered"] as const;
 export type PersistenceStep = (typeof PERSISTENCE_STEPS)[number];
 
-/** Enforce "persist before dispatch, persist before wake-up" (INV-15). */
+/**
+ * Enforce "persist before dispatch, persist before wake-up" (INV-15).
+ *
+ * The check fails closed: a missing persistence step is treated as a violation, not as "nothing to
+ * check". A caller that dispatched without ever recording `job-persisted` is exactly the history we
+ * are trying to prevent, so omission must not be the way to pass this guard.
+ */
 export function assertPersistenceOrder(steps: readonly PersistenceStep[]): void {
   const index = (step: PersistenceStep): number => steps.indexOf(step);
-  if (index("dispatched") !== -1 && index("job-persisted") > index("dispatched")) {
-    throw new UnsafeLedgerRecordError("job must be persisted before dispatch");
+  const dispatched = index("dispatched");
+  if (dispatched !== -1) {
+    const persisted = index("job-persisted");
+    if (persisted === -1) {
+      throw new UnsafeLedgerRecordError("job was dispatched without a recorded job-persisted step");
+    }
+    if (persisted > dispatched) {
+      throw new UnsafeLedgerRecordError("job must be persisted before dispatch");
+    }
   }
-  if (index("delivered") !== -1 && index("response-persisted") > index("delivered")) {
-    throw new UnsafeLedgerRecordError("response must be persisted before session wake-up");
+  const delivered = index("delivered");
+  if (delivered !== -1) {
+    const persisted = index("response-persisted");
+    if (persisted === -1) {
+      throw new UnsafeLedgerRecordError("response was delivered without a recorded response-persisted step");
+    }
+    if (persisted > delivered) {
+      throw new UnsafeLedgerRecordError("response must be persisted before session wake-up");
+    }
   }
 }

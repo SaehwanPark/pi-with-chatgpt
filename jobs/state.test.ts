@@ -11,6 +11,13 @@ import {
 
 
 describe("consultation job state machine (INV-09, INV-15)", () => {
+  it("allows a job to fail before it ever runs", () => {
+    // Preflight rejects in draft; dispatch preconditions (checkpoint not remote, no browser) fail in queued.
+    expect(canTransition("draft", "failed")).toBe(true);
+    expect(canTransition("queued", "failed")).toBe(true);
+    expect(canTransition("completed", "failed")).toBe(false);
+  });
+
   it("lists the states the roadmap requires", () => {
     for (const required of ["queued", "running", "completed", "failed", "cancelled"]) {
       expect(JOB_STATES).toContain(required);

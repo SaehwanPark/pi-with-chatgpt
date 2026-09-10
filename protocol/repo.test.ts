@@ -11,7 +11,6 @@ describe("GitHub repository identity (INV-02, INV-08)", () => {
     "https://github.com/SaehwanPark/pi-with-chatgpt.git",
     "https://github.com/SaehwanPark/pi-with-chatgpt",
     "https://github.com/SaehwanPark/pi-with-chatgpt/",
-    "https://SaehwanPark@github.com/SaehwanPark/pi-with-chatgpt.git",
   ])("canonicalises %s to the same repository key", (remote) => {
     const parsed = parseGitHubRemote(remote);
     expect(parsed.ok).toBe(true);
@@ -28,6 +27,23 @@ describe("GitHub repository identity (INV-02, INV-08)", () => {
     "https://ghe.internal/owner/repo.git",
   ])("rejects the non-GitHub remote %s (V1 is GitHub-only)", (remote) => {
     expect(parseGitHubRemote(remote)).toEqual({ ok: false, rejection: "unsupported-host" });
+  });
+
+  it("refuses a remote that embeds credentials instead of canonicalising it (INV-12)", () => {
+    // Such a URL is a credential container: dropping the secret silently would put it in a key,
+    // a log line, or model context on the way to being discarded.
+    for (const url of [
+      "https://user:ghp_secretmaterialhere@github.com/owner/repo.git",
+      "https://oauth2@github.com/owner/repo.git",
+      "ssh://user:secret@github.com/owner/repo.git",
+    ]) {
+      const result = parseGitHubRemote(url);
+      expect(result.ok, url).toBe(false);
+      expect(result.rejection, url).toBe("credentials-in-url");
+      expect(result.key, url).toBeUndefined();
+    }
+    // The ordinary SSH spelling has no scheme and is not an embedded credential.
+    expect(parseGitHubRemote("git@github.com:owner/repo.git").ok).toBe(true);
   });
 
   it("rejects remotes that are not parseable as a repository", () => {

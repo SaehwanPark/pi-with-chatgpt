@@ -30,6 +30,7 @@ const ALLOWED_ROOT_ENTRIES = [
   "auth",
   "browser",
   "CHANGELOG.md",
+  "ci",
   "chatgpt",
   "config",
   "docs",

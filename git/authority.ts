@@ -97,8 +97,28 @@ export const FORBIDDEN_GIT_ARG_TOKENS: readonly string[] = [
   "-D",
   "-d",
   "--add",
+  // Read-only subcommands still accept arguments that write files or execute programs. They are
+  // forbidden because "the subcommand is safe" is not the rule; the resolved invocation is.
+  "--output", // log/diff/show --output=<path> writes a file
+  "--ext-diff", // runs core.git_hooks_path/ext-diff external converters
+  "--textconv",
+  "--paginate",
+  "--upload-pack", // ls-remote --upload-pack=<prog> executes a program
+  "--receive-pack",
+  "--exec-path",
+  "--git-dir",
+  "--work-tree",
+  "-c", // git -c core.pager=<prog> … reconfigures the read-only invocation
+  "-C",
+  "--namespace",
+  "--super-prefix",
 ] as const;
 
+/**
+ * Prefix-only convenience check: does this invocation start with an allowlisted read-only command?
+ * It is *not* the safety gate — `assertReadOnlyGitArgs` additionally rejects arguments that write
+ * files or execute programs, and only that function may decide whether a command runs.
+ */
 export function isReadOnlyGitInvocation(argv: readonly string[]): boolean {
   return invocationPrefix(argv) !== undefined;
 }

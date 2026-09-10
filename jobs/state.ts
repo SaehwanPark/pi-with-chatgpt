@@ -4,9 +4,9 @@
  * Two contracts matter more here than convenience:
  *
  * - Transitions are an explicit allowlist. A job that reaches `completed` never goes back to
- *   `running`, and nothing reaches `completed` without having been persisted (see
- *   `ledger/record.ts`), which is what makes "persist before dispatch, persist before wake-up"
- *   checkable instead of aspirational.
+ *   `running`. Ordering of persistence against dispatch and wake-up is *not* expressible here — it is
+ *   enforced by `assertPersistenceOrder` in `ledger/record.ts`, which is the only place that knows the
+ *   recorded step order. This module intentionally does not claim to enforce it.
  * - A result is addressed by `consultationId` plus the originating Pi session. "The session that is
  *   currently focused" is never the target, which is how asynchronous results cross-deliver.
  */
@@ -34,8 +34,10 @@ export function isTerminalJobState(state: JobState): boolean {
 }
 
 const TRANSITIONS: Readonly<Record<JobState, readonly JobState[]>> = {
-  draft: ["queued", "cancelled"],
-  queued: ["running", "cancelled", "expired"],
+  // A job can fail before it ever runs: preflight rejects it in `draft`, and dispatch preconditions
+  // (checkpoint not reachable, browser unavailable) fail it in `queued`.
+  draft: ["queued", "failed", "cancelled"],
+  queued: ["running", "failed", "cancelled", "expired"],
   running: ["awaiting-input", "completed", "failed", "cancelled", "expired"],
   // A waiting job can only resume into running (user finished CAPTCHA/2FA/login) or be abandoned.
   "awaiting-input": ["running", "cancelled", "expired"],

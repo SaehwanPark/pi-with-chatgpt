@@ -47,7 +47,10 @@ export function conversationKeyForTask(scope: ConversationScope): ChatGptConvers
   if (taskId.length === 0) {
     throw new Error("Adviser conversations require a task identity; a repository-wide shared thread is prohibited (INV-09).");
   }
-  return `adviser:github:${scope.repository}:task:${taskId}:${scope.kind}` as ChatGptConversationKey;
+  // Percent-encoding keeps the key unambiguous: a task id containing the `:` separator must not be
+  // able to imitate another repository, task, or kind.
+  const encodedTask = encodeURIComponent(taskId);
+  return `adviser:github:${scope.repository}:task:${encodedTask}:${scope.kind}` as ChatGptConversationKey;
 }
 
 /**

@@ -64,92 +64,124 @@ Each invariant lists where it is encoded. `planned:M<n>` means the enforcing cod
 that milestone delivers; the guard marker is asserted by `protocol/invariants.test.ts`, so a
 planned guard cannot quietly stay planned.
 
-### INV-01 — No execution ownership
+### INV-01
+
+**No execution ownership.**
 
 ChatGPT never edits, executes, commits, pushes, or orchestrates Pi. Encoded in
 `protocol/trust.ts`: `AdviserActionSuggestion` has no command/tool/path field, and promotion to
 `ApprovedAction` requires a `WorkerDecision` brand that only worker or user code can produce.
 
-### INV-02 — GitHub-only context in V1
+### INV-02
+
+**GitHub-only context in V1.**
 
 No archives, uploads, tunnels, workspace bridges, or local log/screenshot attachments. Encoded in
 `protocol/context-channel.ts`: `V1_CONTEXT_CHANNELS === ["github"]`, and a
 `GitHubContextReference` cannot express a local path. Non-GitHub remotes are rejected in
 `protocol/repo.ts`.
 
-### INV-03 — Immutable anchor
+### INV-03
+
+**Immutable anchor.**
 
 Every consultation resolves to a full commit SHA; `requestedRef` is stored separately and the anchor
 is never retargeted. Encoded in `protocol/sha.ts` (only a 40-character lowercase SHA parses) and
 `protocol/checkpoint.ts` (readonly `ConsultationAnchor`).
 
-### INV-04 — Remote reachability precedes dispatch — `planned:M1`
+### INV-04
+
+**Remote reachability precedes dispatch.** (planned:M1)
 
 `checkDispatchReadiness` refuses dispatch unless the anchor reports `available`, including the
 `unknown` case; the git probe that produces `RemoteAvailability` lands in M1.
 
-### INV-05 — Advice is untrusted, non-authoritative input
+### INV-05
+
+**Advice is untrusted, non-authoritative input.**
 
 Adviser output is subordinate to code at the checkpoint, tests, project constraints, and user
 instructions. Encoded in `protocol/trust.ts`: responses are plain data (`sourceCommit` provenance,
 `caveats`, `suggestions`) with no callable surface, and authority claims from the adviser throw.
 
-### INV-06 — A consultation implies no git authority
+### INV-06
+
+**A consultation implies no git authority.**
 
 No blanket staging, no auto-commit, no auto-push; `origin` is not authorisation. Encoded in
 `git/authority.ts`: an exact-invocation allowlist plus forbidden-argument guard, and a
 `GitAuthorityToken` type the module never mints.
 
-### INV-07 — Adviser failure is non-blocking by default
+### INV-07
+
+**Adviser failure is non-blocking by default.**
 
 `DEFAULT_DEPENDENCY_MODE === "advisory"`; only `dependency: "required"` produces
 `blocked-on-adviser` (`protocol/dependency.ts`).
 
-### INV-08 — One ChatGPT Project per GitHub repository
+### INV-08
+
+**One ChatGPT Project per GitHub repository.**
 
 `projectKeyForRepository` keys the Project on canonical `owner/repo` only, never on session, branch,
 or task (`chatgpt/scope.ts`, `protocol/repo.ts`).
 
-### INV-09 — Task conversation isolation
+### INV-09
+
+**Task conversation isolation.**
 
 `conversationKeyForTask` requires a task identity (a repository-wide shared thread throws), delivery
 is addressed by `consultationId` + `piSessionId`, and job states are an explicit allowlist
 (`chatgpt/scope.ts`, `jobs/state.ts`).
 
-### INV-10 — Account identity stability
+### INV-10
+
+**Account identity stability.**
 
 `resolveAccountMismatch` cannot fall through to "use the other account"; without an explicit user
 choice the outcome is `awaiting-user`, and plan metadata is a hint only (`auth/identity.ts`).
 
-### INV-11 — Isolated, extension-owned browser runtime
+### INV-11
+
+**Isolated, extension-owned browser runtime.**
 
 `createAdviserProfile` is the only way to obtain an `AdviserProfile`, and it refuses any directory
 outside the extension state root or resembling a Chromium/Firefox user profile
 (`browser/profile.ts`).
 
-### INV-12 — Credential containment
+### INV-12
+
+**Credential containment.**
 
 Configuration that looks like credential material is rejected rather than ignored
 (`config/schema.ts`), and ledger writes are scanned for credential-shaped keys and values
 (`ledger/record.ts`).
 
-### INV-13 — Worker-opaque machinery
+### INV-13
+
+**Worker-opaque machinery.**
 
 The worker receives `WorkerFacingAdvisory` — advice, checkpoint provenance, drift currency, open
 action items — built by allowlist, never by serialising internal state (`ui/worker-facing.ts`).
 
-### INV-14 — Trust order — `planned:M6`
+### INV-14
+
+**Trust order.** (planned:M6)
 
 Code at the requested commit > consultation brief > task conversation > Project instructions >
 Project memory. Enforced when the request builder and response parser land in M6.
 
-### INV-15 — Durable provenance outside model context
+### INV-15
+
+**Durable provenance outside model context.**
 
 `assertPersistenceOrder` encodes "job persisted before dispatch, response persisted before wake-up",
 and `LEDGER_PUBLICATION_TARGETS === ["none"]`: advice is never auto-published to a repository file,
 issue, or PR (`ledger/record.ts`).
 
-### INV-16 — V1 scope guard
+### INV-16
+
+**V1 scope guard.**
 
 `V1_ADVISER_PROVIDERS === ["chatgpt"]` and configuration cannot add a provider, a host, or a
 transport (`protocol/provider.ts`, `config/schema.ts`). Post-V1 features stay additive.

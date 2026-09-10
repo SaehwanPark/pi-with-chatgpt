@@ -30,8 +30,10 @@
   (dependencies reviewed: MIT/BSD-2/Apache-2.0; no reused source code).
 - **Pi floor:** `MIN_PI_VERSION = 0.85.1` (`extension/pi-api.ts`), asserted against the installed Pi
   by `npm run smoke:pi`.
-- **Toolchain:** `npm run typecheck | lint | build | test | smoke:pi`; CI
-  `.github/workflows/ci.yml` runs them on `ubuntu-latest` and `macos-latest`.
+- **Toolchain:** `npm run typecheck | lint | build | test | smoke:pi` (all green locally;
+  `npm run verify` runs the whole set). CI is defined in `ci/ci.yml` for `ubuntu-latest` and
+  `macos-latest`; it is staged outside `.github/workflows/` only because the available GitHub
+  credential lacks the `workflow` scope (see `ci/README.md` for the one-command maintainer fix).
 - **Modules:** `extension/ git/ auth/ browser/ chatgpt/ jobs/ protocol/ ledger/ drift/ config/ ui/`,
   each with a documented barrel; `test/module-boundaries.test.ts` forbids sibling trees.
 - **Invariants:** `docs/ARCHITECTURE.md` (INV-01…INV-16 prose) + `protocol/invariants.ts` index;
@@ -40,7 +42,7 @@
   `config/schema.ts`, `ui/worker-facing.ts`; `INV-04` and `INV-14` are explicitly `planned:M1`/
   `planned:M6` and asserted to stay that way by `protocol/invariants.test.ts`.
 - **Exit criteria:** `test/pi-smoke.mjs` proves `pi install` + clean activation with zero
-  registrations; 154 vitest tests across 18 files; prohibited-by-construction source scan in
+  registrations; 160 vitest tests across 18 files; prohibited-by-construction source scan in
   `git/authority.test.ts`.
 
 ## Project Skeleton

@@ -26,6 +26,20 @@ describe("durable provenance (INV-15)", () => {
     );
   });
 
+  it("treats an omitted persistence step as a violation, not as nothing to check", () => {
+    // Failing open here would make "forget to record the persist" the way to pass the guard.
+    expect(() => assertPersistenceOrder(["dispatched"])).toThrow(UnsafeLedgerRecordError);
+    expect(() => assertPersistenceOrder([])).not.toThrow(); // nothing dispatched, nothing promised
+    expect(() => assertPersistenceOrder(["job-persisted", "dispatched", "delivered"])).toThrow(
+      UnsafeLedgerRecordError,
+    );
+  });
+
+  it("rejects a PEM private key that arrived inside adviser text", () => {
+    const record = { ...ledgerRecord(), adviserAnswer: "try -----BEGIN RSA PRIVATE KEY-----\nMIIB" };
+    expect(() => assertLedgerRecordSafe(record)).toThrow(UnsafeLedgerRecordError);
+  });
+
   it("has no publication target: the ledger is never pushed anywhere automatically", () => {
     expect(LEDGER_PUBLICATION_TARGETS).toEqual(["none"]);
   });

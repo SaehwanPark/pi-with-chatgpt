@@ -13,8 +13,9 @@ change invalidates (see `AGENTS.md`).
 
 - Toolchain and package: `package.json` for `pi-with-chatgpt` (ESM, `engines.node >= 22.19.0`,
   Pi package manifest with `pi.extensions = ./dist/extension/index.js` and the `pi-package`
-  keyword), `tsconfig.json`/`tsconfig.json`, ESLint flat config, Vitest config, MIT `LICENSE`,
-  and CI (`.github/workflows/ci.yml`) on `ubuntu-latest` + `macos-latest`.
+  keyword), `tsconfig.json`/`tsconfig.build.json`, ESLint flat config, Vitest config, MIT `LICENSE`,
+  and CI (`ci/ci.yml`, staged outside `.github/workflows/` until a credential with the `workflow`
+  scope is available — see `ci/README.md`) on `ubuntu-latest` + `macos-latest`.
 - The eleven planned module trees — `extension/ git/ auth/ browser/ chatgpt/ jobs/ protocol/
   ledger/ drift/ config/ ui/` — each with a documented barrel.
 - Architecture invariants INV-01…INV-16 written down in `docs/ARCHITECTURE.md` and indexed as data
@@ -24,7 +25,25 @@ change invalidates (see `AGENTS.md`).
   into an isolated Pi root and asserts that nothing is registered (`test/pi-smoke.mjs`).
 - Security contract `docs/SECURITY.md` (trust boundaries, credential containment, prompt-injection
   posture) and module-boundary tests (`test/module-boundaries.test.ts`).
-- 154 unit tests across 18 files.
+- 160 unit tests across 18 files.
+
+### Hardened after invariant review (M0)
+
+- `assertPersistenceOrder` fails closed when a persistence step is missing instead of treating an
+  omission as "nothing to check" (INV-15).
+- `git/authority.ts` now refuses arguments that write files or execute programs on otherwise read-only
+  subcommands (`--output`, `--ext-diff`, `--textconv`, `--paginate`, `--upload-pack`,
+  `--receive-pack`, `--exec-path`, `--git-dir`, `--work-tree`, `-c`, `-C`, …) (INV-06).
+- `parseGitHubRemote` refuses credential-bearing remote URLs with `credentials-in-url` instead of
+  silently canonicalising them (INV-12); conversation keys percent-encode the task id so a task id
+  containing `:` cannot imitate another conversation (INV-09).
+- Project-scope configuration cannot set `dependencyDefault: "required"`: blocking on adviser
+  availability stays a user-level decision (INV-07).
+- `draft`/`queued` may transition to `failed` (preflight and dispatch preconditions fail before the
+  job ever runs); ledger scanning also rejects PEM private-key blocks.
+- Docs corrected: `docs/SECURITY.md` invariant table now cites real symbols and the correct invariant
+  ids, `docs/ARCHITECTURE.md` invariant headings are addressable anchors, and `AGENTS.md` records the
+  fixed toolchain instead of the pre-M0 "specification-only / bun vs npm" wording.
 
 ### Changed
 
