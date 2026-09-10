@@ -198,6 +198,11 @@ export interface StateStoragePaths {
   readonly profileDir: string;
   readonly chromeImportDir: string;
   readonly capabilityStateFile: string;
+  /**
+   * Where post-login diagnostics (screenshots, scrubbed DOM dumps) are written. Kept under the browser
+   * root so the whole tree is one permission boundary and one `gitignore`/cleanup unit.
+   */
+  readonly diagnosticsDir: string;
 }
 
 /**
@@ -216,6 +221,7 @@ export function stateStoragePaths(
     profileDir: join(browserRoot, "chatgpt-profile"),
     chromeImportDir: join(browserRoot, "chrome-imports"),
     capabilityStateFile: join(browserRoot, "capability.json"),
+    diagnosticsDir: join(browserRoot, "diagnostics"),
   };
 }
 
