@@ -3,7 +3,7 @@
  *
  * Two rules shape everything here.
  *
- * **The browser is extension-owned, never worker-operated** (INV-01/INV-09). The worker asks for advice;
+ * **The browser is extension-owned, never worker-operated** (INV-01/INV-11). The worker asks for advice;
  * it never receives a page, a handle, a selector, or a script to run. So nothing in this file exposes a
  * `Page`, a `Locator`, `evaluate`, or an arbitrary-URL navigation — the only entry point is
  * {@link AdviserBrowserRuntime.consult}, whose parameters are a prompt string and a model hint. Anything

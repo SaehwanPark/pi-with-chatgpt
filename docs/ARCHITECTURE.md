@@ -70,7 +70,12 @@ planned guard cannot quietly stay planned.
 
 ChatGPT never edits, executes, commits, pushes, or orchestrates Pi. Encoded in
 `protocol/trust.ts`: `AdviserActionSuggestion` has no command/tool/path field, and promotion to
-`ApprovedAction` requires a `WorkerDecision` brand that only worker or user code can produce.
+`ApprovedAction` requires a `WorkerDecision` brand that only worker or user code can produce. The
+browser enforces it structurally too: nothing in `browser/` exposes a page, selector, or `evaluate` to a
+caller, and `consult()` — the only path that types — types one parameterised thing, a brief the caller
+already holds as data (`browser/runtime-types.ts`). Adviser text is never a shell command, and the DOM
+probe reads element *presence* only, so page content cannot direct the runtime either
+(`browser/chatgpt-dom.ts`).
 
 ### INV-02
 
@@ -153,7 +158,11 @@ a hint only (`auth/identity.ts`).
 
 `createAdviserProfile` is the only way to obtain an `AdviserProfile`, and it refuses any directory
 outside the extension state root or resembling a Chromium/Firefox user profile
-(`browser/profile.ts`).
+(`browser/profile.ts`). The runtime enforces the same rule at the call surface: no method on
+`AdviserBrowserRuntime` hands out a page, frame, driver, or selector, so a caller cannot address an
+element to click (`browser/runtime-types.ts`). A human gate blocks `consult()` and never observation —
+latching it as a blanket refusal would deadlock the manual login that opens by reading `signed-out`
+(`browser/runtime.ts`).
 
 ### INV-12
 

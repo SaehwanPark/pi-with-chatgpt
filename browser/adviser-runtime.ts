@@ -11,7 +11,7 @@
  * - **The login port**: an implementation of M2's {@link AdviserLoginPort} on top of the driver. Like the
  *   port itself, it has *no* click/type/navigate/solve surface — `open` shows a headed window, `observe`
  *   reads whether a session exists, `seal` flushes storage after success. A human signs in; nothing here
- *   can automate it (INV-09).
+ *   can automate it (INV-11).
  *
  * Headed vs headless is decided by purpose: capability probes and consultations run headless; a manual
  * login must show a window or the person has nothing to type into.

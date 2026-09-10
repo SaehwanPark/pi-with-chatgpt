@@ -66,7 +66,7 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     source: "docs/ARCHITECTURE.md#inv-01",
     // The browser runtime is the surface most likely to hand execution power to the adviser, so it
     // exposes no page/driver/selector accessor at all (asserted structurally in runtime.test.ts).
-    guard: "protocol/trust.ts + browser/runtime.ts",
+    guard: "protocol/trust.ts + browser/runtime.ts + browser/chatgpt-dom.ts",
   },
   {
     id: "INV-02",

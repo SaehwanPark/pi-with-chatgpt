@@ -121,7 +121,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     }
     // One tab, reused. launchPersistentContext is what keeps every cookie the adviser gains inside the
     // extension-owned directory (INV-11/INV-12); there is no code path here that touches the user profile.
-    // `headless` follows the caller's `headed` flag: a manual login MUST show a window (INV-09 needs a
+    // `headless` follows the caller's `headed` flag: a manual login MUST show a window (INV-11 needs a
     // human to type), while a probe stays headless. Default is headless — a window is the deliberate choice.
     const { context, chromeVersion } = await this.#launch({
       userDataDir: this.#profile.userDataDir,

@@ -1,5 +1,5 @@
 /**
- * ChatGPT web capability verification (INV-08, INV-09).
+ * ChatGPT web capability verification (INV-08, INV-11).
  *
  * "Can we consult ChatGPT right now?" has more than two answers, and collapsing them is what makes an
  * adviser integration feel broken: an operator who hit a Cloudflare challenge needs "open the profile
@@ -25,7 +25,7 @@ export type CapabilityObservation =
       readonly planHint?: string;
     }
   | { readonly kind: "signed-out" }
-  /** Reached ChatGPT but a human gate is in the way. Never retried automatically (INV-09). */
+  /** Reached ChatGPT but a human gate is in the way. Never retried automatically (INV-11). */
   | { readonly kind: "human-verification"; readonly challenge: "cloudflare" | "captcha" | "login-checkpoint" }
   | { readonly kind: "rate-limited"; readonly retryAfterSeconds?: number }
   | { readonly kind: "plan-unsupported"; readonly planHint: string }
@@ -49,7 +49,7 @@ export interface CapabilityRecord {
   readonly checkedAt: string;
   /** Human-facing explanation. Must never contain cookie, token, or page content. */
   readonly explanation: string;
-  /** True when no automatic retry can help and a person has to act (INV-09). */
+  /** True when no automatic retry can help and a person has to act (INV-11). */
   readonly requiresManualIntervention: boolean;
   readonly nextAction: AdviserNextAction;
   readonly retryAfterSeconds?: number;

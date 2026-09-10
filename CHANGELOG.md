@@ -263,6 +263,17 @@ not see any of these:
   launched headless unconditionally, which would have opened an invisible window a human could not use.
 - An explicitly-named missing `auth.json` is now reported as `missing-file`, not `unparsable`: with an
   explicit path the Pi accessor is never consulted, so its availability must not masquerade as the failure.
+- **A human gate is terminal for `consult()` and never for observation.** The first implementation latched
+  it and refused every subsequent call, which deadlocked manual login through the door it opened itself:
+  opening the window navigates to ChatGPT, which reads `signed-out`, which latched the gate, which made the
+  later `observeSession` that must notice a completed login refuse. A person would have sat signed in at a
+  working window while the flow timed out. Reading a page asks nothing of a challenge, so observation stays
+  available; asking the adviser a question while a challenge is up is what must never happen, so the refusal
+  lives in `consult()` (INV-11 unchanged). Only the launch-retry circuit breaker refuses a call, because it
+  is a proven transport failure. `runTurn` also stopped reporting a stale gate as the cause of a failed
+  launch, which would have sent the operator to fix a login while Chrome was what was missing. The test for
+  the previous behaviour *passed* — it asserted the deadlock — so it is replaced by tests pinning both
+  halves, plus a port-level walk of open → still-signed-out → signed-in.
 
 ### Changed
 
@@ -272,6 +283,9 @@ not see any of these:
 - INV-10, INV-11, INV-12 and INV-13 guards in `protocol/invariants.ts` now cite the M2 modules that
   enforce them (`auth/adviser-auth.ts`, `auth/login-flow.ts`, `browser/cookie-import.ts`,
   `auth/secret-text.ts`, `auth/status.ts`).
+- INV-01 and INV-11 in `protocol/invariants.ts` additionally cite `browser/runtime.ts`, where the adviser's
+  lack of execution power and the never-push-through-a-gate rule are enforced at runtime rather than only
+  by type shape.
 - INV-04 is no longer a deferred guard: `protocol/invariants.ts` points at
   `git/remote-availability.ts` + `git/checkpoint-resolution.ts`, leaving INV-14 (M6 prompt assembler)
   as the only planned guard. `docs/ARCHITECTURE.md` INV-04 is marked implemented.
