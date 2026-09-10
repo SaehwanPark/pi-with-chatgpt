@@ -118,25 +118,30 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     id: "INV-10",
     summary: "The adviser never silently switches OpenAI/ChatGPT accounts; a mismatch is an explicit user decision.",
     source: "docs/ARCHITECTURE.md#inv-10",
-    guard: "auth/identity.ts",
+    guard: "auth/identity.ts + auth/adviser-auth.ts",
   },
   {
     id: "INV-11",
     summary: "The adviser browser runtime is isolated and extension-owned; the user's active browser is never automated.",
     source: "docs/ARCHITECTURE.md#inv-11",
-    guard: "browser/profile.ts",
+    // The login port has no interaction method at all, so automation is impossible by construction
+    // rather than by convention.
+    guard: "browser/profile.ts + auth/login-flow.ts + browser/cookie-import.ts",
   },
   {
     id: "INV-12",
     summary: "Credentials, cookies, and tokens never enter logs, ledger records, config, or model context.",
     source: "docs/ARCHITECTURE.md#inv-12",
-    guard: "config/schema.ts + ledger/record.ts",
+    // `protocol/masking.ts` is the guard the modules share: the rule lives once, so a module that
+    // displays an account cannot re-derive it loosely.
+    guard:
+      "config/schema.ts + ledger/record.ts + auth/secret-text.ts + auth/status.ts + protocol/masking.ts + browser/chrome-state.ts",
   },
   {
     id: "INV-13",
     summary: "The worker receives structured advice only; browser/protocol internals stay out of prompt text.",
     source: "docs/ARCHITECTURE.md#inv-13",
-    guard: "ui/worker-facing.ts",
+    guard: "ui/worker-facing.ts + auth/status.ts",
   },
   {
     id: "INV-14",

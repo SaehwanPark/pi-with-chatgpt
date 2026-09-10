@@ -142,8 +142,10 @@ is addressed by `consultationId` + `piSessionId`, and job states are an explicit
 
 **Account identity stability.**
 
-`resolveAccountMismatch` cannot fall through to "use the other account"; without an explicit user
-choice the outcome is `awaiting-user`, and plan metadata is a hint only (`auth/identity.ts`).
+`resolveAccountIdentity` is the only function that turns identity observations into a decision, so a
+caller cannot get a different rule by asking a different module; without an explicit user choice the
+outcome is `awaiting-user`, that choice is bound to the account pair it was made for, and plan metadata is
+a hint only (`auth/identity.ts`).
 
 ### INV-11
 

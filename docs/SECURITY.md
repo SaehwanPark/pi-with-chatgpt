@@ -24,9 +24,9 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | INV-06 | A consultation implies no git authority | `git/authority.ts` (`READ_ONLY_GIT_INVOCATIONS` allowlist, `FORBIDDEN_GIT_ARG_TOKENS` incl. file-write/exec arguments such as `--output`, `--ext-diff`, `--upload-pack`, `-c`) |
 | INV-04 | The adviser is never shown work that is not published on GitHub | `git/remote-availability.ts` (`assessCheckpointAvailability`, `isDispatchPermitted`), `git/github-api.ts` (exact-object probe; a 404 is only `absent` when the repository itself is visible), `protocol/checkpoint.ts` (`checkDispatchReadiness` refuses `unknown` and `unavailable`) |
 | INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) |
-| INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (`compareAccountIdentity`, `resolveAccountMismatch` — only `continue-with-user-approval` resolves a mismatch) |
-| INV-11 | Isolated, extension-owned browser runtime | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`) |
-| INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`) |
+| INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (**single authority** `resolveAccountIdentity` answers every case; `compareAccountIdentity`, namespace-scoped `accountIdNamespace`, pair-bound `decideAccountMismatch` — only a `keep-current` minted for this account pair resolves a mismatch, and there is no boolean override), `auth/adviser-auth.ts` (`resolveAdviserAuth` delegates to it and holds no second copy of the rule) |
+| INV-11 | Isolated, extension-owned browser runtime | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker read before any write, `0700`/`0600`, `writePrivateFileNoFollow`/`symlink-refused`, `assertPrivateDirectory`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination / path escape, `Local State` scrub, `authorizeChromeStateImport` → `applyChromeStateImport(plan, authorization)`), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method), `protocol/adviser.ts` (`import-chrome-state` is human-gated) |
+| INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse), `protocol/masking.ts` + `browser/chrome-state.ts` (account metadata masked while parsing) |
 | INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`) |
 | INV-15 | Provenance persists before dispatch and before wake-up, and is never auto-published | `ledger/record.ts` (`assertPersistenceOrder`, `LEDGER_PUBLICATION_TARGETS === ["none"]`) |
 
@@ -37,10 +37,18 @@ machine-readable index.
 
 ## Credential containment
 
-- **Identity discovery (delivered in M2)** will read the OpenAI/Codex identity from the Pi auth store
-  to recognise *which* account the adviser browser session should belong to. The M0 contract in
-  `auth/identity.ts` is deliberately limited to an email hint plus a source label: there is no field
-  in which a token can be carried, and a mismatch can only be resolved by explicit user approval.
+- **Identity discovery** reads the OpenAI/Codex identity from the Pi auth store to recognise *which*
+  account the adviser browser session should belong to. The contract in `auth/identity.ts` is limited
+  to an account hint, a masked email, and a plan hint: there is no field in which a token can be
+  carried, and a mismatch can only be resolved by an explicit user choice. A stored API key resolves to
+  *no* identity (`piApiKeyIdentity` returns `source: "none"`), so a transport credential can never
+  "match" a browser account.
+- **Cookie import never decrypts anything.** The copy inherits Chromium's own encryption and the real
+  browser decrypts it with the OS key at runtime; there is no decryption path in this repository, so
+  there is no key material to leak (macOS Keychain / Linux libsecret).
+- **Status output is built from masked fields.** `adviserStatus` returns an account-id *prefix*, a masked
+  email, and a plan hint; `assertStatusIsRedacted` rejects a status that grew a credential-shaped key or
+  a JWT-prefixed value, so a future field cannot regress it quietly.
 - **Tokens are never an input** to any module in this repository. No function in `auth/`, `browser/`,
   `chatgpt/`, `jobs/`, `ledger/`, or `protocol/` accepts one.
 - **Config cannot carry credentials**: `parseAdviserConfig` rejects every credential-shaped key
@@ -55,6 +63,23 @@ machine-readable index.
   stored in the same record, and a heuristic that rejects base64 would reject legitimate advice rather
   than protect it. The scan is an additional tripwire, not the primary design — the primary design is
   that session material has nowhere to be written.
+
+## Human-gated actions
+
+`protocol/adviser.ts` splits every "what happens next" action in two: the ones the extension may perform
+on its own, and the ones a person must take. Only four are automatic — `create-profile` (an empty
+extension-owned directory), `run-capability-probe` (read-only navigation in the adviser's own profile),
+`wait-for-rate-limit`, and `consult`. Everything else is gated, including `import-chrome-state`: copying
+cookies out of the user's real browser profile is the most sensitive browser touch in the product and is
+strictly more sensitive than opening an adviser window, which was already gated. `protocol/adviser.test.ts`
+pins both halves of that split by enumeration, so adding an action forces an explicit decision instead of
+inheriting whatever the previous entry was.
+
+The list is the *policy*; the enforcement sits at the effect. `applyChromeStateImport(plan, authorization)`
+refuses an import that carries no human authorization, and `authorizeChromeStateImport` mints one only when
+the caller states the confirmation phrase — so the gate cannot be reached by plumbing that never asked a
+person, and `rg -n confirmedByHuman` lists every call site that may. An action is not gated because it is
+named in a table.
 
 ## Prompt injection posture
 
