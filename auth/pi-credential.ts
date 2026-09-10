@@ -155,7 +155,7 @@ export async function readPiOpenAiCredential(
   try {
     text = await read(authPath);
   } catch (error) {
-    return { ok: false, failure: classifyFileError(error, moduleUnavailable) };
+    return { ok: false, failure: classifyFileError(error, moduleUnavailable, options.authPath !== undefined) };
   }
 
   let document: unknown;
@@ -226,11 +226,15 @@ function tryGetPiAuthPath(module: PiCredentialAccessor): string | undefined {
   }
 }
 
-function classifyFileError(error: unknown, moduleUnavailable: boolean): PiCredentialFailure {
+function classifyFileError(error: unknown, moduleUnavailable: boolean, explicitPath: boolean): PiCredentialFailure {
   const code =
     typeof error === "object" && error !== null && "code" in error
       ? String(error.code)
       : "";
-  if (code === "ENOENT") return moduleUnavailable ? "pi-package-unavailable" : "auth-file-missing";
+  // An explicitly-named file that is absent is missing, full stop. Whether the Pi package loaded is a
+  // separate fact and must not masquerade as "unparsable": the remedy for "the file you pointed me at
+  // does not exist" is not "re-run Pi sign-in", and conflating them sent the status surface and the test
+  // suite both wrong whenever Pi was not on the import path.
+  if (code === "ENOENT") return explicitPath || !moduleUnavailable ? "auth-file-missing" : "pi-package-unavailable";
   return "auth-file-unreadable";
 }
