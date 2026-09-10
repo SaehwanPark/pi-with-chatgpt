@@ -60,6 +60,7 @@ type AdviserElement = {
 };
 type AdviserLocator = {
   count(): Promise<number>;
+  nth(index: number): AdviserElement;
   first(): AdviserElement;
 };
 
@@ -114,15 +115,17 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  async start(_options: RuntimeStartOptions): Promise<{ readonly chromeVersion: string }> {
+  async start(options: RuntimeStartOptions): Promise<{ readonly chromeVersion: string }> {
     if (this.#context && this.#page && !this.#page.isClosed()) {
       return { chromeVersion: this.#chromeVersion };
     }
     // One tab, reused. launchPersistentContext is what keeps every cookie the adviser gains inside the
     // extension-owned directory (INV-11/INV-12); there is no code path here that touches the user profile.
+    // `headless` follows the caller's `headed` flag: a manual login MUST show a window (INV-09 needs a
+    // human to type), while a probe stays headless. Default is headless — a window is the deliberate choice.
     const { context, chromeVersion } = await this.#launch({
       userDataDir: this.#profile.userDataDir,
-      headless: true,
+      headless: options.headed !== true,
       channel: this.#channel,
       timeoutMs: this.#navigationTimeoutMs,
     });
@@ -339,16 +342,21 @@ function toObservation(snapshot: SurfaceSnapshot): SurfaceObservation {
 }
 
 /**
- * Resolve the first selector in a set that matches a visible element.
+ * Resolve the first selector in a set that matches a *visible* element.
  *
- * The fallback order is the robustness mechanism: when ChatGPT renames one test id, the next candidate
- * still resolves and the runtime keeps working instead of failing the consultation.
+ * Two layers of robustness, both earned against the live DOM: the fallback order survives a renamed test
+ * id, and within a selector we scan the matched elements for the first visible one rather than trusting
+ * element [0]. ChatGPT ships many hidden duplicate controls (mobile menus, portals); a selector can match
+ * fourteen nodes whose first is invisible while a later one is the real, clickable control. Checking only
+ * `.first()` made a genuinely present control read as absent.
  */
 async function firstVisible(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<AdviserLocator | undefined> {
   for (const selector of selectors) {
     const locator = page.locator(selector);
-    if ((await locator.count().catch(() => 0)) > 0 && (await locator.first().isVisible().catch(() => false))) {
-      return locator;
+    const count = await locator.count().catch(() => 0);
+    // Cap the scan: a runaway selector match should not turn a probe into a hundred visibility checks.
+    for (let index = 0; index < Math.min(count, 12); index += 1) {
+      if (await locator.nth(index).isVisible().catch(() => false)) return locator;
     }
   }
   return undefined;
