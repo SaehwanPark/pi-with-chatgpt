@@ -16,7 +16,7 @@
  * operation the injected seam cannot weaken: it is exercised against a real filesystem.
  */
 
-import { constants, chmod as fsChmod, lstat, mkdir as fsMkdir, open, writeFile as fsWriteFile } from "node:fs/promises";
+import { constants, chmod as fsChmod, lstat, mkdir as fsMkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -112,18 +112,18 @@ export async function writePrivateFileNoFollow(
       try {
         await writeWith(open, path, data, replace, mode);
       } catch (replaceError) {
-        throw symlinkRefusal(replaceError, path, noFollow);
+        throw symlinkRefusal(replaceError, path);
       }
       await chmodQuietly(path, mode);
       return;
     }
-    throw symlinkRefusal(error, path, noFollow);
+    throw symlinkRefusal(error, path);
   }
   if (!noFollow && (await isSymlink(path))) throw new StateStorageError("symlink-refused", path, symlinkMessage(path));
   await chmodQuietly(path, mode);
 }
 
-function symlinkRefusal(error: unknown, path: string, noFollow: boolean): unknown {
+function symlinkRefusal(error: unknown, path: string): unknown {
   const code = errorCode(error);
   if (code === "ELOOP" || code === "EPERM") return new StateStorageError("symlink-refused", path, symlinkMessage(path));
   return error;
@@ -165,7 +165,7 @@ async function isSymlink(path: string): Promise<boolean> {
 }
 
 function errorCode(error: unknown): string {
-  return typeof error === "object" && error !== null && "code" in error ? String((error as { code: unknown }).code) : "";
+  return typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
 }
 
 const nodeFileSystem: StateStorageFileSystem = {
