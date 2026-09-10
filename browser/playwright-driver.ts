@@ -18,6 +18,7 @@
 import {
   CHATGPT_SELECTORS,
   CHATGPT_URLS,
+  assistantAnswerIsNew,
   classifySurface,
   classifyTurn,
   modelMatchesLabel,
@@ -220,8 +221,9 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     const composer = await firstVisible(page, CHATGPT_SELECTORS.composer);
     if (!composer) return { ok: false, failure: "composer-missing" };
 
-    // A prior answer is on screen the moment we type; the turn is only ours once *our* message appears.
-    const hadAssistantBefore = (await firstVisible(page, CHATGPT_SELECTORS.assistantMessage)) !== undefined;
+    // A prior answer is on screen the moment we type; the turn is ours only when *our* message appears and
+    // the thread grows an answer, so the count is taken here, before anything is typed.
+    const assistantCountBefore = await countVisible(page, CHATGPT_SELECTORS.assistantMessage);
 
     await composer.first().click().catch(() => undefined);
     await composer.first().pressSequentially(request.prompt, { delay: 4 }).catch(async () => {
@@ -237,15 +239,16 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     let sawOwnMessage = false;
     while (Date.now() < deadline) {
       const snapshot = await this.#snapshot();
+      const ownMessageVisible = (await firstVisible(page, CHATGPT_SELECTORS.userMessage)) !== undefined;
+      sawOwnMessage = sawOwnMessage || ownMessageVisible;
+      const assistantCountNow = await countVisible(page, CHATGPT_SELECTORS.assistantMessage);
       const verdict = classifyTurn({
         snapshot,
         sent: true,
-        sawOwnMessage: sawOwnMessage || (await firstVisible(page, CHATGPT_SELECTORS.userMessage)) !== undefined,
-        sawAssistantMessage: snapshot.hasAssistantMessage && (!hadAssistantBefore || snapshot.hasAssistantMessage),
+        sawOwnMessage,
+        sawAssistantMessage: assistantAnswerIsNew(assistantCountBefore, assistantCountNow),
         ...(snapshot.errorNotice === undefined ? {} : { errorNotice: snapshot.errorNotice }),
       });
-      sawOwnMessage = sawOwnMessage || (await firstVisible(page, CHATGPT_SELECTORS.userMessage)) !== undefined;
-
       if (verdict === "error") {
         return { ok: false, failure: snapshot.showsVerification ? "needs-human" : "provider-error" };
       }
@@ -315,9 +318,11 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   }
 
   async #readLatestAnswer(page: TrackedPage): Promise<string | undefined> {
-    const assistant = await firstVisible(page, CHATGPT_SELECTORS.assistantMessage);
+    // Newest, not first. A thread keeps every earlier answer, so the first assistant node is the oldest
+    // advice in the conversation; reading it would attribute yesterday's answer to this consultation.
+    const assistant = await lastVisible(page, CHATGPT_SELECTORS.assistantMessage);
     if (!assistant) return undefined;
-    const text = await safeText(assistant.first());
+    const text = await safeText(assistant);
     return text.length > 0 ? text : undefined;
   }
 }
@@ -350,16 +355,58 @@ function toObservation(snapshot: SurfaceSnapshot): SurfaceObservation {
  * fourteen nodes whose first is invisible while a later one is the real, clickable control. Checking only
  * `.first()` made a genuinely present control read as absent.
  */
+/** How many matched elements a single probe will check for visibility. */
+const VISIBLE_SCAN_CAP = 12;
+
 async function firstVisible(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<AdviserLocator | undefined> {
   for (const selector of selectors) {
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
     // Cap the scan: a runaway selector match should not turn a probe into a hundred visibility checks.
-    for (let index = 0; index < Math.min(count, 12); index += 1) {
+    for (let index = 0; index < Math.min(count, VISIBLE_SCAN_CAP); index += 1) {
       if (await locator.nth(index).isVisible().catch(() => false)) return locator;
     }
   }
   return undefined;
+}
+
+/**
+ * The last element a selector set matches that is visible, newest end first.
+ *
+ * The mirror of {@link firstVisible} and needed for a different question. Presence asks "is this control
+ * anywhere on the page", where any match answers it; reading an answer asks "which turn did we just
+ * cause", where the first match is the *oldest* one in the thread. Scanning backwards from the end is
+ * what makes the newest answer the one we return.
+ */
+async function lastVisible(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<AdviserElement | undefined> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    const count = await locator.count().catch(() => 0);
+    for (let index = count - 1; index >= 0 && index > count - 1 - VISIBLE_SCAN_CAP; index -= 1) {
+      const element = locator.nth(index);
+      if (await element.isVisible().catch(() => false)) return element;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * How many elements a selector set matches that are visible, using the first selector that matches.
+ *
+ * A count rather than a boolean because turn completion is a *change* in count: a conversation that
+ * already had an answer on screen stays "has an answer" across the whole of the next turn.
+ */
+async function countVisible(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<number> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    const count = await locator.count().catch(() => 0);
+    let visible = 0;
+    for (let index = 0; index < Math.min(count, VISIBLE_SCAN_CAP); index += 1) {
+      if (await locator.nth(index).isVisible().catch(() => false)) visible += 1;
+    }
+    if (visible > 0) return visible;
+  }
+  return 0;
 }
 
 async function visibleTexts(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<string[]> {

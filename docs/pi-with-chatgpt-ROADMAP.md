@@ -477,7 +477,10 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
       — `classifySurface` → `generating` from the stop/appending indicators (`chatgpt-dom.test.ts`).
 - [x] Detect completed assistant turn.
       — `classifyTurn` requires *our own message* before an answer counts ("does not mistake a previous
-      answer for the new one") — the failure that would return last week's advice.
+      answer for the new one") — the failure that would return last week's advice. The check is a *change*
+      in the visible assistant-message count (`assistantAnswerIsNew`), and the answer is read from the
+      *newest* visible node: `playwright-driver.test.ts` "reads the answer this turn produced, not the one
+      already on screen" and "never credits a previous answer to this consultation" pin both at the driver.
 - [x] Detect visible provider errors.
       — `provider-error` state from banner/alert notices; turns classify `error` and stop rather than wait.
 - [x] Detect login/challenge pages.
@@ -493,7 +496,9 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
       — turn loop bounded by `timeoutMs`; launch retries bounded (`maxConsecutiveLaunchFailures`) with backoff.
 - [x] Save sufficient diagnostics without recording credentials.
       — `browser/diagnostics.ts`: screenshots refused before login, DOM dumps attribute-redacted, files 0600,
-      retention bounded by age and count. Key test asserts the pre-login screenshot is refused.
+      retention bounded by age and count. Key test asserts the pre-login screenshot is refused. The dir
+      itself is created and re-permissioned `0700` inside the owned tree
+      (`state-storage.test.ts` "creates every directory owner-only and re-asserts the mode").
 
 ## Model Selection
 

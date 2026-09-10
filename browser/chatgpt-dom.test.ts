@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CHATGPT_SELECTORS,
+  assistantAnswerIsNew,
   classifySurface,
   classifyTurn,
   modelMatchesLabel,
@@ -36,6 +37,19 @@ describe("classifySurface", () => {
   it("treats a verification wall as terminal even with a composer present", () => {
     const result = classifySurface(snapshot({ showsVerification: true }));
     expect(result).toMatchObject({ state: "human-verification", actionable: false });
+  });
+
+  it("keeps a hostile page title out of the explanation", () => {
+    // The document title is page-controlled text, and this explanation is what a person reads in a status
+    // line. It is bounded and credential-scrubbed like every other page-derived string (INV-12).
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwx";
+    const result = classifySurface(snapshot({ title: `Just a moment... ${jwt} ${"y".repeat(400)}` }));
+    expect(result.state).toBe("human-verification");
+    expect(result.explanation).not.toContain("eyJhbGciOi");
+    // Still readable as a reason, still short enough for one status line; a long <title> is not allowed to
+    // turn the explanation into a paragraph of page-controlled text.
+    expect(result.explanation).toContain("Just a moment");
+    expect(result.explanation.length).toBeLessThanOrEqual(160);
   });
 
   it("recognises a Cloudflare interstitial from the document title alone", () => {
@@ -81,6 +95,21 @@ describe("classifySurface", () => {
     ]) {
       expect(classifySurface(candidate).actionable).toBe(false);
     }
+  });
+});
+
+describe("assistantAnswerIsNew", () => {
+  it("refuses to credit an answer that was already on screen", () => {
+    // The expression this replaces, `hasNow && (!hadBefore || hasNow)`, is true for every one of these,
+    // which let the previous turn's reply be recorded as this consultation's advice.
+    expect(assistantAnswerIsNew(3, 3)).toBe(false);
+    expect(assistantAnswerIsNew(2, 1)).toBe(false);
+    expect(assistantAnswerIsNew(0, 0)).toBe(false);
+  });
+
+  it("accepts only an answer the thread grew after the send", () => {
+    expect(assistantAnswerIsNew(0, 1)).toBe(true);
+    expect(assistantAnswerIsNew(3, 4)).toBe(true);
   });
 });
 

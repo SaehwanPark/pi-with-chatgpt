@@ -30,7 +30,7 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (**single authority** `resolveAccountIdentity` answers every case; `compareAccountIdentity`, namespace-scoped `accountIdNamespace`, pair-bound `decideAccountMismatch` — only a `keep-current` minted for this account pair resolves a mismatch, and there is no boolean override), `auth/adviser-auth.ts` (`resolveAdviserAuth` delegates to it and holds no second copy of the rule) |
 | INV-11 | Isolated, extension-owned browser runtime; the user's active browser is never automated | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker read before any write, `0700`/`0600`, `writePrivateFileNoFollow`/`symlink-refused`, `assertPrivateDirectory`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination / path escape, `Local State` scrub, `authorizeChromeStateImport` → `applyChromeStateImport(plan, authorization)`), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method), `protocol/adviser.ts` (`import-chrome-state` is human-gated), `browser/runtime.ts` (`consult()` refuses on a non-actionable surface rather than pushing through a challenge; observation stays available so a completed manual login can be detected), `browser/chatgpt-dom.ts` (a Cloudflare interstitial is `human-verification`, never `unknown` a caller retries through) |
 | INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse), `protocol/masking.ts` + `browser/chrome-state.ts` (account metadata masked while parsing), `browser/diagnostics.ts` (DOM dumps redact credential-shaped attributes; screenshots refused before login) |
-| INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`), `browser/chatgpt-dom.ts` (`observeSurfaceScript` reads presence only; `scrubPageText` strips credential shapes from the only page text the runtime returns) |
+| INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`), `browser/chatgpt-dom.ts` (`scrubPageText` strips credential shapes from page-derived strings), `browser/playwright-driver.ts` (`#snapshot` reads presence only) |
 | INV-15 | Provenance persists before dispatch and before wake-up, and is never auto-published | `ledger/record.ts` (`assertPersistenceOrder`, `LEDGER_PUBLICATION_TARGETS === ["none"]`) |
 
 The canonical statement of each invariant is
@@ -91,6 +91,10 @@ named in a table.
   caller is the short `explanation`, run through `scrubPageText` (JWT/`sk-`/`Bearer`/`cookie=` shapes).
   Where this text later enters worker context it is bounded and treated as adviser-authored (INV-05); M6's
   prompt assembler must not paste raw `explanation` fields without that provenance.
+  The one exception is the consultation answer itself (`ConsultationOutcome.text`): it is adviser-authored
+  page text and is deliberately *not* scrubbed or truncated, because a cut-off or mangled answer is a
+  failed consultation. It is bounded by nothing on this side of the boundary, so it must reach a worker only
+  through `protocol/trust.ts` branding (M6) and never through `ui/worker-facing.ts`'s projection unchanged.
 - **The surface is ChatGPT or nothing.** `classifySurface` returns `unknown`/not-actionable for any non-
   ChatGPT host, so a page that redirected elsewhere is never used as an adviser channel.
 - **A human gate blocks consultation, never observation** (INV-11). Solving a challenge is a human act, so
@@ -104,6 +108,8 @@ named in a table.
   login; DOM dumps redact credential-shaped attribute values; everything is `0600` inside the git-ignored
   diagnostics dir; retention is bounded by age and count. The key test asserts the pre-login screenshot is
   refused, because that is the one mistake that would publish a credential.
+  The diagnostics dir is part of the owned state tree: `prepareStateStorage` creates it `0700` and re-reads
+  its mode, because `mkdir`'s mode is umask-masked and ignored for a directory that already exists.
 
 ## Prompt injection posture
 

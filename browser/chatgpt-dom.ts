@@ -80,7 +80,11 @@ export function classifySurface(snapshot: SurfaceSnapshot): {
   // Detecting it here is what turns a blank-looking page into a terminal human gate rather than an
   // "unknown" the caller might retry through.
   if (snapshot.showsVerification || titleIndicatesChallenge(snapshot.title)) {
-    return { state: "human-verification", explanation: `Human verification required (${snapshot.title.trim() || "challenge"}).`, actionable: false };
+    // The title is page-controlled text and this explanation is shown to a person, so it is bounded and
+    // credential-scrubbed like every other page-derived string. An unbounded title is also how one long
+    // <title> turns a status line into a paragraph.
+    const reason = scrubPageText(snapshot.title, 120) || "challenge";
+    return { state: "human-verification", explanation: `Human verification required (${reason}).`, actionable: false };
   }
   // A sign-in prompt is signed out unless a real conversation is on screen. The signed-out landing shell
   // *does* offer a text box, but a question typed there is discarded after login, so a composer does not
@@ -120,6 +124,23 @@ export function classifyTurn(signals: TurnSignals): "complete" | "generating" | 
   if (!signals.sawOwnMessage) return "waiting";
   if (signals.sawAssistantMessage) return "complete";
   return "waiting";
+}
+
+/**
+ * Whether an assistant answer arrived *after* the send rather than merely being on screen.
+ *
+ * The two counts must come from the same selector set, taken before the send and now. A conversation
+ * already shows an answer the moment we type into it — a second turn, a restored thread, a shared link —
+ * and presence alone cannot tell that answer from the one we asked for. The expression this replaces,
+ * `hasNow && (!hadBefore || hasNow)`, reduces to `hasNow`, and let the previous answer be recorded as
+ * this consultation's advice.
+ *
+ * Counting only grows an answer that appears; a regenerated answer in the same node therefore reads as
+ * "still waiting". That is the deliberate direction: a timeout is recoverable and honest, an attributed
+ * answer that was never generated for this brief is neither.
+ */
+export function assistantAnswerIsNew(assistantCountBefore: number, assistantCountNow: number): boolean {
+  return assistantCountNow > assistantCountBefore;
 }
 
 /**

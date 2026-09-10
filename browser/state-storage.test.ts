@@ -65,6 +65,8 @@ describe("stateStoragePaths", () => {
     expect(paths.browserRoot).toBe("/home/ada/.pi/agent/pi-with-chatgpt/browser");
     expect(paths.profileDir).toBe("/home/ada/.pi/agent/pi-with-chatgpt/browser/chatgpt-profile");
     expect(paths.chromeImportDir).toBe(`${paths.browserRoot}/chrome-imports`);
+    // Diagnostics hold page text and screenshots, so they live inside the permissioned tree or not at all.
+    expect(paths.diagnosticsDir).toBe(`${paths.browserRoot}/diagnostics`);
     expect(paths.capabilityStateFile).toBe(`${paths.browserRoot}/capability.json`);
     expect(paths.profileDir).not.toContain("workspace");
   });
@@ -101,10 +103,12 @@ describe("prepareStateStorage", () => {
       paths.browserRoot,
       paths.profileDir,
       paths.chromeImportDir,
+      paths.diagnosticsDir,
     ]);
     expect(log.dirs.every((entry) => entry.mode === PRIVATE_DIR_MODE)).toBe(true);
-    expect(log.chmods).toHaveLength(4);
+    expect(log.chmods).toHaveLength(5);
     expect(log.chmods.every((entry) => entry.mode === PRIVATE_DIR_MODE)).toBe(true);
+    expect(log.chmods.map((entry) => entry.path)).toContain(paths.diagnosticsDir);
   });
 
   it("drops an ownership marker and a self-ignoring .gitignore", async () => {
@@ -174,6 +178,7 @@ describe("prepareStateStorage", () => {
         paths.browserRoot,
         paths.profileDir,
         paths.chromeImportDir,
+        paths.diagnosticsDir,
         join(paths.browserRoot, STATE_OWNER_MARKER),
       ],
     });

@@ -272,11 +272,17 @@ export async function prepareStateStorage(
     );
   }
 
-  const directories = [paths.stateRoot, paths.browserRoot, paths.profileDir, paths.chromeImportDir];
+  const directories = [
+    paths.stateRoot,
+    paths.browserRoot,
+    paths.profileDir,
+    paths.chromeImportDir,
+    paths.diagnosticsDir,
+  ];
   const created: string[] = [];
   const preexisting: string[] = [];
   // Only the subtree below browserRoot is ours to permission; ancestors (Pi's agent directory) are not.
-  const owned = new Set([paths.browserRoot, paths.profileDir, paths.chromeImportDir]);
+  const owned = new Set([paths.browserRoot, paths.profileDir, paths.chromeImportDir, paths.diagnosticsDir]);
 
   for (const directory of directories) {
     const existed = await fileSystem.pathExists(directory);

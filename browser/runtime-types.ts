@@ -81,6 +81,12 @@ export interface ConsultationRequest {
 export type ConsultationOutcome =
   | {
       readonly ok: true;
+      /**
+       * The assistant turn as read off the page: untrusted adviser output (INV-05), deliberately *not*
+       * credential-scrubbed or length-bounded the way `explanation` is, because a truncated answer is a
+       * broken consultation. Whoever hands this to a worker model must brand it as adviser-authored
+       * (`protocol/trust.ts`) rather than pass it on as a plain string; M6's prompt assembler owns that.
+       */
       readonly text: string;
       /** Wall-clock milliseconds spent waiting for the assistant turn. */
       readonly elapsedMs: number;

@@ -246,7 +246,7 @@ Both are fixed in code, and the docs now describe what the code does.
 - `StateStoragePaths.diagnosticsDir` for post-login artifacts, under the same permissioned root as the profile.
 - Live validation probes under `_workspace/m3/` (`live-exit.ts`, `live-selectors.ts`) that drive the shipped
   composition root against the real ChatGPT surface.
-- 66 new unit tests (508 total across 47 files).
+- 73 new unit tests (582 total across 49 files).
 
 ### Hardened after live validation (M3)
 
@@ -274,6 +274,43 @@ not see any of these:
   launch, which would have sent the operator to fix a login while Chrome was what was missing. The test for
   the previous behaviour *passed* — it asserted the deadlock — so it is replaced by tests pinning both
   halves, plus a port-level walk of open → still-signed-out → signed-in.
+
+### Hardened after invariant review (M3)
+
+The M3 gate (`pwc-invariant-review`) found no blockers and four majors. All four sat in the one module
+nothing tested: `playwright-driver.ts` is glue, so its rules had been asserted only through the pure
+classifiers that call it, never through the driver itself. That module now has `playwright-driver.test.ts`,
+which drives the real driver against a scripted fake page — no Playwright import, and the fake thread
+mutates *between polls*, which is the only way to express "the old answer was already on screen".
+
+- **A turn could be credited to the answer that was already on screen.** Completion was
+  `hasAssistantMessage && (!hadAssistantBefore || hasAssistantMessage)`, which reduces to
+  `hasAssistantMessage`. On any conversation that already had a reply — a second turn, a restored thread —
+  the consultation "completed" instantly on the previous answer and recorded its text against the new
+  `consultationId`: confidently wrong advice carrying a correct provenance record (INV-05, INV-15).
+  Completion is now a *change* in the visible assistant-message count, sampled before the send, through
+  `assistantAnswerIsNew`. Named tests: `playwright-driver.test.ts`
+  "reads the answer this turn produced, not the one already on screen" (fails on the old expression with
+  `earlier advice`) and "never credits a previous answer to this consultation" (an honest miss is a
+  timeout), plus `chatgpt-dom.test.ts` "refuses to credit an answer that was already on screen".
+- **The answer was read from the oldest node in the thread.** `#readLatestAnswer` used `firstVisible`,
+  whose first match in a conversation that keeps its history is the *earliest* answer — the same
+  misattribution by a second route. `lastVisible` scans backwards from the newest end, bounded by
+  `VISIBLE_SCAN_CAP`.
+- **A page-controlled `<title>` reached a human-facing status line unscrubbed.** The
+  `human-verification` explanation now runs it through `scrubPageText(…, 120)` like every other
+  page-derived string, so a challenge page cannot put a token in a status line or make one long
+  `<title>` into a paragraph (`chatgpt-dom.test.ts` "keeps a hostile page title out of the explanation").
+- **`diagnostics/` was outside the permissioned tree.** `prepareStateStorage` created, re-permissioned,
+  and re-read the mode of the state, browser, profile, and import directories, and omitted
+  `paths.diagnosticsDir` — the one directory that accumulates page text and screenshots. `diagnostics.ts`
+  does call `mkdir(..., 0o700)`, but that mode is masked by the umask and ignored for a directory that
+  already exists, so a loose `diagnostics/` stayed loose while capturing page content, unseen by the
+  "enforce, do not merely intend" mode check. It is now in both the created set and the owned set
+  (`state-storage.test.ts` asserts the created list, the chmod set, and idempotency).
+- `ConsultationOutcome.text` is documented where it is declared as untrusted adviser output that is
+  deliberately *not* scrubbed or bounded — a truncated answer is a broken consultation — and it names
+  `protocol/trust.ts` as the place that must brand it before a worker sees it (M6 owns that).
 
 ### Changed
 
