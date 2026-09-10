@@ -101,11 +101,71 @@ change invalidates (see `AGENTS.md`).
   `docs/CHECKPOINT_PROTOCOL.md` documents the probe's network envelope; `docs/ARCHITECTURE.md` INV-04
   no longer says the probe "lands in M1"; the roadmap's M0 invariant note records the INV-04 promotion.
 
+### Added — M2 (OpenAI identity and isolated ChatGPT authentication)
+
+- `auth/pi-credential.ts`: the Pi-side OpenAI credential, read through Pi's published
+  `readStoredCredential("openai-codex")` accessor and only otherwise by a read-only parse of
+  `auth.json`. The refresh token is dropped at parse time — this extension never refreshes Pi's OAuth,
+  and two writers to one credential is how tokens get invalidated mid-session. Command-backed API keys
+  (`key: "!program"`) are refused rather than executed, and an explicit `authPath` reads exactly that
+  file instead of quietly returning the default account.
+- `auth/secret-text.ts`: `SecretText`, inert under `toString`, `JSON.stringify`, template interpolation,
+  and inspection; the value is reachable only through `expose()`, alongside a non-reversible fingerprint.
+- `auth/openai-identity.ts`: JWT claims → account id, masked email, plan hint, expiry. Codex tokens nest
+  their claims under `https://api.openai.com/auth` / `…/profile` (a flattened spelling is also accepted);
+  reading only flat dotted keys silently produced an empty identity against a real token.
+- `auth/identity.ts` + `auth/adviser-auth.ts`: identity comparison (`match`/`mismatch`/`unknown`) and the
+  auth state machine. An unconfirmed identity warns and proceeds; only a *demonstrated* mismatch blocks,
+  because a prompt that fires every session trains the operator to click through it. An API key is
+  transport, not an account, so it can never "match" a browser session. Pi token expiry is a warning —
+  Pi refreshes transparently.
+- `auth/login-flow.ts`: manual sign-in against an `AdviserLoginPort` that has **no** click, type,
+  navigate, or solve method, so automating a login is impossible by construction. A human challenge is
+  terminal (`retryMayHelp: false`); the profile is sealed before success is reported.
+- `auth/status.ts`: one redacted status snapshot for the operator surface, with `assertStatusIsRedacted`
+  rejecting credential-shaped keys and JWT-prefixed values. `auth/worker-independence.ts` states and
+  checks that a local worker (Ollama/Qwen) is a normal case, not a special one.
+- `browser/state-storage.ts`: state under the Pi agent directory with `0700`/`0600` modes re-asserted
+  after `mkdir` (umask masking), create-exclusive + `O_NOFOLLOW` opens against planted symlinks, and an
+  `OWNER` marker so ownership is proven rather than inferred from a directory name.
+- `browser/chrome-state.ts` + `browser/cookie-import.ts`: Chromium-family detection (Linux/macOS) with
+  "is Chromium holding this profile right now", and an allowlisted copy-only import. Nothing is ever
+  decrypted — Chromium decrypts with the OS key at runtime, so the extension never holds or derives one
+  (INV-12). A running source browser, a missing cookie database, a non-empty destination, and a
+  self-import are all refused, not warned.
+- `browser/capability.ts` + `browser/capability-checks.ts`: six probe outcomes kept distinct, the
+  four-item pre-consultation checklist, model selection that never invents a model, and a cache that
+  expires negative verdicts faster and treats a stated `retryAfterSeconds` as "re-probe", never as a
+  cache lifetime.
+- `protocol/adviser.ts`: one shared `AdviserNextAction` vocabulary used by capability, auth, and the UI,
+  so a menu cannot offer an action nothing implements.
+- `docs/AUTHENTICATION.md`: the two identities, discovery order, state paths and modes, the copy-not-
+  decrypt import strategy, the no-decryption guarantee, platform claims (Windows returns no candidates
+  rather than guessed paths), recovery table, and reset.
+- 105 new tests in `auth/` and `browser/`, plus `test/adviser-strings-worker-safe.test.ts`, which runs
+  every auth explanation, status line, and import refusal through the worker-safety pattern.
+
+### Hardened after review (M2)
+
+- `readPiOpenAiCredential` honours an explicit `authPath` by reading that file. The Pi accessor does not
+  treat its second argument as a path, so passing an override through it returned the *default* account
+  while reporting that it had read the named file — worst in tests and in the status surface, where a
+  wrong-but-plausible answer is worse than an error. Test: "reads the named file when a path is given,
+  even with a live Pi accessor".
+- `capabilityCacheIsValid` never treats a stated retry window as cacheable: a remembered rate limit that
+  has already lifted is a lie told by a stale record.
+- The worker-safety check matches credential *material* (JWT/`ya29.` prefixes, `Bearer `, `token=`
+  assignments, browser profile roots) rather than the English words "token"/"cookie", so prose like
+  "the access token is expired" stays displayable and the check does not get switched off.
+
 ### Changed
 
 - Toolchain fixed to TypeScript + Node 22 + npm + vitest (previously "to be fixed in M0");
   `README.md` development commands updated from the provisional `bun` examples.
-- Roadmap M0 and M1 checkboxes ticked with a named artifact/test per item.
+- Roadmap M0, M1, and M2 checkboxes ticked with a named artifact/test per item.
+- INV-10, INV-11, INV-12 and INV-13 guards in `protocol/invariants.ts` now cite the M2 modules that
+  enforce them (`auth/adviser-auth.ts`, `auth/login-flow.ts`, `browser/cookie-import.ts`,
+  `auth/secret-text.ts`, `auth/status.ts`).
 - INV-04 is no longer a deferred guard: `protocol/invariants.ts` points at
   `git/remote-availability.ts` + `git/checkpoint-resolution.ts`, leaving INV-14 (M6 prompt assembler)
   as the only planned guard. `docs/ARCHITECTURE.md` INV-04 is marked implemented.
@@ -114,7 +174,8 @@ change invalidates (see `AGENTS.md`).
 
 ### Not yet implemented
 
-No adviser behaviour yet: authentication (M2), browser automation (M3–M4), consultation protocol
+No adviser consultation yet: identity, isolated profile storage, import, manual sign-in, and capability
+checks exist (M2) but nothing drives a browser yet (M3–M4), consultation protocol
 (M5–M7), commands/UI (M8), and hardening/release (M9–M10). Until then the extension registers no
 commands and no tools, by design. The checkpoint subsystem exists but nothing calls it yet, and
 `GitHubApi.fetch` still defaults to `globalThis.fetch`, which M9 replaces with a key-redacting

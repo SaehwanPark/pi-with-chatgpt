@@ -14,15 +14,18 @@ The relationship is deliberately asymmetric:
 | **Pi** | edits, shell, tests, git, commits, pushes, and the final decision |
 | **ChatGPT** | advisory reasoning only — no execution, no orchestration, no write access |
 
-**Status:** M1 complete — the package builds, installs into Pi, and activates with zero side effects,
-and the Git/GitHub checkpoint subsystem is implemented: every consultation will be anchored to a full
-commit SHA whose availability on the selected GitHub remote has been verified before dispatch.
-Milestones M2–M10 (authentication, browser automation, consultation protocol, UI, release) are still
-open; no adviser can be consulted yet.
+**Status:** M2 complete — the package builds, installs into Pi, and activates with zero side effects.
+The Git/GitHub checkpoint subsystem anchors every future consultation to a full commit SHA whose
+availability on the selected GitHub remote is verified before dispatch, and the authentication layer now
+resolves the Pi-side OpenAI identity, maintains an extension-owned isolated browser profile (import or
+manual sign-in), and gates consultation on a capability check. Milestones M3–M10 (browser runtime,
+consultation protocol, UI, release) are still open; no adviser can be consulted yet.
 See [`docs/pi-with-chatgpt-ROADMAP.md`](docs/pi-with-chatgpt-ROADMAP.md) for the roadmap,
 [`docs/pi-with-chatgpt-PROPOSAL.md`](docs/pi-with-chatgpt-PROPOSAL.md) for the product contract,
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the invariant authority, and
-[`docs/SECURITY.md`](docs/SECURITY.md) for the security contract.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the invariant authority,
+[`docs/SECURITY.md`](docs/SECURITY.md) for the security contract, and
+[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) for how the adviser signs in without this extension
+ever holding a credential.
 
 There is **no usable adviser surface yet**: `/advisor*` commands arrive in M8, and the extension
 registers nothing until then by design.

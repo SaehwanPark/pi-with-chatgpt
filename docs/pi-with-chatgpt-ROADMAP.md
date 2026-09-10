@@ -187,74 +187,215 @@ while advice is still being applied (INV-03).
 
 ## Pi OpenAI/Codex Identity Reuse
 
-- [ ] Discover Pi's existing OpenAI/Codex OAuth credential through supported Pi abstractions.
-- [ ] Avoid directly reimplementing Pi token refresh if a supported API exists.
-- [ ] Read account identity metadata where safely available.
-- [ ] Read plan/entitlement hints where available.
-- [ ] Treat plan metadata as a hint, not the final capability check.
-- [ ] Ensure the active Pi worker model need not be OpenAI.
-- [ ] Support a local/Qwen worker while reusing stored OpenAI identity.
-- [ ] Consider Codex CLI identity as an optional secondary source only if needed.
+- [x] Discover Pi's existing OpenAI/Codex OAuth credential through supported Pi abstractions.
+      — `auth/pi-credential.ts` prefers Pi's published `readStoredCredential("openai-codex")` accessor
+      (resolved from the host install, never by re-parsing Pi's internals); the read-only `auth.json`
+      parse is a fallback. Tests: `auth/pi-credential.test.ts` ("prefers Pi's own accessor over reading
+      the file", "falls back to a read-only parse of auth.json when Pi is not importable"). Live on
+      Linux: real account resolved, `accountIdPrefix: "49b60951"`, `planHint: "plus"`.
+- [x] Avoid directly reimplementing Pi token refresh if a supported API exists.
+      — No refresh path exists: the refresh token is dropped at parse time so this extension can never
+      become a second writer to Pi's OAuth. Test: "never carries the refresh token out of the reader".
+      Expiry is therefore a warning only (Pi refreshes transparently) — `auth/adviser-auth.test.ts`
+      "notes an expired token without blocking the consultation".
+- [x] Read account identity metadata where safely available.
+      — `auth/openai-identity.ts` decodes the access-token claims, reading the
+      `https://api.openai.com/auth` / `https://api.openai.com/profile` namespaces Codex tokens actually
+      use (a flattened spelling is accepted too). Tests: `auth/openai-identity.test.ts` (12).
+- [x] Read plan/entitlement hints where available.
+      — Same module; `planHintSuggestsPaid` labels free tiers honestly. Test: "labels free tiers
+      honestly and stays a hint".
+- [x] Treat plan metadata as a hint, not the final capability check.
+      — Plan never gates a consultation; the browser capability probe does
+      (`browser/capability-checks.ts`, `auth/identity.test.ts` "keeps plan metadata out of the identity
+      comparison").
+- [x] Ensure the active Pi worker model need not be OpenAI.
+      — `auth/worker-independence.ts`; the worker provider/model are accepted and never read.
+      Test: `auth/worker-independence.test.ts` "does not become more eligible when the worker is itself
+      an OpenAI model".
+- [x] Support a local/Qwen worker while reusing stored OpenAI identity.
+      — Same module, pinned by "is eligible for a local worker as long as an OpenAI sign-in exists"
+      (`ollama/qwen3-coder` + stored OpenAI sign-in ⇒ eligible). Status line names both sides:
+      `worker: ollama/qwen3-coder; adviser: s***@gmail.com (plus)` (verified live).
+- [x] Consider Codex CLI identity as an optional secondary source only if needed.
+      — Considered and rejected for V1: Pi's own stored credential is always present when the user has
+      a Codex subscription, and a second identity source would create a second account to mismatch
+      against. Decision recorded in `docs/AUTHENTICATION.md` ("Credential discovery").
 
 ## Dedicated Adviser Browser State
 
-- [ ] Define OS-appropriate state directories.
-- [ ] Create isolated ChatGPT profile storage.
-- [ ] Enforce restrictive filesystem permissions.
-- [ ] Ensure browser credentials are never exposed to the worker model.
-- [ ] Ensure cookies/tokens are never written to normal logs.
+- [x] Define OS-appropriate state directories.
+      — `stateStoragePaths()` under `PI_CODING_AGENT_DIR` (default `~/.pi/agent/pi-with-chatgpt/browser`),
+      documented in `docs/AUTHENTICATION.md`. Tests: "places state under the Pi agent directory, never the
+      workspace", "follows the agent-directory override", "recognises the user's browser directories on
+      every platform". Verified live on Linux: `~/.pi/agent/pi-with-chatgpt/browser` created `0700` with
+      an `OWNER` marker and a self-ignoring `.gitignore`.
+- [x] Create isolated ChatGPT profile storage.
+      — `prepareStateStorage()` creates the tree and drops an `OWNER` marker; a pre-existing directory
+      without the marker is refused rather than adopted. Test: "drops an ownership marker and a
+      self-ignoring .gitignore" and "produces a profile that satisfies the INV-11 ownership check".
+- [x] Enforce restrictive filesystem permissions.
+      — `0700` dirs / `0600` files, re-applied after `mkdir` (umask masking), `O_NOFOLLOW`+exclusive
+      create against planted symlinks. Tests: "creates every directory owner-only and re-asserts the
+      mode", `modeGrantsAccessToOthers` across six modes, and "refuses an override that points at the
+      user's own browser".
+- [x] Ensure browser credentials are never exposed to the worker model.
+      — `auth/status.ts` exposes masked fields only and `assertStatusIsRedacted` rejects
+      credential-shaped keys/JWTs; `test/adviser-strings-worker-safe.test.ts` runs every auth decision,
+      status line and import refusal through the worker-safety pattern.
+- [x] Ensure cookies/tokens are never written to normal logs.
+      — `SecretText` is inert under `toString`/`JSON.stringify`/inspect
+      (`auth/secret-text.test.ts`); status serialisation is asserted free of `eyJ`/fixture secrets
+      (`auth/status.test.ts`); `docs/SECURITY.md` keeps the containment rule canonical.
 
 ## Chrome/Chromium Import Bootstrap
 
-- [ ] Detect supported local Chromium-family profiles.
-- [ ] Make import an explicit authentication/repair action.
-- [ ] Open source browser profile read-only.
-- [ ] Import only the state necessary to seed the isolated adviser profile.
-- [ ] Never automate the user's active browser for normal jobs.
+- [x] Detect supported local Chromium-family profiles.
+      — `detectBrowserStateSources()` (Chrome/Chromium/Brave/Edge on Linux + macOS), including whether
+      Chromium currently holds the profile. Tests: `browser/chrome-state.test.ts` (8). Live on Linux: 3
+      profiles found, all reported `lockedByRunningBrowser: true`, account hints readable.
+- [x] Make import an explicit authentication/repair action.
+      — `planChromeStateImport` is pure planning with no implicit caller, and refuses a non-empty
+      destination so nothing can import "by the way"; the command that invokes it lands in M9.
+      Tests: `browser/cookie-import.test.ts` "refuses to overwrite a profile that already has a session",
+      "refuses to import a profile onto itself".
+- [x] Open source browser profile read-only.
+      — Import is a copy: no source path is ever opened for writing, and the plan is computed before any
+      byte moves. Tests: "copies only the minimum set, in the expected layout", "refuses to copy from a
+      running browser rather than risking a torn database".
+- [x] Import only the state necessary to seed the isolated adviser profile.
+      — `MINIMUM_CHATGPT_STATE_FILES` is an allowlist (cookie DB + `-wal`/`-shm` + `Local State`);
+      an allowlist, so a new Chromium directory cannot silently widen the copy. Test: "never copies
+      anything outside the allowlist".
+- [x] Never automate the user's active browser for normal jobs.
+      — No launcher for a user profile exists; `AdviserLoginPort` has no click/type/navigate/solve method,
+      so the login flow cannot automate a browser even by accident
+      (`auth/login-flow.test.ts`, `docs/SECURITY.md` INV-09/INV-11 rows).
 - [ ] Verify the imported isolated profile can access ChatGPT.
-- [ ] Handle encrypted cookie storage on supported OSes.
-- [ ] Provide clear recovery when cookie import is impossible.
+      — Not closed: the checklist that expresses it exists and is tested
+      (`browser/capability-checks.ts`), but the probe needs the Playwright runtime, so this closes with
+      M3. No live ChatGPT session was exercised in M2 (human-gated login; see runbook in
+      `docs/AUTHENTICATION.md`).
+- [x] Handle encrypted cookie storage on supported OSes.
+      — Copy-only: Chromium decrypts with the OS key at runtime, so no key is ever derived or held here
+      (INV-12). `verifyChromeStateImport` checks sizes and SQLite magic bytes, reading no cookie value.
+      Tests: "accepts an intact copy", "catches a truncated copy, the realistic failure when Chrome was
+      running". Windows deliberately returns no candidates instead of guessing — "finds nothing on
+      Windows, which is outside the V1 platform claim".
+- [x] Provide clear recovery when cookie import is impossible.
+      — Every refusal names the action (`source-browser-running` ⇒ "close Chrome and retry"), and
+      `docs/AUTHENTICATION.md` "Troubleshooting" maps each code. Tests: "says a source has no session
+      rather than reporting success", "refuses a source inside its own state tree", "reports a missing
+      copy distinctly from a bad copy".
 
 ## Manual Login Fallback
 
-- [ ] Open the isolated adviser browser when no usable session exists.
-- [ ] Allow user login, CAPTCHA, 2FA, or consent steps.
-- [ ] Detect successful ChatGPT authentication.
-- [ ] Persist the isolated profile.
-- [ ] Avoid asking again during normal use.
+- [x] Open the isolated adviser browser when no usable session exists.
+      — `runManualLogin` opens through the port and reports a window that never opened without observing
+      anything. Tests: `auth/login-flow.test.ts` (12).
+- [x] Allow user login, CAPTCHA, 2FA, or consent steps.
+      — The flow is inert by construction; a `human-verification` observation is terminal with
+      `retryMayHelp: false`, because polling a CAPTCHA is automating it. Test: "stops at a human
+      challenge instead of waiting it out".
+- [x] Detect successful ChatGPT authentication.
+      — `observeSession` polling with an injectable clock; `signed-in`/`signed-out`/
+      `human-verification`/`unreachable` stay distinct outcomes. Tests: "gives up at the deadline rather
+      than looping forever", "reports an unreachable network without claiming the credentials were wrong".
+- [x] Persist the isolated profile.
+      — The profile is sealed *before* success is reported (an unflushed profile returns logged out), and
+      a `SESSION-ESTABLISHED` marker records that a human signed in once. Tests: "seals the profile
+      before reporting success", "still reports success when the marker cannot be written".
+- [x] Avoid asking again during normal use.
+      — `shouldOfferInteractiveLogin` returns false once a session exists and while a challenge is
+      pending. Tests: "does not nag once a session exists", "does not open a second window over a pending
+      challenge".
 
 ## Account Matching
 
-- [ ] Compare Pi OpenAI identity with ChatGPT browser identity where possible.
-- [ ] Detect likely account mismatch.
-- [ ] Never silently switch to a different ChatGPT account.
-- [ ] Provide an explicit user choice/recovery path on mismatch.
+- [x] Compare Pi OpenAI identity with ChatGPT browser identity where possible.
+      — `auth/identity.ts` compares account hints and returns `match`/`mismatch`/`unknown`; an
+      unconfirmable side is never reported as matched (`auth/identity.test.ts`,
+      `auth/adviser-auth.test.ts` "calls an unconfirmable identity unverified rather than matched").
+- [x] Detect likely account mismatch.
+      — A demonstrated mismatch requires both sides identified and differing; an API key counts as no
+      identity, so it can never "match" a browser session. Tests: "treats a Pi API-key identity as no
+      identity at all", "matches on account id".
+- [x] Never silently switch to a different ChatGPT account.
+      — Consultation is refused across a mismatch until an explicit choice exists; there is no boolean
+      "ignore mismatches". Tests: "refuses to consult across a silent account switch", "never proceeds
+      silently from an unknown match".
+- [x] Provide an explicit user choice/recovery path on mismatch.
+      — Three choices (`keep-current` / `reauthenticate` / `skip-adviser`), each with its own outcome;
+      reauthenticate routes to the login prompt rather than pretending progress. Tests:
+      "proceeds only on an explicit keep-current choice, and says which account is being billed", "turns
+      a reauthenticate choice into the login prompt, not into progress", "honours a decision to skip the
+      adviser".
 
 ## Capability Verification
 
-- [ ] Verify ChatGPT access.
-- [ ] Verify intended strong adviser model or best available equivalent.
-- [ ] Verify GitHub connector availability.
-- [ ] Verify target repository visibility before first consultation.
-- [ ] Cache capability checks conservatively.
-- [ ] Revalidate on meaningful auth/provider failures.
+- [x] Verify ChatGPT access.
+      — `chatgpt-access` is a required pre-consultation item; `classifyCapabilityProbe` keeps
+      signed-in/signed-out/verification/rate-limited/plan/environment as six distinct outcomes.
+      Tests: "treats only a signed-in probe as consultation-ready", "keeps a human challenge distinct
+      from being signed out", "never carries runtime detail into the record".
+- [x] Verify intended strong adviser model or best available equivalent.
+      — `selectAdviserModel` returns the requested model, a marked-degraded equivalent, or `undefined`;
+      it never invents a model. Tests: "never invents a model the provider does not offer".
+- [x] Verify GitHub connector availability.
+      — `github-connector` is checked but deliberately non-blocking: its absence degrades the adviser's
+      visibility, not the run. Test: "does not block a consultation on an unverified GitHub connector".
+- [x] Verify target repository visibility before first consultation.
+      — `target-repository` is required; an unavailable checkpoint maps to `publish-checkpoint`, never to
+      an implicit push. Test: "maps a missing checkpoint to publishing it, never to pushing silently".
+- [x] Cache capability checks conservatively.
+      — Status-dependent TTL (negative verdicts expire faster) and a stated `retryAfterSeconds` is never
+      cached, because a remembered rate limit that has lifted is a lie.
+      Tests: "expires a negative result faster than a positive one", "never caches a stated retry window".
+- [x] Revalidate on meaningful auth/provider failures.
+      — Invalidation events (sign-in completed, Chrome state imported, authentication failed, model list
+      changed) void the cache regardless of age. Test: "invalidates on any revalidating event regardless
+      of age".
 
 ## Tests
 
-- [ ] valid persisted adviser profile;
-- [ ] expired ChatGPT session;
-- [ ] Pi OAuth present + browser auth absent;
-- [ ] browser auth present + Pi OAuth absent;
-- [ ] account mismatch;
-- [ ] Chrome import success;
-- [ ] Chrome import failure;
-- [ ] manual login recovery;
-- [ ] quota/model unavailable;
-- [ ] GitHub connector unavailable.
+- [x] valid persisted adviser profile;
+      — `auth/adviser-auth.test.ts` "verifies capability before offering to consult"; profile shape and
+      ownership in `browser/state-storage.test.ts`.
+- [x] expired ChatGPT session;
+      — "notes an expired token without blocking the consultation" plus the marker/`everSignedInHere`
+      distinction in `auth/status.test.ts` (expired session vs never signed in).
+- [x] Pi OAuth present + browser auth absent;
+      — "creates the profile before probing it" and "asks for Pi login before touching a browser" cover
+      both halves of the ordering.
+- [x] browser auth present + Pi OAuth absent;
+      — "asks for Pi login before touching a browser": the Pi credential gates everything, so a browser
+      session alone never enables the adviser.
+- [x] account mismatch;
+      — four mismatch tests in `auth/adviser-auth.test.ts` (refusal, each explicit choice, unknown).
+- [x] Chrome import success;
+      — `browser/cookie-import.test.ts`: "copies only the minimum set, in the expected layout",
+      "creates the profile directory and copies exactly the planned files", "accepts an intact copy".
+- [x] Chrome import failure;
+      — running browser, missing cookie database, non-empty destination, self-import, and path escape are
+      each refused by name in `browser/cookie-import.test.ts`.
+- [x] manual login recovery;
+      — `auth/login-flow.test.ts`: challenge stop, timeout, unreachable, locked profile, window failure,
+      marker failure.
+- [x] quota/model unavailable;
+      — "keeps a rate limit automatic", "stops on an unsupported plan", and
+      `selectAdviserModel` returning `undefined` when no equivalent exists.
+- [x] GitHub connector unavailable.
+      — "does not block a consultation on an unverified GitHub connector"; the connector state is reported
+      without disabling the consultation.
 
 ## Exit Criteria
 
 - [ ] A Pi session using a local/non-OpenAI worker can authenticate and use a paid ChatGPT adviser without repeatedly logging in.
+      — Partially met and deliberately not ticked: worker independence and one-time authentication are
+      implemented and tested (`auth/worker-independence.test.ts`, `auth/login-flow.test.ts`), and the
+      "without repeatedly logging in" half is enforced by profile persistence + seal + capability cache
+      invalidation. The end-to-end half needs a real ChatGPT session in a real browser, which closes with
+      M3; no live consultation was performed in M2 and none is claimed here.
 
 ---
 
