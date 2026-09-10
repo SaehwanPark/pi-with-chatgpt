@@ -215,12 +215,60 @@ Both are fixed in code, and the docs now describe what the code does.
 - `adviserStatus` asks Pi for the credential unless the caller names a file. It previously passed the
   default path unconditionally, so `via: "pi-api"` was unreachable and a user signed in through Pi's own
   store was told `missing-file` — "sign in" — while the adviser worked fine.
+### Added — M3 (adviser browser runtime)
+
+- `playwright-core` dependency. Exactly one module loads it — the composition root `browser/adviser-runtime.ts`,
+  which drives the system Chrome channel via `launchPersistentContext` against the extension-owned profile.
+  `playwright-driver.ts` receives the launcher as a parameter and imports the package structurally, so the
+  lifecycle and DOM logic test with no browser installed; the barrel re-exports neither module, so loading
+  the extension launches nothing. A test asserts the importer set is exactly that one module.
+- `browser/runtime-types.ts` — the browser contract: a lifecycle phase union, consultation request/outcome/
+  failure vocabulary, the narrow `AdviserPageDriver` seam, and the diagnostic policy expressed as data.
+- `browser/runtime.ts` — `AdviserRuntime`, the lifecycle state machine: lazy start, reuse while healthy,
+  relaunch when a "ready" browser has died, bounded launch retries with backoff, a serialised turn queue,
+  one-launch-per-profile-under-concurrency, and a terminal human gate. It exposes no page/context/driver/
+  selector/script accessor (INV-01/INV-09); a test asserts the absence.
+- `browser/chatgpt-dom.ts` — the ChatGPT surface as pure decisions over a presence-only snapshot: surface
+  classification, turn completion (requiring our own message before an answer counts), model-label matching,
+  credential scrubbing, the selector sets with per-interaction fallbacks, and Cloudflare interstitial
+  detection from the document title.
+- `browser/playwright-driver.ts` — the real `AdviserPageDriver`: one reused tab, selector-set resolution that
+  scans matched nodes for the first visible one, prompt typing, a bounded poll for the assistant turn, and
+  cross-frame challenge probing. Playwright is imported structurally; the launcher is injected.
+- `browser/adviser-runtime.ts` — the composition root that wires the runtime to the real launcher and
+  implements M2's `AdviserLoginPort` on top of it (open/observe/seal only, so nothing can automate a login).
+- `browser/diagnostics.ts` — post-login diagnostics: screenshots refused before login, DOM dumps with
+  credential-shaped attribute values redacted, files at 0600 inside the git-ignored diagnostics dir, and
+  retention bounded by both age and count.
+- `browser/model-selection.ts` — `resolveModelPreference`, ranking a caller preference against live
+  availability; a downgrade is always reported, an unclickable model is never returned, and the
+  `auto-best`/no-match path selects the strongest selectable model with `degraded: true`.
+- `StateStoragePaths.diagnosticsDir` for post-login artifacts, under the same permissioned root as the profile.
+- Live validation probes under `_workspace/m3/` (`live-exit.ts`, `live-selectors.ts`) that drive the shipped
+  composition root against the real ChatGPT surface.
+- 66 new unit tests (508 total across 47 files).
+
+### Hardened after live validation (M3)
+
+Found by driving the shipped code against the real signed-out ChatGPT surface; the in-process fakes could
+not see any of these:
+
+- The runtime now opens the ChatGPT surface before classifying it. A freshly launched tab is `about:blank`,
+  and classifying it reported "not the ChatGPT surface" about a page the runtime had not opened.
+- The Cloudflare "Just a moment..."/"Attention Required" interstitial is detected from the document title
+  and treated as a terminal human gate, not an "unknown" a caller might retry through.
+- `firstVisible` scans the matched nodes for the first *visible* element instead of trusting element `[0]`;
+  the live page carries many hidden duplicate controls whose first is invisible.
+- The Playwright driver honours the caller's `headed` flag (a manual login must show a window); it had
+  launched headless unconditionally, which would have opened an invisible window a human could not use.
+- An explicitly-named missing `auth.json` is now reported as `missing-file`, not `unparsable`: with an
+  explicit path the Pi accessor is never consulted, so its availability must not masquerade as the failure.
 
 ### Changed
 
 - Toolchain fixed to TypeScript + Node 22 + npm + vitest (previously "to be fixed in M0");
   `README.md` development commands updated from the provisional `bun` examples.
-- Roadmap M0, M1, and M2 checkboxes ticked with a named artifact/test per item.
+- Roadmap M0, M1, M2, and M3 checkboxes ticked with a named artifact/test per item.
 - INV-10, INV-11, INV-12 and INV-13 guards in `protocol/invariants.ts` now cite the M2 modules that
   enforce them (`auth/adviser-auth.ts`, `auth/login-flow.ts`, `browser/cookie-import.ts`,
   `auth/secret-text.ts`, `auth/status.ts`).
@@ -232,9 +280,11 @@ Both are fixed in code, and the docs now describe what the code does.
 
 ### Not yet implemented
 
-No adviser consultation yet: identity, isolated profile storage, import, manual sign-in, and capability
-checks exist (M2) but nothing drives a browser yet (M3–M4), consultation protocol
-(M5–M7), commands/UI (M8), and hardening/release (M9–M10). Until then the extension registers no
-commands and no tools, by design. The checkpoint subsystem exists but nothing calls it yet, and
-`GitHubApi.fetch` still defaults to `globalThis.fetch`, which M9 replaces with a key-redacting
-wrapper before any token can meet a redirected request.
+No adviser consultation yet wired into a command. The browser runtime exists (M3): it launches the isolated
+profile, opens ChatGPT, classifies the surface, selects a model, and can carry a prompt/response turn — but
+nothing invokes it until the consultation protocol (M5–M7) and commands/UI (M8) land, and the extension
+registers no commands or tools yet, by design. The runtime has been driven against the real ChatGPT surface
+live (Chrome launches in the isolated profile; the signed-out page is correctly classified), but a full
+consultation round trip needs a signed-in profile and closes with the M9 command flow. The checkpoint
+subsystem exists but nothing calls it, and `GitHubApi.fetch` still defaults to `globalThis.fetch`, which M9
+replaces with a key-redacting wrapper before any token can meet a redirected request.

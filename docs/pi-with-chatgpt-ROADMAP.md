@@ -425,48 +425,101 @@ while advice is still being applied (INV-03).
 
 # M3 — Adviser Browser Runtime
 
+Playwright (`playwright-core`) over the system Chrome channel, driving the extension-owned profile from M2.
+All lifecycle and classification logic lives behind a narrow `AdviserPageDriver` seam so it is unit-tested
+without a browser; the Playwright layer is the only module that imports `playwright-core` eagerly, and the
+barrel keeps it a deep import so loading the extension never launches Chrome.
+
 ## Runtime Ownership
 
-- [ ] Choose browser automation implementation.
-- [ ] Keep browser control extension-owned rather than worker-operated.
-- [ ] Create a reusable isolated ChatGPT runtime.
-- [ ] Avoid using the user's normal Chrome profile in production.
-- [ ] Avoid global browser-state conflicts with other Pi extensions.
-- [ ] Reuse authenticated state without unsafe profile sharing.
+- [x] Choose browser automation implementation.
+      — `playwright-core` + system Chrome (`channel: "chrome"`) via `launchPersistentContext`; the launcher
+      lives only in `browser/adviser-runtime.ts`.
+- [x] Keep browser control extension-owned rather than worker-operated.
+      — `AdviserRuntime` exposes no page/context/driver/selector/script accessor; the only browser-addressing
+      call is `consult({ prompt, modelId })`. `browser/runtime.test.ts` asserts the absence structurally.
+- [x] Create a reusable isolated ChatGPT runtime.
+      — `createAdviserBrowser(paths)` in `browser/adviser-runtime.ts`.
+- [x] Avoid using the user's normal Chrome profile in production.
+      — the launcher passes only `adviserProfileFor(paths).userDataDir`, produced by `createAdviserProfile`,
+      which refuses a path that looks like a user browser profile (INV-11).
+- [x] Avoid global browser-state conflicts with other Pi extensions.
+      — a single extension-owned `--user-data-dir` under the Pi agent dir; concurrent cold starts launch
+      exactly one Chrome (`runtime.test.ts` "launches only once for concurrent callers").
+- [x] Reuse authenticated state without unsafe profile sharing.
+      — one persistent profile directory, no copying of a live profile; live exit probe confirmed Chrome 152
+      launching in `~/.pi/agent/pi-with-chatgpt/browser/chatgpt-profile`.
 
 ## Session Lifecycle
 
-- [ ] Start browser lazily on first adviser use.
-- [ ] Reuse the runtime when healthy.
-- [ ] Recover from browser crash.
-- [ ] Recover from stale tabs.
-- [ ] Shut down cleanly on Pi/session termination when appropriate.
-- [ ] Preserve authenticated profile across restarts.
-- [ ] Separate persistent auth state from ephemeral task state.
+- [x] Start browser lazily on first adviser use.
+      — `runtime.test.ts` "does not launch until something needs the browser".
+- [x] Reuse the runtime when healthy.
+      — "launches once and reuses the browser across consultations".
+- [x] Recover from browser crash.
+      — "marks the browser degraded when the driver dies mid-turn, and recovers on the next call"; a
+      health-check throw is treated as unhealthy, not propagated.
+- [x] Recover from stale tabs.
+      — `resetTab()` closes non-active tabs and re-creates a closed active one; `#requirePage` reopens on demand.
+- [x] Shut down cleanly on Pi/session termination when appropriate.
+      — `shutdown()` closes the context once and stays stopped ("closes the driver once and stays closed").
+- [x] Preserve authenticated profile across restarts.
+      — `launchPersistentContext` persists cookies to disk on close; the profile survives runtime restarts.
+- [x] Separate persistent auth state from ephemeral task state.
+      — persistent profile dir vs the `diagnostics/` scratch tree, both under one git-ignored root, distinct
+      from the ephemeral consultation turn state.
 
 ## DOM/Interaction Robustness
 
-- [ ] Prefer semantic DOM operations over coordinates/screenshots.
-- [ ] Detect ChatGPT generation-in-progress reliably.
-- [ ] Detect completed assistant turn.
-- [ ] Detect visible provider errors.
-- [ ] Detect login/challenge pages.
-- [ ] Handle ChatGPT UI changes with localized adapters.
-- [ ] Avoid long single blocking browser waits.
-- [ ] Implement bounded polling/backoff.
-- [ ] Save sufficient diagnostics without recording credentials.
+- [x] Prefer semantic DOM operations over coordinates/screenshots.
+      — every interaction resolves a selector set (`CHATGPT_SELECTORS`); no coordinate clicking anywhere.
+- [x] Detect ChatGPT generation-in-progress reliably.
+      — `classifySurface` → `generating` from the stop/appending indicators (`chatgpt-dom.test.ts`).
+- [x] Detect completed assistant turn.
+      — `classifyTurn` requires *our own message* before an answer counts ("does not mistake a previous
+      answer for the new one") — the failure that would return last week's advice.
+- [x] Detect visible provider errors.
+      — `provider-error` state from banner/alert notices; turns classify `error` and stop rather than wait.
+- [x] Detect login/challenge pages.
+      — sign-in affordances (both "Log in" and "Sign in" spellings, `/login`/`/signup` links) → `signed-out`;
+      Cloudflare interstitials by DOM probe across frames and by document title ("Just a moment...",
+      "Attention Required") → terminal `human-verification`. Both confirmed against the live surface.
+- [x] Handle ChatGPT UI changes with localized adapters.
+      — selector sets + pure classifiers in `chatgpt-dom.ts`; a rename is one reviewable diff, each
+      interaction carries fallbacks, and visibility is scanned across duplicate hidden controls.
+- [x] Avoid long single blocking browser waits.
+      — `askAndAwaitTurn` polls on an interval against a deadline; no single blocking wait.
+- [x] Implement bounded polling/backoff.
+      — turn loop bounded by `timeoutMs`; launch retries bounded (`maxConsecutiveLaunchFailures`) with backoff.
+- [x] Save sufficient diagnostics without recording credentials.
+      — `browser/diagnostics.ts`: screenshots refused before login, DOM dumps attribute-redacted, files 0600,
+      retention bounded by age and count. Key test asserts the pre-login screenshot is refused.
 
 ## Model Selection
 
-- [ ] Implement `auto-best` default.
-- [ ] Permit explicit configured adviser model/preset.
-- [ ] Detect when configured model is unavailable.
-- [ ] Fall back safely or report capability mismatch.
-- [ ] Never silently use a clearly weaker/free model when the request specifically requires the configured adviser capability.
+- [x] Implement `auto-best` default.
+      — `resolveModelPreference` with an empty/no-match preference falls back to the strongest selectable
+      model, marked degraded.
+- [x] Permit explicit configured adviser model/preset.
+      — the preference list is caller-supplied; `modelId` on `ConsultationRequest` is already resolved.
+- [x] Detect when configured model is unavailable.
+      — `modelMatchesLabel` + `selectModel` re-reads the picker; `model-unavailable` is returned, never
+      silently ignored (`runtime.test.ts` "reports model-unavailable instead of asking a different model").
+- [x] Fall back safely or report capability mismatch.
+      — `resolveModelPreference` reports `degraded` + `reason` on every non-top-preference landing.
+- [x] Never silently use a clearly weaker/free model when the request specifically requires the configured adviser capability.
+      — a downgrade is always reported (`degraded: true` with a reason); the runtime refuses to submit when
+      the requested model cannot be selected rather than substituting a weaker one.
 
 ## Exit Criteria
 
 - [ ] Extension can reliably open ChatGPT, select adviser capability, submit a small test prompt, and collect the response using the isolated profile.
+      — Partially met, deliberately not ticked. The live probe (`_workspace/m3/live-exit.ts`) drives the
+      shipped composition root and confirmed: Chrome 152 launches in the isolated profile, ChatGPT opens,
+      and the classifier correctly reports `signed-out` (actionable: false) rather than inventing a
+      conversation. The full round trip (capability select + prompt + response) needs a signed-in profile,
+      which is human-gated (cookie import or interactive login); no live consultation was performed and none
+      is claimed. It closes when a signed-in session is exercised in the M9 command flow.
 
 ---
 
