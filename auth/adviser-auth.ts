@@ -11,8 +11,8 @@
  *   - never automate a human gate or retry its way past one (INV-09).
  */
 
-import type { AccountIdentityHint, AccountMatch, AccountMismatchChoice } from "./identity.js";
-import { compareAccountIdentity, resolveAccountMismatch } from "./identity.js";
+import type { AccountIdentityHint, AccountMatch, AccountMismatchDecision } from "./identity.js";
+import { resolveAccountIdentity } from "./identity.js";
 import type { CapabilityRecord } from "../browser/capability.js";
 import type { AdviserNextAction } from "../protocol/adviser.js";
 import { requiresManualIntervention } from "../protocol/adviser.js";
@@ -42,9 +42,10 @@ export interface AdviserAuthFacts {
   /**
    * The human decision after a mismatch. Absent means *no decision yet*, which blocks consultation;
    * there is deliberately no boolean "ignore mismatches" because it would outlive the moment it was
-   * clicked and apply to the next mismatch too.
+   * clicked and apply to the next mismatch too. It is bound to the account pair it was made for, so a
+   * "keep current account" click cannot authorise a different account that appears later.
    */
-  readonly mismatchChoice?: AccountMismatchChoice;
+  readonly mismatchDecision?: AccountMismatchDecision;
 }
 
 export type AdviserAuthState =
@@ -121,45 +122,46 @@ export function resolveAdviserAuth(facts: AdviserAuthFacts): AdviserAuthDecision
   const fromCapability = decisionFromCapability(capability, facts, warnings);
   if (fromCapability !== undefined) return fromCapability;
 
-  // Capability is ready: the only remaining question is *which account* is signed in.
-  if (facts.piIdentity === undefined || facts.browserIdentity === undefined) {
-    // Not a failure: a side could not be identified. Reported honestly instead of pretending a match,
-    // because a later change that starts producing hints must not silently read as "matched".
-    return decide("ready-unverified-identity", "consult", {
-      explanation: "Adviser ready. Account identity could not be confirmed on both sides.",
-      warnings: [...warnings, "Account identity unverified: Pi and the browser could not be matched."],
-      identityComparison: "unknown",
-    });
-  }
+  // Capability is ready: the only remaining question is *which account* is signed in. Every answer to
+  // that question comes from `resolveAccountIdentity`, including "we cannot tell" — this module must
+  // not hold a second copy of the rule, because the last time two modules each held one they
+  // disagreed and the looser copy governed.
+  const identity = resolveAccountIdentity({
+    piAccount: facts.piIdentity,
+    browserAccount: facts.browserIdentity,
+    decision: facts.mismatchDecision,
+  });
+  // The comparison is reported by the decision rather than recomputed here. A second call would be a
+  // second reading of the same rule, which is the shape that let the two copies disagree before.
+  const comparison = identity.match;
 
-  const comparison = compareAccountIdentity(facts.piIdentity, facts.browserIdentity);
-  if (comparison === "unknown") {
-    // "Cannot tell" is not the same as "told, and they differ". Only a demonstrated mismatch may block,
-    // because a block that fires on every session teaches the operator to click through it — and the
-    // hint is often legitimately absent (a plan without an account claim, a first run before M3 reads
-    // the browser account). It is still said out loud, never reported as a match.
-    return decide("ready-unverified-identity", "consult", {
-      explanation: "Adviser ready. Account identity could not be confirmed on both sides.",
-      warnings: [...warnings, "Account identity unverified: Pi and the browser could not be matched."],
-      identityComparison: comparison,
-    });
-  }
-
-  const resolution = resolveAccountMismatch(facts.browserIdentity, comparison, facts.mismatchChoice);
-  switch (resolution.kind) {
-    case "proceed":
-      return decide(comparison === "match" ? "ready" : "ready-unverified-identity", "consult", {
-        explanation:
-          comparison === "match"
-            ? "Adviser ready."
-            : "Adviser ready; the operator chose to keep this browser account.",
-        warnings:
-          comparison === "match"
-            ? warnings
-            : [
-                ...warnings,
-                "Keeping the adviser browser account: this consultation is billed and scoped to that account, not to Pi's.",
-              ],
+  switch (identity.kind) {
+    case "confirmed": {
+      // A confirmed identity is either a demonstrated match or a mismatch the operator resolved by
+      // keeping this account; the second is worth a standing warning because it changes which quota
+      // and which project data the consultation touches.
+      const matched = comparison === "match";
+      return decide(matched ? "ready" : "ready-unverified-identity", "consult", {
+        explanation: matched
+          ? "Adviser ready."
+          : "Adviser ready; the operator chose to keep this browser account.",
+        warnings: matched
+          ? warnings
+          : [
+              ...warnings,
+              "Keeping the adviser browser account: this consultation is billed and scoped to that account, not to Pi's.",
+            ],
+        identityComparison: comparison,
+      });
+    }
+    case "unverified":
+      // Not a failure: a side could not be identified. "Cannot tell" is not "told, and they differ" —
+      // a block that fires on every session teaches the operator to click through it, and the hint is
+      // often legitimately absent (a plan with no account claim, a first run before the browser
+      // account is read). It is still said out loud and never reported as a match.
+      return decide("ready-unverified-identity", "consult", {
+        explanation: "Adviser ready. Account identity could not be confirmed on both sides.",
+        warnings: [...warnings, `Account identity unverified (${identity.reason}): Pi and the browser could not be matched.`],
         identityComparison: comparison,
       });
     case "skipped":
@@ -173,7 +175,7 @@ export function resolveAdviserAuth(facts: AdviserAuthFacts): AdviserAuthDecision
       // the right prompt is the interactive login rather than a generic review.
       return decide(
         "account-mismatch",
-        facts.mismatchChoice === "reauthenticate" ? "manual-login" : "review-account-mismatch",
+        facts.mismatchDecision?.choice === "reauthenticate" ? "manual-login" : "review-account-mismatch",
         {
           explanation:
             "The adviser browser is signed into a different ChatGPT account than Pi. Proceeding would consult another account's quota and see its project data.",

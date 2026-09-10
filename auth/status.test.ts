@@ -37,6 +37,25 @@ async function writeAuthFile(dir: string, accountId: string): Promise<string> {
 }
 
 describe("adviserStatus", () => {
+  it("reports a credential Pi resolves from its own store as a sign-in", async () => {
+    // Regression: the status surface used to hand the reader a file path unconditionally, which asked
+    // the filesystem instead of Pi. A user signed in through Pi's store — an environment-variable or
+    // keychain-backed credential — was told "missing file, sign in" while the adviser worked fine.
+    const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
+    const status = await adviserStatus(profileFor(join(dir, "profile")), {
+      loadPiModule: () =>
+        Promise.resolve({
+          readStoredCredential: () => ({
+            type: "oauth",
+            access: "opaque-access-token",
+            expires: Date.now() + 3_600_000,
+            accountId: "acct-pi-store",
+          }),
+        }),
+    });
+    expect(status.openAiSignIn).toMatchObject({ present: true, via: "pi-api", accountIdPrefix: "acct-pi-" });
+  });
+
   it("reports a missing sign-in instead of inventing one", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
     const status = await adviserStatus(profileFor(join(dir, "profile")), { piAuthPath: join(dir, "absent.json") });

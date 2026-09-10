@@ -3,9 +3,27 @@ import { describe, expect, it } from "vitest";
 import { classifyCapabilityProbe, type CapabilityRecord } from "../browser/capability.js";
 import { requiresManualIntervention } from "../protocol/adviser.js";
 import { resolveAdviserAuth, type AdviserAuthFacts } from "./adviser-auth.js";
+import { decideAccountMismatch, type AccountMismatchChoice } from "./identity.js";
 
-const PI_IDENTITY = { source: "pi-oauth", accountIdHint: "acct-1", emailMasked: "a***@example.com" } as const;
-const OTHER_IDENTITY = { source: "chatgpt-browser", accountIdHint: "acct-2", emailMasked: "g***@example.com" } as const;
+/* Both fixtures declare a namespace: identifiers only compare inside one, and a fixture without it
+ * would exercise the "cannot tell" path instead of the match/mismatch path it names. */
+const PI_IDENTITY = {
+  source: "pi-oauth",
+  accountIdHint: "acct-1",
+  accountIdNamespace: "chatgpt-account",
+  emailMasked: "a***@example.com",
+} as const;
+const OTHER_IDENTITY = {
+  source: "chatgpt-browser",
+  accountIdHint: "acct-2",
+  accountIdNamespace: "chatgpt-account",
+  emailMasked: "g***@example.com",
+} as const;
+
+/** Mint a decision the way the UI must: bound to the pair that was shown. */
+function chosen(choice: AccountMismatchChoice): AdviserAuthFacts["mismatchDecision"] {
+  return decideAccountMismatch({ piAccount: PI_IDENTITY, browserAccount: OTHER_IDENTITY, choice });
+}
 const READY: CapabilityRecord = classifyCapabilityProbe({ kind: "signed-in" }, "2026-01-01T00:00:00.000Z");
 
 function facts(overrides: Partial<AdviserAuthFacts> = {}): AdviserAuthFacts {
@@ -121,20 +139,29 @@ describe("resolveAdviserAuth identity", () => {
   });
 
   it("proceeds only on an explicit keep-current choice, and says which account is being billed", () => {
-    const decision = resolveAdviserAuth(facts({ browserIdentity: OTHER_IDENTITY, mismatchChoice: "keep-current" }));
+    const decision = resolveAdviserAuth(
+      facts({ browserIdentity: OTHER_IDENTITY, mismatchDecision: chosen("keep-current") }),
+    );
     expect(decision.state).toBe("ready-unverified-identity");
     expect(decision.action).toBe("consult");
     expect(decision.warnings.join(" ")).toMatch(/that account/iu);
+    // A kept mismatch is reported as the mismatch it is; a decision to proceed is not evidence that the
+    // two accounts turned out to be the same.
+    expect(decision.identityComparison).toBe("mismatch");
   });
 
   it("turns a reauthenticate choice into the login prompt, not into progress", () => {
-    const decision = resolveAdviserAuth(facts({ browserIdentity: OTHER_IDENTITY, mismatchChoice: "reauthenticate" }));
+    const decision = resolveAdviserAuth(
+      facts({ browserIdentity: OTHER_IDENTITY, mismatchDecision: chosen("reauthenticate") }),
+    );
     expect(decision.action).toBe("manual-login");
     expect(decision.action).not.toBe("consult");
   });
 
   it("honours a decision to skip the adviser", () => {
-    const decision = resolveAdviserAuth(facts({ browserIdentity: OTHER_IDENTITY, mismatchChoice: "skip-adviser" }));
+    const decision = resolveAdviserAuth(
+      facts({ browserIdentity: OTHER_IDENTITY, mismatchDecision: chosen("skip-adviser") }),
+    );
     expect(decision.state).toBe("adviser-skipped");
     expect(decision.action).toBe("skip-adviser");
   });
@@ -157,6 +184,35 @@ describe("resolveAdviserAuth identity", () => {
     // source "none" can never match, and must not read as a mismatch either.
     const decision = resolveAdviserAuth(facts({ piIdentity: { source: "none" } }));
     expect(decision.identityComparison).toBe("unknown");
+    expect(decision.state).toBe("ready-unverified-identity");
+    expect(decision.action).toBe("consult");
+  });
+
+  it("distinguishes cross-namespace ids from a mismatch instead of alarming on both", () => {
+    // A Chromium gaia_id and a ChatGPT account id are different kinds of thing. Calling that a
+    // mismatch would block every real session; calling it a match would be a guess.
+    const gaia = { source: "chatgpt-browser", accountIdHint: "gaia-9", accountIdNamespace: "google-gaia" } as const;
+    const decision = resolveAdviserAuth(facts({ browserIdentity: gaia }));
+    expect(decision.identityComparison).toBe("unknown");
+    expect(decision.state).toBe("ready-unverified-identity");
+    expect(decision.warnings.join(" ")).toMatch(/namespace-mismatch/u);
+  });
+
+  it("does not carry a keep-current choice over to a different browser account", () => {
+    // The decision the operator clicked belongs to the pair it was shown for. A third account
+    // appearing later has to be confirmed again, or one click would authorise every account after it.
+    const decision = resolveAdviserAuth(
+      facts({ browserIdentity: OTHER_IDENTITY, mismatchDecision: chosen("keep-current") }),
+    );
+    expect(decision.state).toBe("ready-unverified-identity");
+
+    const anotherAccount = { ...OTHER_IDENTITY, accountIdHint: "acct-3" } as const;
+    const keepCurrent = chosen("keep-current");
+    const fresh = resolveAdviserAuth(
+      facts({ browserIdentity: anotherAccount, mismatchDecision: keepCurrent }),
+    );
+    expect(fresh.state).toBe("account-mismatch");
+    expect(fresh.action).toBe("review-account-mismatch");
   });
 });
 

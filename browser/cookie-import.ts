@@ -317,10 +317,16 @@ export function authorizeChromeStateImport(
 }
 
 export class ChromeStateImportError extends Error {
-  readonly reason: "not-authorized" | "authorization-for-other-plan";
+  /**
+   * `not-authorized` and `authorization-for-other-plan` are programming errors; `source-unscrubbable`
+   * is a real-world condition (a `Local State` that is not valid JSON). They are kept apart because a
+   * caller that reports "you did not confirm this" for a file it merely could not parse sends the user
+   * looking for a dialog they already answered.
+   */
+  readonly reason: "not-authorized" | "authorization-for-other-plan" | "source-unscrubbable";
   readonly detail: string;
 
-  constructor(reason: "not-authorized" | "authorization-for-other-plan", detail: string) {
+  constructor(reason: ChromeStateImportError["reason"], detail: string) {
     super(detail);
     this.name = "ChromeStateImportError";
     this.reason = reason;
@@ -452,7 +458,7 @@ export async function applyChromeStateImport(
         // Without a parseable document there is no way to know what the copy would expose, so
         // minimization cannot be honoured: refuse rather than copy something unexamined.
         throw new ChromeStateImportError(
-          "not-authorized",
+          "source-unscrubbable",
           `"${entry.relativePath}" could not be read as JSON, so its account metadata could not be removed before copying`,
         );
       }

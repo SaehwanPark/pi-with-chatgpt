@@ -37,6 +37,22 @@ display (`alice@` → `a***@`), and the comparison only ever *blocks* on a demon
 unidentified side is reported as unknown, because a mismatch prompt that fires on every session trains
 people to click through it.
 
+"Cannot tell" and "they differ" are different answers, and **`auth/identity.ts` is the only place that
+answers the question**: `resolveAccountIdentity` returns `confirmed`, `unverified`, `awaiting-user`, or
+`skipped` for every input, and `auth/adviser-auth.ts` holds no second copy of the rule. An earlier
+revision encoded it in both modules with opposite answers for the unknown case and the looser copy
+governed, which is why one entry point — not merely one rule — is the invariant here (INV-10).
+
+Identifiers compare only inside a **namespace** (`accountIdNamespace`). A Chromium `gaia_id` names a
+Google login and Pi's `chatgpt_account_id` names a ChatGPT account, so comparing the two for equality is
+a question with no true answer: it reports a permanent mismatch, and an alarm that always sounds is an
+alarm that gets clicked through. Cross-namespace is `unknown`, with the reason reported.
+
+A human's answer to a mismatch is **bound to the account pair it was made for**
+(`decideAccountMismatch`, an opaque digest of the pair). A `keep-current` clicked for one browser account
+has no effect when a different account appears later, and a decision object carries no identifier that a
+log could leak.
+
 ## State location and permissions
 
 | Path | Contents | Mode |
@@ -50,8 +66,15 @@ people to click through it.
 | `<repo>/.chatgpt-adviser/OWNERSHIP` | marker claiming a project-local dir | `0600` |
 
 Root creation uses a **create-exclusive + `O_NOFOLLOW` open + ownership marker** sequence: a planted
-symlink at an expected path gets an `EPERM` instead of a redirected write, and a directory that exists
-without our marker is refused rather than adopted. Ownership is proven by the marker, never by a name.
+symlink at an expected path is refused and reported as `symlink-refused` (`ELOOP` on Linux and macOS;
+`EPERM` where a platform reports it that way) instead of being written through. Where a platform has no
+`O_NOFOLLOW`, an `lstat` check runs instead of no check. Modes are re-applied with `chmod` because an
+`open` mode is umask-masked, the mode actually on disk is re-read and refused if it still grants group or
+other access, and `assertPrivateDirectory` covers directories this extension writes into but did not
+create. The `OWNER` marker is read **before** anything is written or chmod-ed, so a pre-existing tree the
+extension did not create is refused side-effect free — silently adopting one, and chmod-ing Pi's own
+`~/.pi/agent` in the process, were both behaviours of the first revision. Ownership is proven by the
+marker, never by a name.
 
 ## Importing an existing sign-in (Chrome state)
 
@@ -65,9 +88,35 @@ Import is an **explicit user action**: `import-chrome-state` is on the human-gat
 empty profile and probe it on its own, but it never reads your browser without you asking — reading your
 real profile's cookies is the most sensitive touch in the product (INV-11).
 
+The gate is enforced where the reading happens, not only in the vocabulary: `applyChromeStateImport`
+takes an authorization it did not create and refuses without one. The authorization is minted by
+`authorizeChromeStateImport(plan, { confirmedByHuman })`, where the confirmation is a distinctive phrase
+rather than a boolean, so `rg -n confirmedByHuman` is a complete audit of every call site and no amount of
+ordinary plumbing computes its way to it. It is fingerprinted to the plan's source *and* destination, so
+confirming `Profile 1` cannot authorize `Default` (`authorization-for-other-plan`). A phrase is a gate,
+not a cryptographic barrier — nothing stops a call site written deliberately to cast one, and its value is
+that nothing *un*deliberate reaches it.
+
+Every part of a source path is checked, not only its root: the profile directory name must be a single
+relative directory name, and the resolved source path is asserted to stay inside the user-data-dir it was
+declared inside, so `../` cannot walk into the extension's own profile and defeat the self-import and
+source≠destination guards from the inside.
+
 The copy is allow-listed to the minimum: `Default/Network/Cookies` (+ `-wal`, `-shm`) and `Local State`
 (which carries the decryption key reference, not key material). Browser metadata is parsed read-only
 from plaintext JSON (`Local State`, `Preferences`) for account hints only.
+
+`Local State` is **scrubbed on the way in** rather than copied whole, because whole is not minimal: it
+carries `account_info` and `profile.info_cache` for *every* profile on the machine, not only the one being
+imported. `scrubChromeLocalState` removes those paths and keeps `os_crypt.encrypted_key` on Windows only,
+where Chromium needs it to locate the key. A `Local State` that does not parse is refused
+(`source-unscrubbable`) rather than copied unexamined, and `verifyChromeStateImport` fails an import whose
+copy still carries account metadata (`unscrubbed-account-metadata`).
+
+Detection reports are masked for the same reason (`browser/chrome-state.ts`): emails and GAIA ids are
+masked while parsing, so an unmasked value never exists in the structure a profile picker displays and an
+accident then logs. A profile Chrome recorded no GAIA id for has none — the directory name already names
+the profile, and a fabricated "id" is a value someone will eventually compare against another.
 
 Import is **refused**, not warned, when:
 
@@ -81,6 +130,10 @@ Import is **refused**, not warned, when:
 
 `verifyChromeStateImport` checks file sizes and SQLite magic bytes — enough to prove a usable database
 arrived, without reading a cookie.
+It also fails when the copy still carries account metadata
+(`unscrubbed-account-metadata`). The import errors that mean "a call site is wrong" are kept apart from
+the ones a user can cause: `not-authorized` and `authorization-for-other-plan` are programming errors,
+`source-unscrubbable` is a file that could not be examined, and only the last belongs in a message.
 
 ## Manual sign-in
 

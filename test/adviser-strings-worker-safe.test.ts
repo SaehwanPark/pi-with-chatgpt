@@ -13,6 +13,8 @@ import { describe, expect, it } from "vitest";
 import { resolveAdviserAuth, type AdviserAuthFacts } from "../auth/adviser-auth.js";
 import { describeWorkerAndAdviser } from "../auth/worker-independence.js";
 import { planChromeStateImport } from "../browser/cookie-import.js";
+import { detectBrowserStateSources, type BrowserStateSourceFileSystem } from "../browser/chrome-state.js";
+import { decideAccountMismatch } from "../auth/identity.js";
 import type { CapabilityRecord } from "../browser/capability.js";
 
 /**
@@ -23,6 +25,9 @@ import type { CapabilityRecord } from "../browser/capability.js";
 const WORKER_UNSAFE =
   /eyJ[A-Za-z0-9_-]{8,}|ya29\.[A-Za-z0-9_-]{8,}|Bearer\s|refresh[_-]?token\s*[:=]|access[_-]?token\s*[:=]|\/\.config\/|\/Library\/Application Support|user[_-]data-dir|google-chrome|\bNetwork\/Cookies\b/iu;
 
+/** Complete email addresses and unmasked numeric identifiers — a profile picker must carry neither. */
+const PERSONAL_DATA = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}|\b\d{12,}\b/u;
+
 const BASE: AdviserAuthFacts = {
   piCredentialPresent: true,
   piCredentialIsApiKey: false,
@@ -31,6 +36,13 @@ const BASE: AdviserAuthFacts = {
   profileInitialized: true,
   chromeImportAvailable: false,
 };
+
+const PI_ACCOUNT = { source: "pi-oauth", accountIdHint: "bbbb2222", accountIdNamespace: "chatgpt-account" } as const;
+const BROWSER_ACCOUNT = {
+  source: "chatgpt-browser",
+  accountIdHint: "aaaa1111",
+  accountIdNamespace: "chatgpt-account",
+} as const;
 
 function capability(status: CapabilityRecord["status"], explanation: string): CapabilityRecord {
   return {
@@ -56,8 +68,17 @@ describe("adviser strings are worker-safe", () => {
       { ...BASE, capability: capability("rate-limited", "Rate limited by ChatGPT.") },
       { ...BASE, capability: capability("plan-unsupported", "The plan does not include the adviser model.") },
       { ...BASE, capability: capability("environment-unavailable", "The adviser browser could not start.") },
-      { ...BASE, browserIdentity: { source: "chatgpt-browser", accountIdHint: "aaaa1111" }, piIdentity: { source: "pi-oauth", accountIdHint: "bbbb2222" } },
-      { ...BASE, browserIdentity: { source: "chatgpt-browser", accountIdHint: "aaaa1111" }, piIdentity: { source: "pi-oauth", accountIdHint: "bbbb2222" }, mismatchChoice: "skip-adviser" },
+      { ...BASE, browserIdentity: BROWSER_ACCOUNT, piIdentity: PI_ACCOUNT },
+      {
+        ...BASE,
+        browserIdentity: BROWSER_ACCOUNT,
+        piIdentity: PI_ACCOUNT,
+        mismatchDecision: decideAccountMismatch({
+          piAccount: PI_ACCOUNT,
+          browserAccount: BROWSER_ACCOUNT,
+          choice: "skip-adviser",
+        }),
+      },
     ];
 
     for (const facts of scenarios) {
@@ -76,6 +97,35 @@ describe("adviser strings are worker-safe", () => {
       { accountLabel: "a***@example.com", planHint: "plus" },
     );
     expect(line).not.toMatch(WORKER_UNSAFE);
+  });
+
+  it("keeps account material out of a browser-source listing", async () => {
+    const chromeDir = "/home/ada/.config/google-chrome";
+    const localState = JSON.stringify({
+      profile: {
+        info_cache: {
+          Default: { name: "Ada Lovelace", email: "ada.lovelace@example.com", gaia_id: "1234567890123456789012" },
+          "Profile 1": { email: "grace.hopper@navy.mil", gaia_id: "9876543210987654321098" },
+        },
+      },
+      os_crypt: { encrypted_key: "QVRMRTpiYW5nZWQ6ZmFrZQ==" },
+    });
+    const fileSystem: BrowserStateSourceFileSystem = {
+      readFile: (path) =>
+        path.endsWith("Local State") ? Promise.resolve(localState) : Promise.reject(new Error("no such file")),
+      readdir: (path) =>
+        path === chromeDir ? Promise.resolve(["Default", "Profile 1"]) : Promise.reject(new Error("no such dir")),
+      statExists: (path) => Promise.resolve(path === chromeDir),
+      readlinkExists: () => Promise.resolve(false),
+    };
+
+    // The listing legitimately names browser directories, so `WORKER_UNSAFE` is not the right pattern
+    // here; what must not appear is account material, which is what a profile picker displays and what
+    // an accident then logs.
+    const sources = await detectBrowserStateSources({ os: "linux", homeDir: "/home/ada", fileSystem });
+    const rendered = JSON.stringify(sources);
+    expect(rendered).not.toMatch(PERSONAL_DATA);
+    expect(rendered).not.toContain("QVRMRTpiYW5nZWQ");
   });
 
   it("names a running-browser refusal as a reason, not as a source path dump", () => {

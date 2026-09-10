@@ -12,24 +12,29 @@ import { readFile, readdir, readlink, stat } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
+import { maskEmail, maskOpaqueId } from "../protocol/masking.js";
+
 export type ChromiumFamily = "chrome" | "chromium" | "brave" | "edge";
 
-/** What Chromium reports about an account in a profile. */
+/**
+ * What Chromium reports about an account in a profile, masked for display.
+ *
+ * This is the only shape the account information ever takes on its way out of this module: the raw
+ * address and GAIA id are masked while parsing, so an unmasked value is not available to a caller who
+ * forgets to mask it. A listing of the user's browsers is exactly the kind of object that ends up in a
+ * log line or a status render (INV-12), and it is built from a file that holds every profile on the
+ * machine.
+ *
+ * Nothing here identifies an account to the identity rules in `auth/identity.ts`. A Chromium GAIA id
+ * and Pi's ChatGPT account id live in different namespaces, so the listing feeds a human choosing a
+ * profile and nothing else.
+ */
 export interface ChromeAccountRef {
-  /** Chrome's account identifier when available; see {@link accountRefFor} for the fallback. */
-  readonly id: string;
-  readonly email?: string;
+  /** Masked GAIA id when Chrome recorded one. Absent when it did not — never invented. */
+  readonly gaiaIdMasked?: string;
+  readonly emailMasked?: string;
   readonly name?: string;
   readonly userName?: string;
-  readonly lastUsed?: string;
-}
-
-/** One `profile.info_cache` entry: enough to show a human a choice, nothing private. */
-export interface ChromeProfileInfo {
-  readonly name?: string;
-  readonly userName?: string;
-  readonly email?: string;
-  readonly gaiaId?: string;
   readonly lastUsed?: string;
 }
 
@@ -211,19 +216,20 @@ async function readProfile(
     ...(info?.name === undefined && info?.userName === undefined
       ? {}
       : { displayName: info.name ?? info.userName }),
-    accounts: info === undefined ? [] : [accountRefFor(directoryName, info)],
+    accounts: info === undefined ? [] : [info],
     lockedByRunningBrowser: browserRunning,
     stateReadable: true,
   };
 }
 
 /**
- * Read the account list out of `Local State`.
+ * Read the account list out of `Local State`, masked.
  *
  * The list lives in the plaintext `profile.info_cache` map. Anything encrypted — cookies, saved
- * passwords, the encryption key — is intentionally not looked at here.
+ * passwords, the encryption key — is intentionally not looked at here, and the plaintext identity
+ * fields are masked on the way out so the unmasked values never reach a caller.
  */
-export function parseChromeLocalState(text: string): Record<string, ChromeProfileInfo> | undefined {
+export function parseChromeLocalState(text: string): Record<string, ChromeAccountRef> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -233,31 +239,30 @@ export function parseChromeLocalState(text: string): Record<string, ChromeProfil
   if (typeof parsed !== "object" || parsed === null) return undefined;
 
   const rawInfoCache = recordAt(parsed as Record<string, unknown>, ["profile", "info_cache"]);
-  const infoCache: Record<string, ChromeProfileInfo> = {};
+  const infoCache: Record<string, ChromeAccountRef> = {};
   for (const [key, value] of Object.entries(rawInfoCache ?? {})) {
     if (typeof value !== "object" || value === null) continue;
     const entry = value as Record<string, unknown>;
     infoCache[key] = {
       ...optionalField(entry, "name", "name"),
       ...optionalField(entry, "user_name", "userName"),
-      ...optionalField(entry, "email", "email"),
-      ...optionalField(entry, "gaia_id", "gaiaId"),
+      ...maskedField(entry, "email", "emailMasked", maskEmail),
+      ...maskedField(entry, "gaia_id", "gaiaIdMasked", maskOpaqueId),
       ...optionalField(entry, "last_used", "lastUsed"),
     };
   }
   return infoCache;
 }
 
-function accountRefFor(profileDirectoryName: string, info: ChromeProfileInfo): ChromeAccountRef {
-  return {
-    // Chrome exposes no stable per-account id in info_cache besides gaia_id; falling back to the
-    // profile directory keeps the reference unique within this install.
-    id: info.gaiaId ?? `${profileDirectoryName}:info`,
-    ...(info.email === undefined ? {} : { email: info.email }),
-    ...(info.name === undefined ? {} : { name: info.name }),
-    ...(info.userName === undefined ? {} : { userName: info.userName }),
-    ...(info.lastUsed === undefined ? {} : { lastUsed: info.lastUsed }),
-  };
+/** Copy one field through a masking function, dropping it when Chrome did not record it. */
+function maskedField(
+  source: Record<string, unknown>,
+  from: string,
+  to: string,
+  mask: (value: string) => string,
+): Record<string, string> {
+  const value = source[from];
+  return typeof value === "string" && value.length > 0 ? { [to]: mask(value) } : {};
 }
 
 function optionalField(

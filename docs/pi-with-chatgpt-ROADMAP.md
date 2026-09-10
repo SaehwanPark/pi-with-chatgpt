@@ -231,14 +231,20 @@ while advice is still being applied (INV-03).
       every platform". Verified live on Linux: `~/.pi/agent/pi-with-chatgpt/browser` created `0700` with
       an `OWNER` marker and a self-ignoring `.gitignore`.
 - [x] Create isolated ChatGPT profile storage.
-      — `prepareStateStorage()` creates the tree and drops an `OWNER` marker; a pre-existing directory
-      without the marker is refused rather than adopted. Test: "drops an ownership marker and a
-      self-ignoring .gitignore" and "produces a profile that satisfies the INV-11 ownership check".
+      — `prepareStateStorage()` creates the tree and drops an `OWNER` marker; a pre-existing `browserRoot`
+      without the marker is refused before anything is written or chmod-ed, so a tree the extension did not
+      create is never adopted and the refusal leaves no side effects behind. Tests: "drops an ownership
+      marker and a self-ignoring .gitignore", "produces a profile that satisfies the INV-11 ownership
+      check", "refuses a pre-existing browser root that carries no ownership marker", "refuses adoption
+      without writing or chmod-ing anything" (real filesystem).
 - [x] Enforce restrictive filesystem permissions.
-      — `0700` dirs / `0600` files, re-applied after `mkdir` (umask masking), `O_NOFOLLOW`+exclusive
-      create against planted symlinks. Tests: "creates every directory owner-only and re-asserts the
-      mode", `modeGrantsAccessToOthers` across six modes, and "refuses an override that points at the
-      user's own browser".
+      — `0700` dirs / `0600` files, re-applied after `mkdir` (umask masking) and after an exclusive
+      `O_NOFOLLOW` create (also umask-masked), and the mode on disk is re-read and refused when it still
+      grants group or other access. Tests: "creates every directory owner-only and re-asserts the mode",
+      "refuses a planted symlink instead of writing through it" (`ELOOP`/`EPERM` → `symlink-refused`, real
+      filesystem), "refuses a state directory that is readable by other accounts", `assertPrivateDirectory`
+      for directories an import writes into but did not create, `modeGrantsAccessToOthers` across six modes,
+      and "refuses an override that points at the user's own browser".
 - [x] Ensure browser credentials are never exposed to the worker model.
       — `auth/status.ts` exposes masked fields only and `assertStatusIsRedacted` rejects
       credential-shaped keys/JWTs; `test/adviser-strings-worker-safe.test.ts` runs every auth decision,
@@ -252,21 +258,33 @@ while advice is still being applied (INV-03).
 
 - [x] Detect supported local Chromium-family profiles.
       — `detectBrowserStateSources()` (Chrome/Chromium/Brave/Edge on Linux + macOS), including whether
-      Chromium currently holds the profile. Tests: `browser/chrome-state.test.ts` (8). Live on Linux: 3
-      profiles found, all reported `lockedByRunningBrowser: true`, account hints readable.
+      Chromium currently holds the profile, with every account field masked while parsing
+      (`protocol/masking.ts`) and no fabricated identifier when Chrome recorded none. Tests:
+      `browser/chrome-state.test.ts` ("masks every identity field it returns", "reports no account id when
+      Chrome recorded none instead of inventing one"), plus
+      `test/adviser-strings-worker-safe.test.ts` "keeps account material out of a browser-source listing".
+      Live on Linux: 3 profiles found, all reported `lockedByRunningBrowser: true`, hints shown masked.
 - [x] Make import an explicit authentication/repair action.
-      — `planChromeStateImport` is pure planning with no implicit caller, and refuses a non-empty
-      destination so nothing can import "by the way"; the command that invokes it lands in M9.
-      Tests: `browser/cookie-import.test.ts` "refuses to overwrite a profile that already has a session",
-      "refuses to import a profile onto itself".
+      — `planChromeStateImport` is pure planning with no implicit caller and refuses a non-empty
+      destination so nothing can import "by the way". `applyChromeStateImport(plan, authorization, …)`
+      refuses an import carrying no human authorization, and `authorizeChromeStateImport` mints one only
+      for the phrase-bearing confirmation, fingerprinted to the plan's source and destination (INV-11).
+      The command that invokes it lands in M9. Tests: `browser/cookie-import.test.ts`
+      "refuses to overwrite a profile that already has a session", "refuses to import a profile onto
+      itself", "refuses to copy without a human authorization", "refuses an authorization minted for a
+      different plan", "refuses a profile directory name that is not a single relative directory name".
 - [x] Open source browser profile read-only.
       — Import is a copy: no source path is ever opened for writing, and the plan is computed before any
       byte moves. Tests: "copies only the minimum set, in the expected layout", "refuses to copy from a
       running browser rather than risking a torn database".
 - [x] Import only the state necessary to seed the isolated adviser profile.
       — `MINIMUM_CHATGPT_STATE_FILES` is an allowlist (cookie DB + `-wal`/`-shm` + `Local State`);
-      an allowlist, so a new Chromium directory cannot silently widen the copy. Test: "never copies
-      anything outside the allowlist".
+      an allowlist, so a new Chromium directory cannot silently widen the copy. `Local State` is scrubbed
+      of the account metadata it does not need (`scrubChromeLocalState`,
+      `LOCAL_STATE_SCRUB_PATHS`) and verification fails a copy that still carries it. Tests: "never copies
+      anything outside the allowlist", "scrubs account metadata from the copied Local State",
+      "keeps the Windows key reference and drops it elsewhere", "fails a copy that still carries account
+      metadata", "refuses to copy a Local State it cannot examine".
 - [x] Never automate the user's active browser for normal jobs.
       — No launcher for a user profile exists; `AdviserLoginPort` has no click/type/navigate/solve method,
       so the login flow cannot automate a browser even by accident
@@ -313,17 +331,23 @@ while advice is still being applied (INV-03).
 ## Account Matching
 
 - [x] Compare Pi OpenAI identity with ChatGPT browser identity where possible.
-      — `auth/identity.ts` compares account hints and returns `match`/`mismatch`/`unknown`; an
-      unconfirmable side is never reported as matched (`auth/identity.test.ts`,
-      `auth/adviser-auth.test.ts` "calls an unconfirmable identity unverified rather than matched").
+      — `auth/identity.ts` is the single authority: `resolveAccountIdentity` answers every case
+      (`confirmed`/`unverified`/`awaiting-user`/`skipped`) and `auth/adviser-auth.ts` holds no second copy,
+      because two encodings of this rule disagreeing is how the looser one came to govern. Identifiers
+      compare only inside a namespace, so a Chromium `gaia_id` against a ChatGPT account id is `unknown`
+      with a stated reason rather than a permanent mismatch. Tests: `auth/identity.test.ts`,
+      `auth/adviser-auth.test.ts` "calls an unconfirmable identity unverified rather than matched",
+      "distinguishes cross-namespace ids from a mismatch instead of alarming on both".
 - [x] Detect likely account mismatch.
       — A demonstrated mismatch requires both sides identified and differing; an API key counts as no
       identity, so it can never "match" a browser session. Tests: "treats a Pi API-key identity as no
       identity at all", "matches on account id".
 - [x] Never silently switch to a different ChatGPT account.
-      — Consultation is refused across a mismatch until an explicit choice exists; there is no boolean
-      "ignore mismatches". Tests: "refuses to consult across a silent account switch", "never proceeds
-      silently from an unknown match".
+      — Consultation is refused across a mismatch until an explicit choice exists, there is no boolean
+      "ignore mismatches", and a choice is bound to the account pair it was minted for so approving one
+      browser account cannot authorise the next one that appears. Tests: "refuses to consult across a
+      silent account switch", "never proceeds silently from an unknown match", "does not carry a
+      keep-current choice over to a different browser account".
 - [x] Provide an explicit user choice/recovery path on mismatch.
       — Three choices (`keep-current` / `reauthenticate` / `skip-adviser`), each with its own outcome;
       reauthenticate routes to the login prompt rather than pretending progress. Tests:

@@ -14,15 +14,29 @@ import { join } from "node:path";
 
 import type { AdviserProfile } from "../browser/profile.js";
 import { piOpenAiIdentity } from "./openai-identity.js";
-import { readPiOpenAiCredential, defaultPiAuthPath, type PiCredentialFailure } from "./pi-credential.js";
+import {
+  readPiOpenAiCredential,
+  defaultPiAuthPath,
+  type PiCredentialAccessor,
+  type PiCredentialFailure,
+} from "./pi-credential.js";
 import { SESSION_MARKER_FILE } from "./login-flow.js";
 
 /** How long an account identifier may be shown. Enough to recognise an account, not to reuse it. */
 const ACCOUNT_ID_PREFIX_LENGTH = 8;
 
 export interface AdviserStatusInput {
-  /** Overridable so tests are deterministic and a future config option can point elsewhere. */
+  /**
+   * Read the credential from this file instead of asking Pi.
+   *
+   * Absent means "use Pi's own precedence", which is what the user sees: Pi resolves env-var and
+   * store-backed credentials that a path in this extension would never find. Supplying a path is a
+   * deliberate narrowing for tests and for pointing the status surface at another store, and it also
+   * inverts the reader's preference order (see `readPiOpenAiCredential`).
+   */
   readonly piAuthPath?: string;
+  /** Loader for Pi's package, injectable so the `pi-api` path is testable without Pi installed. */
+  readonly loadPiModule?: () => Promise<PiCredentialAccessor>;
 }
 
 export interface AdviserStatus {
@@ -52,9 +66,16 @@ export interface AdviserStatus {
  */
 export async function adviserStatus(profile: AdviserProfile, input: AdviserStatusInput = {}): Promise<AdviserStatus> {
   const piAuthPath = input.piAuthPath ?? defaultPiAuthPath();
+  // Only an explicit path narrows where the credential is read from. Passing the default path through
+  // unconditionally would ask the file instead of Pi, and a credential Pi resolves from its own store
+  // would then be reported as "no file, sign in" to a user who is already signed in.
+  const credentialSource = {
+    ...(input.piAuthPath === undefined ? {} : { authPath: input.piAuthPath }),
+    ...(input.loadPiModule === undefined ? {} : { loadPiModule: input.loadPiModule }),
+  };
   return {
     piAuthFile: await describeAuthFile(piAuthPath),
-    openAiSignIn: await describeSignIn(piAuthPath),
+    openAiSignIn: await describeSignIn(credentialSource),
     profile: await describeProfile(profile),
     // Constant by design: if this ever became data-dependent it would mean the profile could stop being
     // ours, which is INV-11 rather than a status detail.
@@ -72,8 +93,11 @@ async function describeAuthFile(path: string): Promise<AdviserStatus["piAuthFile
   }
 }
 
-async function describeSignIn(path: string): Promise<AdviserStatus["openAiSignIn"]> {
-  const read = await readPiOpenAiCredential({ authPath: path });
+async function describeSignIn(source: {
+  readonly authPath?: string;
+  readonly loadPiModule?: () => Promise<PiCredentialAccessor>;
+}): Promise<AdviserStatus["openAiSignIn"]> {
+  const read = await readPiOpenAiCredential(source);
   if (!read.ok) return { present: false, reason: reasonFor(read.failure) };
   const credential = read.credential;
   if (credential === undefined) return { present: false, reason: "no-openai-credential" };

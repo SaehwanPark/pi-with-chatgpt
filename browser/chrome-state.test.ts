@@ -13,12 +13,12 @@ const LOCAL_STATE = JSON.stringify({
         name: "Ada Lovelace",
         user_name: "ada",
         email: "ada@example.com",
-        gaia_id: "1234",
+        gaia_id: "1234567890123456789012",
         last_used: "13300000000000000",
         // Anything else Chrome stores here must not leak into the reference.
         icon_url: "https://example.invalid/a.png",
       },
-      "Profile 1": { name: "Grace Hopper", email: "grace@example.com" },
+      "Profile 1": { name: "Grace Hopper", email: "grace@example.com", gaia_id: "99" },
     },
   },
   os_crypt: { encrypted_key: "QVRMRTpiYW5nZWQ6ZmFrZQ==" },
@@ -50,6 +50,9 @@ function fakeFs(overrides: {
 
 const CHROME_DIR = "/home/ada/.config/google-chrome";
 
+/** A `Local State` whose one profile has a name and no identifiers at all. */
+const LOCAL_STATE_NO_ACCOUNT = JSON.stringify({ profile: { info_cache: { Default: { name: "Ada" } } } });
+
 describe("detectBrowserStateSources", () => {
   it("finds the Linux Chrome profile and its accounts", async () => {
     const sources = await detectBrowserStateSources({
@@ -70,9 +73,30 @@ describe("detectBrowserStateSources", () => {
 
     const first = install.profiles[0] as (typeof install.profiles)[number];
     expect(first.displayName).toBe("Ada Lovelace");
-    expect(first.accounts[0]?.email).toBe("ada@example.com");
-    expect(first.accounts[0]?.id).toBe("1234");
-    expect(JSON.stringify(first)).not.toContain("QVRMRTpiYW5nZWQ");
+    // The listing is display-only: recognisable, and with no value that could be replayed or logged.
+    expect(first.accounts[0]?.emailMasked).toBe("a***@example.com");
+    expect(first.accounts[0]?.gaiaIdMasked).toBe("123456…");
+    const rendered = JSON.stringify(first);
+    expect(rendered).not.toContain("QVRMRTpiYW5nZWQ");
+    expect(rendered).not.toContain("ada@example.com");
+    expect(rendered).not.toMatch(/"gaia_id"|"email":\s*"ada/u);
+  });
+
+  it("reports no account id when Chrome recorded none instead of inventing one", async () => {
+    // A fabricated id looks like an identifier and will eventually be compared against another, which
+    // is how "same profile" turns into "same account". The profile directory already names the profile.
+    const sources = await detectBrowserStateSources({
+      os: "linux",
+      homeDir: "/home/ada",
+      fileSystem: fakeFs({
+        exists: { [CHROME_DIR]: true },
+        dirs: { [CHROME_DIR]: ["Default"] },
+        files: { [`${CHROME_DIR}/Local State`]: LOCAL_STATE_NO_ACCOUNT },
+      }),
+    });
+    const account = sources.installs[0]?.profiles[0]?.accounts[0];
+    expect(account).toEqual({ name: "Ada" });
+    expect(JSON.stringify(account)).not.toContain("Default");
   });
 
   it("reports a running browser instead of pretending the profile is free to copy", async () => {
@@ -150,5 +174,23 @@ describe("parseChromeLocalState", () => {
 
   it("tolerates a file without an info cache", () => {
     expect(parseChromeLocalState("{}")).toEqual({});
+  });
+
+  it("masks every identity field it returns", () => {
+    const parsed = parseChromeLocalState(
+      JSON.stringify({
+        profile: { info_cache: { Default: { email: "ada@example.com", gaia_id: "123456789" } } },
+      }),
+    );
+    expect(parsed?.["Default"]).toEqual({ emailMasked: "a***@example.com", gaiaIdMasked: "123456…" });
+  });
+
+  it("hides a short identifier entirely rather than revealing most of it", () => {
+    // Prefix-masking a 4-character id would publish almost the whole value; below the recognisable
+    // threshold the honest answer is "nothing".
+    const parsed = parseChromeLocalState(
+      JSON.stringify({ profile: { info_cache: { Default: { gaia_id: "1234" } } } }),
+    );
+    expect(parsed?.["Default"]).toEqual({ gaiaIdMasked: "***" });
   });
 });

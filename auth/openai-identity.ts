@@ -1,3 +1,4 @@
+import { maskEmail } from "../protocol/masking.js";
 import type { AccountIdentityHint } from "./identity.js";
 import type { SecretText } from "./secret-text.js";
 
@@ -84,7 +85,7 @@ export function piOpenAiIdentity(
 
   return {
     source: "pi-oauth",
-    ...(accountId !== undefined ? { accountIdHint: accountId } : {}),
+    ...(accountId !== undefined ? { accountIdHint: accountId, accountIdNamespace: "chatgpt-account" } : {}),
     ...(email !== undefined ? { emailMasked: maskEmail(email) } : {}),
     ...(plan !== undefined ? { planHint: plan } : {}),
     expiresAt: credential.expiresAt,
@@ -99,19 +100,10 @@ export function piApiKeyIdentity(): AccountIdentityHint {
   return { source: "none" };
 }
 
-/**
- * Mask an email for display: keep the first character and the domain, hide the local part.
- *
- * Full addresses are personal data and this project's rule for personal data is that it does not go
- * into logs, ledgers, or model context. The mask still answers "is this the account I think it is?".
- */
-export function maskEmail(email: string): string {
-  const at = email.lastIndexOf("@");
-  if (at <= 0) return "***";
-  const local = email.slice(0, at);
-  const domain = email.slice(at + 1);
-  return `${local.slice(0, 1)}***@${domain}`;
-}
+// `maskEmail` moved to `protocol/masking.ts` so `browser/` can use the same rule without importing
+// `auth/` (which would invert the auth → browser dependency). Re-exported here because this is still
+// where a reader looks for "how does a Pi identity get displayed".
+export { maskEmail };
 
 /** Whether a plan label looks like a paid tier. Hint only; never an entitlement decision. */
 export function planHintSuggestsPaid(planHint: string | undefined): boolean | undefined {

@@ -312,8 +312,10 @@ describe("applyChromeStateImport", () => {
     disk.files.set(`${SOURCE_DIR}/Network/Cookies`, "SQLite format 3\0cookies");
     disk.files.set(`${SOURCE_DIR}/Local State`, "{ not json");
 
+    // A distinct reason: "could not parse" must not be reported as "you did not confirm", or the user
+    // is sent looking for a confirmation dialog they already answered.
     await expect(applyChromeStateImport(plan, authorization, fs)).rejects.toMatchObject({
-      reason: "not-authorized",
+      reason: "source-unscrubbable",
     });
   });
 });

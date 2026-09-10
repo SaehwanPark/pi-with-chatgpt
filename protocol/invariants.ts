@@ -132,7 +132,10 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     id: "INV-12",
     summary: "Credentials, cookies, and tokens never enter logs, ledger records, config, or model context.",
     source: "docs/ARCHITECTURE.md#inv-12",
-    guard: "config/schema.ts + ledger/record.ts + auth/secret-text.ts + auth/status.ts",
+    // `protocol/masking.ts` is the guard the modules share: the rule lives once, so a module that
+    // displays an account cannot re-derive it loosely.
+    guard:
+      "config/schema.ts + ledger/record.ts + auth/secret-text.ts + auth/status.ts + protocol/masking.ts + browser/chrome-state.ts",
   },
   {
     id: "INV-13",

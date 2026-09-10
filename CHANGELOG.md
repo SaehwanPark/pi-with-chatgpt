@@ -166,6 +166,56 @@ change invalidates (see `AGENTS.md`).
   `#private` field — plus an assertion that the instance stays frozen, so a debugging getter cannot attach
   the plaintext as an enumerable property.
 
+### Hardened after review (M2, second pass)
+
+A second invariant review of the same branch found the class of defect that unit tests cannot see: a
+documented guard with no code behind it, and one safety rule encoded in two modules with opposite answers.
+Both are fixed in code, and the docs now describe what the code does.
+
+- Three state-tree defences that `docs/AUTHENTICATION.md`, `docs/SECURITY.md`, and the roadmap all claimed
+  and none had: `writePrivateFileNoFollow` performs the create-exclusive + `O_NOFOLLOW` open (a planted
+  symlink is refused as `symlink-refused`; `lstat` where `O_NOFOLLOW` is unavailable, and `chmod`
+  re-applied because an `open` mode is umask-masked), `prepareStateStorage` reads the `OWNER` marker
+  before it writes or chmods anything and refuses a pre-existing `browserRoot` that lacks it, and
+  `modeGrantsAccessToOthers` is load-bearing — the mode on disk is re-read and refused, with
+  `assertPrivateDirectory` for directories an import writes into but did not create. The guards are
+  syscalls, so they are tested against a real filesystem; a fake can only encode the author's model of
+  `open`, which is how all three survived the first review.
+- `import-chrome-state` is gated at the effect, not only in the vocabulary.
+  `applyChromeStateImport(plan, authorization, fileSystem)` refuses an import with no authorization
+  (`not-authorized`) or one minted for another plan (`authorization-for-other-plan`), and
+  `authorizeChromeStateImport` mints one only for the `HUMAN_IMPORT_CONFIRMATION` phrase, so
+  `rg -n confirmedByHuman` is a complete audit of every call site. A phrase rather than a boolean is the
+  gate against *accidental* plumbing; it is not a barrier to a deliberate cast, and it is documented as
+  that rather than promised as more.
+- `Local State` is scrubbed on the way in (`scrubChromeLocalState`, `LOCAL_STATE_SCRUB_PATHS`) rather than
+  copied whole — whole carries `account_info` and `profile.info_cache` for every profile on the machine —
+  keeping `os_crypt.encrypted_key` on Windows only. An unparseable `Local State` is refused
+  (`source-unscrubbable`, a reason of its own rather than "not authorized"), and verification fails a copy
+  that still carries account metadata (`unscrubbed-account-metadata`).
+- One authoritative answer to "may this consultation proceed?". `resolveAccountIdentity`
+  (`auth/identity.ts`) handles every case — including the unknown case `auth/adviser-auth.ts` used to
+  early-return past, which made the strict copy dead code and left every run reporting `unknown → consult`
+  — and `resolveAdviserAuth` delegates to it instead of holding its own rule.
+- A mismatch choice is bound to the account pair it was made for (`AccountMismatchDecision.forAccountPair`,
+  an opaque digest; `decideAccountMismatch`), so `keep-current` for one browser account has no effect when
+  a different account appears later. The fact was renamed `mismatchChoice` → `mismatchDecision` because the
+  old name is what a caller reaching for an unscoped flag would reach for.
+- Identifiers declare a namespace (`AccountIdNamespace`). Chromium's `gaia_id` and Pi's
+  `chatgpt_account_id` are different kinds of thing, and comparing them for equality produced a permanent
+  "mismatch" against every real session; cross-namespace is now `unknown` with a stated reason, and
+  `browser/chrome-state.ts` no longer fabricates a per-account id from a profile directory name.
+- `detectBrowserStateSources` masks emails and GAIA ids while parsing (`protocol/masking.ts`, newly shared
+  by `auth/` and `browser/` so the rule cannot drift), and `test/adviser-strings-worker-safe.test.ts`
+  covers the listing.
+- Path containment covers the whole source path: the profile directory name must be a single relative
+  directory name, and the resolved path is asserted to stay inside the user-data-dir it was declared
+  inside. A containment test that only checked the root passed while a `..` in the profile name walked the
+  copy into the extension's own profile.
+- `adviserStatus` asks Pi for the credential unless the caller names a file. It previously passed the
+  default path unconditionally, so `via: "pi-api"` was unreachable and a user signed in through Pi's own
+  store was told `missing-file` — "sign in" — while the adviser worked fine.
+
 ### Changed
 
 - Toolchain fixed to TypeScript + Node 22 + npm + vitest (previously "to be fixed in M0");
