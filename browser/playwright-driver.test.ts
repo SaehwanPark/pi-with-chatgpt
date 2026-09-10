@@ -51,6 +51,7 @@ function node(text: string): FakeNode {
 function fakePage(thread: FakeThread, startUrl: string) {
   const navigations: string[] = [];
   const typed: string[] = [];
+  const clicked: string[] = [];
   let currentUrl = startUrl;
   const page = {
     closed: false,
@@ -78,7 +79,10 @@ function fakePage(thread: FakeThread, startUrl: string) {
         return {
           isVisible: () => Promise.resolve(target !== undefined && target.visible),
           innerText: () => Promise.resolve(target?.text ?? ""),
-          click: () => Promise.resolve(),
+          click: () => {
+            clicked.push(target?.text ?? "<no node>");
+            return Promise.resolve();
+          },
           fill: (text: string) => {
             typed.push(text);
             return Promise.resolve();
@@ -96,7 +100,7 @@ function fakePage(thread: FakeThread, startUrl: string) {
       };
     },
   };
-  return { navigations, page, typed };
+  return { clicked, navigations, page, typed };
 }
 
 function launcherFor(page: ReturnType<typeof fakePage>["page"]): PlaywrightLauncher {
@@ -117,7 +121,7 @@ async function startedDriver(options: {
   readonly pollIntervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
 }) {
-  const { page, navigations, typed } = fakePage(options.thread, options.url ?? "https://chatgpt.com/");
+  const { clicked, navigations, page, typed } = fakePage(options.thread, options.url ?? "https://chatgpt.com/");
   const driver = new PlaywrightAdviserDriver({
     profile: PROFILE,
     launch: launcherFor(page),
@@ -125,7 +129,7 @@ async function startedDriver(options: {
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
   });
   await driver.start({ purpose: "consultation" });
-  return { driver, navigations, typed };
+  return { clicked, driver, navigations, typed };
 }
 
 /** Drives scripted thread changes from the polling delay: `step` runs once per poll that slept. */
@@ -202,5 +206,45 @@ describe("PlaywrightAdviserDriver.openChatGPT", () => {
 
     expect(navigations).toEqual([CHATGPT_URLS.home]);
     expect(observation.state).toBe("conversation-ready");
+  });
+});
+
+describe("PlaywrightAdviserDriver.selectModel", () => {
+  const PICKER = 'button[aria-label*="model" i]';
+  const OPTION = '[role="menuitem"]';
+
+  it("will not let a page-derived model id address an element outside the model menu", async () => {
+    // `listModels()` reports model ids read off the picker, and `consult()` hands one straight back to
+    // `selectModel`, which builds a `:has-text("…")` selector from it. Unsanitized, an id like this closes
+    // the string literal and the driver clicks whatever element the injected selector matches — the page
+    // choosing what the extension clicks (INV-05).
+    const thread: FakeThread = {
+      [PICKER]: [node("GPT-5.5")],
+      [OPTION]: [],
+      // The element the injected selector would have matched.
+      '[role="menuitem"]:has-text("x"):has-text("y")': [node("Log out of this device")],
+    };
+    const { clicked, driver } = await startedDriver({ thread });
+
+    const selected = await driver.selectModel('x"):has-text("y');
+
+    expect(selected).toBe(false);
+    expect(clicked).not.toContain("Log out of this device");
+  });
+
+  it("refuses to click whatever an empty model id happens to match", async () => {
+    // `:has-text("")` matches every option in the menu, so a degenerate id used to open the menu and click
+    // its first entry before reporting failure. Reporting "could not select" must not cost a stray click.
+    const thread: FakeThread = {
+      [PICKER]: [node("GPT-5.5")],
+      [OPTION]: [],
+      '[role="menuitem"]:has-text("")': [node("First option in the menu")],
+    };
+    const { clicked, driver } = await startedDriver({ thread });
+
+    const selected = await driver.selectModel("");
+
+    expect(selected).toBe(false);
+    expect(clicked).not.toContain("First option in the menu");
   });
 });

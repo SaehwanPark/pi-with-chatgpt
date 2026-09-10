@@ -202,8 +202,10 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     if (modelMatchesLabel(modelId, await safeText(picker.first()))) return true;
 
     await picker.first().click().catch(() => undefined);
+    const fragment = safeSelectorFragment(modelId);
+    if (fragment === undefined) return false;
     for (const candidate of CHATGPT_SELECTORS.modelOption) {
-      const option = page.locator(`${candidate}:has-text("${modelLabelFragment(modelId)}")`);
+      const option = page.locator(`${candidate}:has-text("${fragment}")`);
       if ((await option.count().catch(() => 0)) > 0) {
         await option.first().click().catch(() => undefined);
         // Confirm by re-reading the picker, never by assuming the click landed.
@@ -429,6 +431,29 @@ async function safeText(node: { innerText(): Promise<string> } | undefined): Pro
 function modelLabelFragment(modelId: string): string {
   const normalized = modelId.toLowerCase().replace(/^gpt-?/u, "");
   return normalized.length > 0 ? normalized : modelId;
+}
+
+/**
+ * A model label trimmed to what is safe to interpolate into a `:has-text("…")` selector, or `undefined`
+ * when nothing usable survives.
+ *
+ * `modelId` is not always operator input. `runtime.consult()` passes the id that
+ * `resolveModelPreference` landed on, and both its preference match and its fallback come from
+ * `listModels()`, whose model ids are read off the model picker. So this string can be page output, and
+ * page output must never be able to close a string literal and address an element that is not a menu
+ * option (INV-05). Everything outside model-name material is dropped rather than escaped, because the
+ * fragment only has to be recognizable enough to find an option whose selection is then confirmed by
+ * re-reading the picker.
+ *
+ * An empty result is refused rather than passed through: `:has-text("")` matches every option, and "click
+ * whatever the menu happens to open with" is not a way to select a model.
+ */
+function safeSelectorFragment(modelId: string): string | undefined {
+  const fragment = modelLabelFragment(modelId)
+    .replace(/[^\p{L}\p{N} ._-]/gu, "")
+    .slice(0, 64)
+    .trim();
+  return fragment.length > 0 ? fragment : undefined;
 }
 
 function hostIsChatGpt(url: string): boolean {

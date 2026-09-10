@@ -246,7 +246,7 @@ Both are fixed in code, and the docs now describe what the code does.
 - `StateStoragePaths.diagnosticsDir` for post-login artifacts, under the same permissioned root as the profile.
 - Live validation probes under `_workspace/m3/` (`live-exit.ts`, `live-selectors.ts`) that drive the shipped
   composition root against the real ChatGPT surface.
-- 73 new unit tests (582 total across 49 files).
+- 75 new unit tests (584 total across 49 files).
 
 ### Hardened after live validation (M3)
 
@@ -277,7 +277,7 @@ not see any of these:
 
 ### Hardened after invariant review (M3)
 
-The M3 gate (`pwc-invariant-review`) found no blockers and four majors. All four sat in the one module
+The M3 gate (`pwc-invariant-review`) found no blockers and five majors. All five sat in the one module
 nothing tested: `playwright-driver.ts` is glue, so its rules had been asserted only through the pure
 classifiers that call it, never through the driver itself. That module now has `playwright-driver.test.ts`,
 which drives the real driver against a scripted fake page — no Playwright import, and the fake thread
@@ -301,6 +301,16 @@ mutates *between polls*, which is the only way to express "the old answer was al
   `human-verification` explanation now runs it through `scrubPageText(…, 120)` like every other
   page-derived string, so a challenge page cannot put a token in a status line or make one long
   `<title>` into a paragraph (`chatgpt-dom.test.ts` "keeps a hostile page title out of the explanation").
+- **Page-derived text chose what the driver clicks.** `selectModel` built
+  `:has-text("<model-id fragment>")` by interpolation, and a model id is not always operator input:
+  `runtime.consult()` passes the id `resolveModelPreference` landed on, and both its match and its fallback
+  come from `listModels()`, whose ids are read off the model picker. A label containing `")` closed the
+  string literal and addressed an element outside the model menu — verified against the fake, where the
+  unsanitized driver clicks a node called "Log out of this device" (INV-05). `safeSelectorFragment` keeps
+  model-name characters only and refuses an empty fragment instead of building `:has-text("")`, which
+  matches every option and used to click the first one. Named tests: `playwright-driver.test.ts`
+  "will not let a page-derived model id address an element outside the model menu" and "refuses to click
+  whatever an empty model id happens to match".
 - **`diagnostics/` was outside the permissioned tree.** `prepareStateStorage` created, re-permissioned,
   and re-read the mode of the state, browser, profile, and import directories, and omitted
   `paths.diagnosticsDir` — the one directory that accumulates page text and screenshots. `diagnostics.ts`

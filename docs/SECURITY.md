@@ -23,7 +23,7 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | --- | --- | --- |
 | INV-01 | The adviser has no execution ownership | `browser/runtime.ts` + `browser/runtime-types.ts` (`AdviserBrowserRuntime` exposes only `status`/`ensureReady`/`probeSurface`/`discoverModels`/`consult`/`shutdown`; no page, context, driver, selector, or script accessor — asserted by `runtime.test.ts` "exposes no accessor that could address the page") |
 | INV-02 | No non-GitHub source transport in V1 | `protocol/context-channel.ts` (`V1_CONTEXT_CHANNELS === ["github"]`), `protocol/repo.ts` (`supportedGitHubHosts`, `credentials-in-url` rejection), `git/authority.test.ts` (prohibited-path source scan) |
-| INV-05 | Adviser output is untrusted, non-authoritative input | `protocol/trust.ts` (`AdviserText` provenance brand, `assertNotAdviserAuthored`, `ApprovedAction` requires a `WorkerDecision`) |
+| INV-05 | Adviser output is untrusted, non-authoritative input | `protocol/trust.ts` (`AdviserText` provenance brand, `assertNotAdviserAuthored`, `ApprovedAction` requires a `WorkerDecision`), `browser/playwright-driver.ts` (`safeSelectorFragment`: text read off the page — a model id from the picker — can never address an element other than a model option) |
 | INV-06 | A consultation implies no git authority | `git/authority.ts` (`READ_ONLY_GIT_INVOCATIONS` allowlist, `FORBIDDEN_GIT_ARG_TOKENS` incl. file-write/exec arguments such as `--output`, `--ext-diff`, `--upload-pack`, `-c`) |
 | INV-04 | The adviser is never shown work that is not published on GitHub | `git/remote-availability.ts` (`assessCheckpointAvailability`, `isDispatchPermitted`), `git/github-api.ts` (exact-object probe; a 404 is only `absent` when the repository itself is visible), `protocol/checkpoint.ts` (`checkDispatchReadiness` refuses `unknown` and `unavailable`) |
 | INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) |
@@ -97,6 +97,12 @@ named in a table.
   through `protocol/trust.ts` branding (M6) and never through `ui/worker-facing.ts`'s projection unchanged.
 - **The surface is ChatGPT or nothing.** `classifySurface` returns `unknown`/not-actionable for any non-
   ChatGPT host, so a page that redirected elsewhere is never used as an adviser channel.
+  The navigation test pins the one URL the driver can visit.
+- **Page text never becomes a selector.** The only selector built from a string is the model-menu match,
+  and `safeSelectorFragment` reduces it to model-name characters or refuses it outright: the driver never
+  emits `:has-text("")` (which matches every menu entry) and never lets a label containing `")` open a new
+  selector clause. Model ids arrive from `listModels()`, i.e. from the page, so this is page input reaching
+  an interaction path, and it is treated as such (INV-05).
 - **A human gate blocks consultation, never observation** (INV-11). Solving a challenge is a human act, so
   `consult()` refuses while the surface is non-actionable and no automatic retry is offered. Reading the page
   to ask "has the person finished?" is not automating the challenge and must stay possible — latching the gate

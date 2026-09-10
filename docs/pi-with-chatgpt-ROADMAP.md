@@ -510,6 +510,9 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 - [x] Detect when configured model is unavailable.
       — `modelMatchesLabel` + `selectModel` re-reads the picker; `model-unavailable` is returned, never
       silently ignored (`runtime.test.ts` "reports model-unavailable instead of asking a different model").
+      Selecting a model never clicks an arbitrary element: `safeSelectorFragment` refuses page-derived text
+      that could leave the model menu (`playwright-driver.test.ts` "will not let a page-derived model id
+      address an element outside the model menu").
 - [x] Fall back safely or report capability mismatch.
       — `resolveModelPreference` reports `degraded` + `reason` on every non-top-preference landing.
 - [x] Never silently use a clearly weaker/free model when the request specifically requires the configured adviser capability.
