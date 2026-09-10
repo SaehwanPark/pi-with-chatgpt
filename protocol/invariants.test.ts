@@ -31,9 +31,10 @@ describe("invariant index", () => {
     }
   });
 
-  it("keeps deferred guards to the two that need runtime machinery", () => {
-    // INV-04 needs a real remote probe (M1); INV-14 needs the prompt assembler (M6).
-    expect(plannedGuards().map((invariant) => invariant.id)).toEqual(["INV-04", "INV-14"]);
+  it("keeps deferred guards to the one that needs unwritten machinery", () => {
+    // INV-14 needs the M6 prompt assembler. A deferred guard must be re-checked at every milestone:
+    // an invariant left "planned" forever is how a safety property quietly disappears.
+    expect(plannedGuards().map((invariant) => invariant.id)).toEqual(["INV-14"]);
   });
 
   it("documents the invariant set in the architecture doc", () => {

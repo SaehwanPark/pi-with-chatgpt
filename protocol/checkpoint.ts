@@ -33,7 +33,14 @@ export type RemoteProbeFailureReason =
   | "network-unreachable"
   | "github-auth-failed"
   | "remote-not-configured"
-  | "probe-timeout";
+  | "probe-timeout"
+  /**
+   * The probe completed but its answer is ambiguous — typically a 404 from a private repository
+   * queried with a token that cannot see it, which is indistinguishable from "the commit is not
+   * there". Keeping this as `unknown` rather than `unavailable` is what stops "we could not verify"
+   * from being reported as "verified absent".
+   */
+  | "probe-inconclusive";
 
 export function isRemoteAvailable(availability: RemoteAvailability): boolean {
   return availability.status === "available";

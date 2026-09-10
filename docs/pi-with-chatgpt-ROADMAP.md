@@ -95,71 +95,85 @@
 
 ## Repository Detection
 
-- [ ] Detect current git repository root.
-- [ ] Detect active branch.
-- [ ] Detect HEAD commit.
-- [ ] Detect configured remotes.
-- [ ] Select preferred GitHub remote deterministically.
-- [ ] Parse SSH and HTTPS GitHub remote forms.
-- [ ] Resolve canonical `owner/repo`.
-- [ ] Reject unsupported/non-GitHub remotes clearly in V1.
-- [ ] Handle detached HEAD.
-- [ ] Handle worktrees.
-- [ ] Handle repositories with multiple GitHub remotes.
+- [x] Detect current git repository root.
+- [x] Detect active branch.
+- [x] Detect HEAD commit.
+- [x] Detect configured remotes.
+- [x] Select preferred GitHub remote deterministically.
+- [x] Parse SSH and HTTPS GitHub remote forms.
+- [x] Resolve canonical `owner/repo`.
+- [x] Reject unsupported/non-GitHub remotes clearly in V1.
+- [x] Handle detached HEAD.
+- [x] Handle worktrees.
+- [x] Handle repositories with multiple GitHub remotes.
 
 ## Immutable Checkpoint Resolution
 
-- [ ] Accept `HEAD`, branch, tag, SHA, and optional PR-derived refs.
-- [ ] Resolve every requested ref to a full commit SHA.
-- [ ] Persist both `requestedRef` and `resolvedCommit`.
-- [ ] Never silently retarget a completed/active consultation to a newer commit.
-- [ ] Add utilities for ancestor/divergence checks.
+- [x] Accept `HEAD`, branch, tag, SHA, and optional PR-derived refs.
+- [x] Resolve every requested ref to a full commit SHA.
+- [x] Persist both `requestedRef` and `resolvedCommit`.
+- [x] Never silently retarget a completed/active consultation to a newer commit.
+- [x] Add utilities for ancestor/divergence checks.
 
 ## Remote Availability
 
-- [ ] Determine whether target checkpoint is available on the selected GitHub remote.
-- [ ] Distinguish:
-  - [ ] current commit already pushed;
-  - [ ] local commit exists but is not pushed;
-  - [ ] uncommitted working tree only;
-  - [ ] commit exists remotely but branch moved;
-  - [ ] object is no longer available remotely.
-- [ ] Refuse adviser dispatch when the checkpoint is not remotely inspectable.
-- [ ] Do not perform blanket `git add -A`.
-- [ ] Do not infer authorization to commit/push from an adviser request.
-- [ ] Expose a structured “checkpoint not remote” result for the worker to handle under normal git permissions.
+- [x] Determine whether target checkpoint is available on the selected GitHub remote.
+- [x] Distinguish:
+  - [x] current commit already pushed;
+  - [x] local commit exists but is not pushed;
+  - [x] uncommitted working tree only;
+  - [x] commit exists remotely but branch moved;
+  - [x] object is no longer available remotely.
+- [x] Refuse adviser dispatch when the checkpoint is not remotely inspectable.
+- [x] Do not perform blanket `git add -A`.
+- [x] Do not infer authorization to commit/push from an adviser request.
+- [x] Expose a structured “checkpoint not remote” result for the worker to handle under normal git permissions.
 
 ## PR Detection
 
-- [ ] Detect whether the current branch corresponds to an open PR when possible.
-- [ ] Store PR number as advisory metadata, never as the immutable anchor.
-- [ ] Resolve PR HEAD to full commit SHA.
-- [ ] Keep SHA authoritative if PR HEAD later moves.
+- [x] Detect whether the current branch corresponds to an open PR when possible.
+- [x] Store PR number as advisory metadata, never as the immutable anchor.
+- [x] Resolve PR HEAD to full commit SHA.
+- [x] Keep SHA authoritative if PR HEAD later moves.
 
 ## Tests
 
-- [ ] HTTPS remote parsing.
-- [ ] SSH remote parsing.
-- [ ] fork/upstream remote selection.
-- [ ] detached HEAD.
-- [ ] branch ahead of remote.
-- [ ] branch behind remote.
-- [ ] diverged branch.
-- [ ] force-pushed branch with retained local SHA.
-- [ ] worktree behavior.
-- [ ] shallow clone behavior.
-- [ ] no GitHub remote.
-- [ ] multiple PR/ref scenarios.
+- [x] HTTPS remote parsing.
+- [x] SSH remote parsing.
+- [x] fork/upstream remote selection.
+- [x] detached HEAD.
+- [x] branch ahead of remote.
+- [x] branch behind remote.
+- [x] diverged branch.
+- [x] force-pushed branch with retained local SHA.
+- [x] worktree behavior.
+- [x] shallow clone behavior.
+- [x] no GitHub remote.
+- [x] multiple PR/ref scenarios.
 
 ## Exit Criteria
 
-- [ ] Given a normal GitHub-backed repo, the extension can produce a stable consultation identity:
-  - [ ] repo;
-  - [ ] branch;
-  - [ ] requested ref;
-  - [ ] full resolved SHA;
-  - [ ] optional PR;
-  - [ ] remote availability status.
+- [x] Given a normal GitHub-backed repo, the extension can produce a stable consultation identity:
+  - [x] repo;
+  - [x] branch;
+  - [x] requested ref;
+  - [x] full resolved SHA;
+  - [x] optional PR;
+  - [x] remote availability status.
+
+---
+
+
+**M1 evidence.** Implemented in `git/` (`repository.ts`, `ref-resolution.ts`, `ancestry.ts`,
+`remote-availability.ts`, `github-api.ts`, `pr-detection.ts`, `checkpoint-resolution.ts`) and specified
+in `docs/CHECKPOINT_PROTOCOL.md`. Verified by `git/*.test.ts` (137 tests across 10 files) and
+`test/git-integration.test.ts` (9 tests against real git repositories: worktrees, shallow clones,
+detached HEAD, tag/abbreviated resolution, divergence, and a real `file://` force-push that keeps the
+retained local SHA authoritative). `npm run verify` green: typecheck, lint, build, 293 tests, Pi smoke
+(Pi 0.85.1). Design decision recorded in `docs/CHECKPOINT_PROTOCOL.md` §7: the consultation *identity*
+is repo + requested ref + full SHA + optional PR + availability; the branch is carried as working-state
+context and is deliberately not part of identity, because a branch can be renamed, deleted, or rebased
+while advice is still being applied (INV-03).
 
 ---
 

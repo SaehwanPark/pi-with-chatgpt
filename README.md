@@ -14,9 +14,11 @@ The relationship is deliberately asymmetric:
 | **Pi** | edits, shell, tests, git, commits, pushes, and the final decision |
 | **ChatGPT** | advisory reasoning only — no execution, no orchestration, no write access |
 
-**Status:** M0 complete — the package builds, installs into Pi, activates with zero side effects,
-and enforces its architecture invariants in code and tests. Milestones M1–M10 (checkpoint
-resolution, authentication, browser automation, consultation protocol, UI, release) are still open.
+**Status:** M1 complete — the package builds, installs into Pi, and activates with zero side effects,
+and the Git/GitHub checkpoint subsystem is implemented: every consultation will be anchored to a full
+commit SHA whose availability on the selected GitHub remote has been verified before dispatch.
+Milestones M2–M10 (authentication, browser automation, consultation protocol, UI, release) are still
+open; no adviser can be consulted yet.
 See [`docs/pi-with-chatgpt-ROADMAP.md`](docs/pi-with-chatgpt-ROADMAP.md) for the roadmap,
 [`docs/pi-with-chatgpt-PROPOSAL.md`](docs/pi-with-chatgpt-PROPOSAL.md) for the product contract,
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the invariant authority, and
