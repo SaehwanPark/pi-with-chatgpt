@@ -11,6 +11,7 @@ export type AdviserNextAction =
   /** Ask the user to run Pi's own login; the OpenAI OAuth credential is the precondition for everything. */
   | "run-pi-login"
   | "create-profile"
+  /** Copy the user's own Chromium cookies into the adviser profile. */
   | "import-chrome-state"
   | "manual-login"
   | "run-capability-probe"
@@ -56,6 +57,11 @@ export const ADVISER_NEXT_ACTIONS: readonly AdviserNextAction[] = [
 export const MANUAL_INTERVENTION_ACTIONS: readonly AdviserNextAction[] = [
   "run-pi-login",
   "manual-login",
+  // Import reads the user's real browser profile, so it is the most sensitive browser touch in the
+  // product — strictly more so than opening an adviser window, which is already gated here. Leaving it
+  // out would make the human-gated set internally inconsistent, and INV-11 is exactly "the user's
+  // browser is never touched without the user".
+  "import-chrome-state",
   "solve-verification",
   "stop-unsupported-plan",
   "repair-environment",

@@ -157,6 +157,14 @@ change invalidates (see `AGENTS.md`).
 - The worker-safety check matches credential *material* (JWT/`ya29.` prefixes, `Bearer `, `token=`
   assignments, browser profile roots) rather than the English words "token"/"cookie", so prose like
   "the access token is expired" stays displayable and the check does not get switched off.
+- `import-chrome-state` is now a human-gated action. Opening an adviser window already required a person,
+  while copying the user's own cookie database did not — an inversion, since the copy is the more
+  sensitive touch and is the one INV-11 is about. `protocol/adviser.test.ts` pins both halves of the split
+  by enumeration, and `browser/capability.test.ts` asserts every probe record agrees with that policy.
+- `SecretText` gains the serialisation routes that actually leak in practice — a nested object graph, a
+  `Map`/`Set` member, deep `inspect`, `Error.stack`, an object spread, and a string-keyed poke at the
+  `#private` field — plus an assertion that the instance stays frozen, so a debugging getter cannot attach
+  the plaintext as an enumerable property.
 
 ### Changed
 

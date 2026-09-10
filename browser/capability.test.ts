@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { requiresManualIntervention } from "../protocol/adviser.js";
 import {
   capabilityAllowsConsultation,
   classifyCapabilityProbe,
@@ -16,6 +17,28 @@ function classify(observation: CapabilityObservation) {
 }
 
 describe("classifyCapabilityProbe", () => {
+  /**
+   * The record carries its own `requiresManualIntervention` flag while `nextAction` is classified by the
+   * shared policy list, so the two can drift apart by editing one side. Every observation kind is walked
+   * here so the drift fails a test instead of surfacing as an unattended sensitive action later.
+   */
+  it("agrees with the shared human-intervention policy for every observation", () => {
+    const observations: readonly CapabilityObservation[] = [
+      { kind: "signed-in" },
+      { kind: "signed-out" },
+      { kind: "human-verification", challenge: "captcha" },
+      { kind: "rate-limited" },
+      { kind: "plan-unsupported", planHint: "free" },
+      { kind: "environment-unavailable", reason: "browser-not-installed" },
+    ];
+    for (const observation of observations) {
+      const record = classify(observation);
+      expect(record.requiresManualIntervention, `${observation.kind} → ${record.nextAction}`).toBe(
+        requiresManualIntervention(record.nextAction),
+      );
+    }
+  });
+
   it("treats only a signed-in probe as consultation-ready", () => {
     const record = classify({ kind: "signed-in", planHint: "plus" });
     expect(record.status).toBe("ready");

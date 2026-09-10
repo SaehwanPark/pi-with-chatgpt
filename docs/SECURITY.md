@@ -25,7 +25,7 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | INV-04 | The adviser is never shown work that is not published on GitHub | `git/remote-availability.ts` (`assessCheckpointAvailability`, `isDispatchPermitted`), `git/github-api.ts` (exact-object probe; a 404 is only `absent` when the repository itself is visible), `protocol/checkpoint.ts` (`checkDispatchReadiness` refuses `unknown` and `unavailable`) |
 | INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) |
 | INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (`compareAccountIdentity`, `resolveAccountMismatch` — only the explicit `keep-current` choice resolves a mismatch; there is no boolean override), `auth/adviser-auth.ts` (`resolveAdviserAuth` refuses across a demonstrated mismatch and treats an unconfirmable identity as unverified rather than matched) |
-| INV-11 | Isolated, extension-owned browser runtime | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker, `0700`/`0600`, `O_NOFOLLOW`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method) |
+| INV-11 | Isolated, extension-owned browser runtime | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker, `0700`/`0600`, `O_NOFOLLOW`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method), `protocol/adviser.ts` (`import-chrome-state` is human-gated) |
 | INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse) |
 | INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`) |
 | INV-15 | Provenance persists before dispatch and before wake-up, and is never auto-published | `ledger/record.ts` (`assertPersistenceOrder`, `LEDGER_PUBLICATION_TARGETS === ["none"]`) |
@@ -63,6 +63,17 @@ machine-readable index.
   stored in the same record, and a heuristic that rejects base64 would reject legitimate advice rather
   than protect it. The scan is an additional tripwire, not the primary design — the primary design is
   that session material has nowhere to be written.
+
+## Human-gated actions
+
+`protocol/adviser.ts` splits every "what happens next" action in two: the ones the extension may perform
+on its own, and the ones a person must take. Only four are automatic — `create-profile` (an empty
+extension-owned directory), `run-capability-probe` (read-only navigation in the adviser's own profile),
+`wait-for-rate-limit`, and `consult`. Everything else is gated, including `import-chrome-state`: copying
+cookies out of the user's real browser profile is the most sensitive browser touch in the product and is
+strictly more sensitive than opening an adviser window, which was already gated. `protocol/adviser.test.ts`
+pins both halves of that split by enumeration, so adding an action forces an explicit decision instead of
+inheriting whatever the previous entry was.
 
 ## Prompt injection posture
 

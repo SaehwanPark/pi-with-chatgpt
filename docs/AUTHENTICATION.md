@@ -60,6 +60,11 @@ Keychain, Linux libsecret); the copy inherits that protection and the real brows
 runtime. So this extension never holds a key and never derives one — there is no decryption path to
 get wrong (`browser/cookie-import.ts`).
 
+Import is an **explicit user action**: `import-chrome-state` is on the human-gated action list in
+`protocol/adviser.ts`, alongside signing in and solving a challenge. The extension may create its own
+empty profile and probe it on its own, but it never reads your browser without you asking — reading your
+real profile's cookies is the most sensitive touch in the product (INV-11).
+
 The copy is allow-listed to the minimum: `Default/Network/Cookies` (+ `-wal`, `-shm`) and `Local State`
 (which carries the decryption key reference, not key material). Browser metadata is parsed read-only
 from plaintext JSON (`Local State`, `Preferences`) for account hints only.
