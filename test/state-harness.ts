@@ -18,6 +18,7 @@ import type {
   ConversationStartResult,
   ProjectCreationResult,
   ProjectInspection,
+  ProjectListResult,
   ProjectSummary,
 } from "../browser/runtime-types.js";
 
@@ -72,17 +73,28 @@ export function fakeProjectSurface(options: FakeSurfaceOptions = {}): FakeSurfac
   let created = 0;
 
   const surface: AdviserProjectSurface = {
-    listProjects() {
+    listProjects(): Promise<ProjectListResult> {
       calls.list += 1;
-      if (options.listedProjects !== undefined) return Promise.resolve(options.listedProjects);
-      return Promise.resolve([...projects.entries()].map(([projectId, title]) => ({ projectId, title })));
+      if (options.listedProjects !== undefined) return Promise.resolve({ ok: true, projects: options.listedProjects });
+      return Promise.resolve({
+        ok: true,
+        projects: [...projects.entries()].map(([projectId, title]) => ({
+          projectId,
+          title,
+          projectUrl: `https://chatgpt.com/p/${projectId}`,
+        })),
+      });
     },
     inspectProject(projectId): Promise<ProjectInspection> {
       calls.inspectProject.push(projectId);
       const scripted = projectInspections.shift();
       if (scripted !== undefined) return Promise.resolve(scripted);
       const title = projects.get(projectId);
-      return Promise.resolve(title === undefined ? { state: "gone" } : { state: "present", title });
+      return Promise.resolve(
+        title === undefined
+          ? { state: "gone" }
+          : { state: "present", title, projectUrl: `https://chatgpt.com/p/${projectId}` },
+      );
     },
     createProject(input): Promise<ProjectCreationResult> {
       calls.create.push(input);
@@ -93,7 +105,13 @@ export function fakeProjectSurface(options: FakeSurfaceOptions = {}): FakeSurfac
       created += 1;
       const projectId = `project-${created}`;
       projects.set(projectId, input.title);
-      return Promise.resolve({ ok: true, projectId, title: input.title });
+      return Promise.resolve({
+        ok: true,
+        projectId,
+        title: input.title,
+        projectUrl: `https://chatgpt.com/p/${projectId}`,
+        instructionsApplied: true,
+      });
     },
     applyInstructions(projectId, instructions) {
       calls.applyInstructions.push({ projectId, instructions });
@@ -104,13 +122,21 @@ export function fakeProjectSurface(options: FakeSurfaceOptions = {}): FakeSurfac
       if (!projects.has(projectId)) return Promise.resolve({ ok: false, reason: "surface-unrecognised" });
       const conversationId = `conversation-${conversations.size + 1}`;
       conversations.add(conversationId);
-      return Promise.resolve({ ok: true, conversationId });
+      return Promise.resolve({
+        ok: true,
+        conversationId,
+        conversationUrl: `https://chatgpt.com/g/${conversationId}`,
+      });
     },
     inspectConversation(conversationId): Promise<ConversationInspection> {
       calls.inspectConversation.push(conversationId);
       const scripted = conversationInspections.shift();
       if (scripted !== undefined) return Promise.resolve(scripted);
-      return Promise.resolve(conversations.has(conversationId) ? { state: "live" } : { state: "gone" });
+      return Promise.resolve(
+        conversations.has(conversationId)
+          ? { state: "live", conversationUrl: `https://chatgpt.com/g/${conversationId}` }
+          : { state: "gone" },
+      );
     },
   };
 

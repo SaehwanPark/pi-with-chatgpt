@@ -110,6 +110,20 @@ describe("state store (INV-15)", () => {
     await lock.release();
   });
 
+  it("does not break an old lock whose recorded process is still alive", async () => {
+    const dir = await workspace("live-lock");
+    const path = join(dir, "live.lock");
+    const first = await acquireStateLock({ path });
+    const ancient = new Date(Date.now() - 600_000);
+    const { utimes } = await import("node:fs/promises");
+    await utimes(path, ancient, ancient);
+
+    await expect(acquireStateLock({ path, staleAfterMs: 1, timeoutMs: 80, pollMs: 10 })).rejects.toMatchObject({
+      code: "state-busy",
+    });
+    await first.release();
+  });
+
   it("appends JSONL records one per line", async () => {
     const dir = await workspace("append");
     const path = join(dir, "consultations.jsonl");

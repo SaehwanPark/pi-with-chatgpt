@@ -19,5 +19,6 @@ export * from "./capability-checks.js";
 export * from "./runtime-types.js";
 export * from "./runtime.js";
 export * from "./chatgpt-dom.js";
+export * from "./playwright-project-surface.js";
 export * from "./model-selection.js";
 export * from "./diagnostics.js";

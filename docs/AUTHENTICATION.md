@@ -63,6 +63,9 @@ log could leak.
 | `…/browser/chrome-state-import.json` | import provenance (no identity detail) | `0600` |
 | `…/browser/imported/` | staging copy before it becomes the profile | `0700` |
 | `…/browser/profile.lock` | single-writer lock | `0600` |
+| `~/.pi/agent/pi-with-chatgpt/projects.json` | repository → ChatGPT Project mapping | `0600` |
+| `…/conversations/` | task/kind → ChatGPT conversation records | `0700` tree; files `0600` |
+| `…/locks/` | short-lived mapping/conversation coordination locks | `0700` tree; files `0600` |
 | `<repo>/.chatgpt-adviser/OWNERSHIP` | marker claiming a project-local dir | `0600` |
 
 Root creation uses a **create-exclusive + `O_NOFOLLOW` open + ownership marker** sequence: a planted

@@ -108,13 +108,13 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     id: "INV-08",
     summary: "One ChatGPT Project maps to one GitHub repository, keyed by stable repository identity.",
     source: "docs/ARCHITECTURE.md#inv-08",
-    guard: "chatgpt/scope.ts",
+    guard: "chatgpt/scope.ts + chatgpt/project-mapping.ts + ledger/state-store.ts",
   },
   {
     id: "INV-09",
     summary: "Unrelated tasks use separate adviser conversations; delivery is keyed by consultation identity.",
     source: "docs/ARCHITECTURE.md#inv-09",
-    guard: "chatgpt/scope.ts + jobs/state.ts",
+    guard: "chatgpt/scope.ts + chatgpt/conversation-mapping.ts + chatgpt/conversation-recovery.ts + jobs/state.ts",
   },
   {
     id: "INV-10",
@@ -137,7 +137,7 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     // `protocol/masking.ts` is the guard the modules share: the rule lives once, so a module that
     // displays an account cannot re-derive it loosely.
     guard:
-      "config/schema.ts + ledger/record.ts + auth/secret-text.ts + auth/status.ts + protocol/masking.ts + browser/chrome-state.ts",
+      "config/schema.ts + ledger/record.ts + chatgpt/project-mapping.ts + chatgpt/conversation-mapping.ts + auth/secret-text.ts + auth/status.ts + protocol/masking.ts + browser/chrome-state.ts",
   },
   {
     id: "INV-13",
@@ -155,7 +155,7 @@ export const INVARIANTS: readonly InvariantDefinition[] = [
     id: "INV-15",
     summary: "Provenance persists outside model context; the ledger is local and is never auto-published to a repo, issue, or PR.",
     source: "docs/ARCHITECTURE.md#inv-15",
-    guard: "ledger/record.ts",
+    guard: "ledger/state-store.ts + ledger/record.ts",
   },
   {
     id: "INV-16",

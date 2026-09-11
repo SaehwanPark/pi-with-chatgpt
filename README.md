@@ -14,7 +14,7 @@ The relationship is deliberately asymmetric:
 | **Pi** | edits, shell, tests, git, commits, pushes, and the final decision |
 | **ChatGPT** | advisory reasoning only — no execution, no orchestration, no write access |
 
-**Status:** M3 complete — the package builds, installs into Pi, and activates with zero side effects.
+**Status:** M4 complete — the package builds, installs into Pi, and activates with zero side effects.
 The Git/GitHub checkpoint subsystem anchors every future consultation to a full commit SHA whose
 availability on the selected GitHub remote is verified before dispatch; the authentication layer resolves
 the Pi-side OpenAI identity, maintains an extension-owned isolated browser profile (import or manual
@@ -22,8 +22,9 @@ sign-in), and gates consultation on a capability check; and the browser runtime 
 profile over Playwright, opens ChatGPT, classifies the surface (signed-out, human-verification, ready),
 selects a model, and can carry a prompt/response turn — all behind a seam that exposes no page, selector,
 or script to the worker. A full consultation round trip needs a signed-in profile (human-gated) and closes
-with the M9 command flow. Milestones M4–M10 (projects/conversations, consultation protocol, UI, release)
-are still open; no adviser can be consulted from a command yet.
+with the M9 command flow. M4 now provides one durable Project mapping per repository, task-scoped
+conversations, bounded Project/conversation recovery, and checkpoint-safe handoff text. Milestones M5–M10
+(consultation protocol, UI, release) are still open; no adviser can be consulted from a command yet.
 See [`docs/pi-with-chatgpt-ROADMAP.md`](docs/pi-with-chatgpt-ROADMAP.md) for the roadmap,
 [`docs/pi-with-chatgpt-PROPOSAL.md`](docs/pi-with-chatgpt-PROPOSAL.md) for the product contract,
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the invariant authority,

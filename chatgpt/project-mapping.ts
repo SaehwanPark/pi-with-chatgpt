@@ -29,7 +29,7 @@ import {
   readJsonFile,
   writeJsonFileAtomically,
 } from "../ledger/state-store.js";
-import { projectTitleForRepository } from "./project-instructions.js";
+import { assertProjectInstructionsAreEphemeralFree, projectTitleForRepository } from "./project-instructions.js";
 import { projectKeyForRepository, type ChatGptProjectKey } from "./scope.js";
 
 /** On-disk schema version: bumped by a migration, never by a silent reparse. */
@@ -78,6 +78,7 @@ export type ProjectRefusalReason =
   | "state-corrupt"
   | "state-unreadable"
   | "state-busy"
+  | "invalid-instructions"
   | "needs-human"
   | "create-failed"
   | "surface-unrecognised"
@@ -137,9 +138,23 @@ function parseProjectMapping(value: unknown): ChatGptProjectMapping | undefined 
     if (typeof record[field] !== "string" || (record[field]).trim().length === 0) return undefined;
   }
   if (!isOpaqueId(record.projectId as string)) return undefined;
-  if (record.projectUrl !== undefined && !isCanonicalProjectUrl(record.projectUrl)) return undefined;
+  if (
+    record.projectUrl !== undefined &&
+    (!isCanonicalProjectUrl(record.projectUrl) || record.projectUrl !== canonicalProjectUrl(record.projectId as string))
+  ) {
+    return undefined;
+  }
   if (typeof record.revision !== "number" || !Number.isInteger(record.revision) || record.revision < 1) return undefined;
-  if (typeof record.renameCount !== "number" || typeof record.recreateCount !== "number") return undefined;
+  if (
+    typeof record.renameCount !== "number" ||
+    !Number.isInteger(record.renameCount) ||
+    record.renameCount < 0 ||
+    typeof record.recreateCount !== "number" ||
+    !Number.isInteger(record.recreateCount) ||
+    record.recreateCount < 0
+  ) {
+    return undefined;
+  }
   if (typeof record.instructionsApplied !== "boolean") return undefined;
   if (!PROJECT_MAPPING_EVENTS.includes(record.lastEvent as ProjectMappingEvent)) return undefined;
   const mapping = value as ChatGptProjectMapping;
@@ -196,6 +211,16 @@ export async function ensureProjectForRepository(
   const title = projectTitleForRepository(dependencies.repository);
 
   try {
+    assertProjectInstructionsAreEphemeralFree(dependencies.instructions);
+  } catch {
+    return {
+      ok: false,
+      reason: "invalid-instructions",
+      explanation: "Project instructions contain mutable repository state; regenerate them without a branch, SHA, PR, or task value.",
+    };
+  }
+
+  try {
     await ensurePrivateDirectory(dependencies.layout.locksDir, fileSystem);
   } catch (error) {
     return { ok: false, reason: stateReason(error), explanation: stateExplanation(error) };
@@ -222,6 +247,8 @@ export async function ensureProjectForRepository(
       return await reconcileExisting({ ...dependencies, fileSystem, now }, key, existing, title);
     }
     return await createOrAdopt({ ...dependencies, fileSystem, now }, key, title, read.file, 0);
+  } catch (error) {
+    return { ok: false, reason: stateReason(error), explanation: stateExplanation(error) };
   } finally {
     await lock.release();
   }
@@ -307,9 +334,16 @@ async function reconcileExisting(
   // provenance for older consultations points at a Project that no longer exists.
   const created = await context.surface.createProject({ title: expectedTitle, instructions: context.instructions });
   if (!created.ok) return { ok: false, reason: createReason(created.reason), explanation: createExplanation(created.reason) };
+  if (!isOpaqueId(created.projectId) || created.title.trim().length === 0) {
+    return {
+      ok: false,
+      reason: "surface-unrecognised",
+      explanation: "ChatGPT reported a Project without a usable opaque id or title; no mapping was written.",
+    };
+  }
   const mapping = stamped("recreated", {
     projectId: created.projectId,
-    projectUrl: created.projectUrl,
+    projectUrl: canonicalProjectUrl(created.projectId),
     projectTitle: created.title,
     recreateCount: existing.recreateCount + 1,
     instructionsApplied: created.instructionsApplied,
@@ -365,6 +399,13 @@ async function persistCreated(
   instructionsApplied: boolean,
   extra: { readonly note?: string } = {},
 ): Promise<EnsureProjectResult> {
+  if (!isOpaqueId(projectId) || projectTitle.trim().length === 0) {
+    return {
+      ok: false,
+      reason: "surface-unrecognised",
+      explanation: "ChatGPT reported a Project without a usable opaque id or title; no mapping was written.",
+    };
+  }
   const timestamp = context.now().toISOString();
   const mapping: ChatGptProjectMapping = {
     repository: context.repository,

@@ -26,6 +26,7 @@ import {
   parseConversationIdFromHref,
   parseProjectEntries,
   parseProjectIdFromHref,
+  scrubPageText,
   type ProjectEntry,
   type SurfaceSnapshot,
 } from "./chatgpt-dom.js";
@@ -36,7 +37,6 @@ import type {
   ProjectCreationResult,
   ProjectInspection,
   ProjectListResult,
-  ProjectSummary,
 } from "./runtime-types.js";
 
 /** Structural Playwright subset: the real objects satisfy it, the tests supply a fake. */
@@ -75,6 +75,11 @@ export interface PlaywrightProjectSurfaceOptions {
 const MAX_PROJECT_CARDS = 60;
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_POLL_MS = 250;
+
+interface ProjectCardScrape {
+  readonly found: boolean;
+  readonly entries: readonly ProjectEntry[];
+}
 
 export function createPlaywrightProjectSurface(
   options: PlaywrightProjectSurfaceOptions,
@@ -142,7 +147,7 @@ export function createPlaywrightProjectSurface(
     }
   }
 
-  async function scrapeProjectCards(page: ProjectSurfacePage): Promise<readonly ProjectEntry[] | undefined> {
+  async function scrapeProjectCards(page: ProjectSurfacePage): Promise<ProjectCardScrape> {
     const cards: { href: string | undefined; label: string | undefined }[] = [];
     let found = false;
     for (const frame of [{ locator: (selector: string) => page.locator(selector) }, ...page.frames()]) {
@@ -159,8 +164,7 @@ export function createPlaywrightProjectSurface(
         }
       }
     }
-    if (!found) return undefined;
-    return parseProjectEntries(cards);
+    return { found, entries: parseProjectEntries(cards) };
   }
 
   return {
@@ -174,18 +178,23 @@ export function createPlaywrightProjectSurface(
       const snapshot = await gotoRecognised(page, CHATGPT_URLS.projects);
       if (snapshot === undefined) return { ok: false, reason: "provider-error" };
       const failure = projectSurfaceFailure(snapshot);
-      if (failure !== undefined && !(await hasProjectControls(page))) return { ok: false, reason: failure };
-      const entries = await scrapeProjectCards(page);
-      if (entries === undefined) {
+      const classification = classifySurface(snapshot);
+      if (failure !== undefined && classification.state !== "unknown") return { ok: false, reason: failure };
+      if (failure === "surface-unrecognised" && (!isChatGptSurfaceUrl(snapshot.url) || !(await hasProjectControls(page)))) {
+        return { ok: false, reason: failure };
+      }
+      const scraped = await scrapeProjectCards(page);
+      if (!scraped.found) {
         // An empty, recognised Projects page still needs a create control. Without one, absence of cards
         // is an unreadable list, not proof that the account has no Projects.
         const create = await firstVisible(page, CHATGPT_SELECTORS.newProject);
         if (create === undefined) return { ok: false, reason: "surface-unrecognised" };
         return { ok: true, projects: [] };
       }
+      if (scraped.entries.length === 0) return { ok: false, reason: "surface-unrecognised" };
       return {
         ok: true,
-        projects: entries.map((entry) => ({
+        projects: scraped.entries.map((entry) => ({
           projectId: entry.projectId,
           title: entry.title,
           projectUrl: CHATGPT_URLS.project(entry.projectId),
@@ -203,8 +212,18 @@ export function createPlaywrightProjectSurface(
       const snapshot = await gotoRecognised(page, CHATGPT_URLS.projects);
       if (snapshot === undefined) return { state: "unknown", reason: "network" };
       const classification = classifySurface(snapshot);
-      const uncertain = classification.state === "unknown" || classification.state === "provider-error";
-      const entries = uncertain ? undefined : await scrapeProjectCards(page);
+      if (classification.state === "signed-out" || classification.state === "human-verification") {
+        return { state: "unknown", reason: "needs-human" };
+      }
+      if (classification.state === "provider-error") return { state: "unknown", reason: "network" };
+      const projectSurfaceRecognised = await hasProjectControls(page);
+      const uncertain =
+        (classification.state === "unknown" && !projectSurfaceRecognised);
+      const scraped = uncertain ? undefined : await scrapeProjectCards(page);
+      if (scraped?.found === true && scraped.entries.length === 0) {
+        return { state: "unknown", reason: "surface-unrecognised" };
+      }
+      const entries = scraped?.found === true ? scraped.entries : undefined;
       // A card that names the id is direct evidence, so a Projects list that does not show it is checked
       // against the Project page itself before it is called deleted.
       if (entries !== undefined && entries.some((entry) => entry.projectId === projectId)) {
@@ -212,9 +231,8 @@ export function createPlaywrightProjectSurface(
         return { state: "present", title: entry.title, projectUrl: CHATGPT_URLS.project(projectId) };
       }
       const verdict = classifyProjectPresence(entries, projectId, {
-        signedOut: classification.state === "signed-out",
-        loaded: entries !== undefined && classification.state !== "provider-error",
-        needsHuman: classification.state === "human-verification",
+        signedOut: false,
+        loaded: entries !== undefined,
       });
       if (verdict.state !== "gone") return verdict;
       return await inspectProjectPage(page, projectId);
@@ -234,6 +252,9 @@ export function createPlaywrightProjectSurface(
         return { ok: false, reason: "needs-human" };
       }
       if (classification.state === "provider-error") return { ok: false, reason: "provider-error" };
+      if (classification.state === "unknown" && (!isChatGptSurfaceUrl(snapshot.url) || !(await hasProjectControls(page)))) {
+        return { ok: false, reason: "surface-unrecognised" };
+      }
       const create = await firstVisible(page, CHATGPT_SELECTORS.newProject);
       if (create === undefined) return { ok: false, reason: "surface-unrecognised" };
       try {
@@ -276,8 +297,8 @@ export function createPlaywrightProjectSurface(
       }
       // Creation redirected somewhere without an id in the URL: trust the list, which is also the path
       // where a concurrent creator's Project becomes visible and gets adopted instead of duplicated.
-      const entries = await scrapeProjectCards(page);
-      const adopted = entries === undefined ? undefined : findProjectByTitle(entries, input.title);
+      const scraped = await scrapeProjectCards(page);
+      const adopted = scraped.found ? findProjectByTitle(scraped.entries, input.title) : undefined;
       if (adopted !== undefined) {
         return {
           ok: true,
@@ -313,6 +334,9 @@ export function createPlaywrightProjectSurface(
         return { ok: false, reason: "needs-human" };
       }
       if (classification.state === "provider-error") return { ok: false, reason: "provider-error" };
+      if (classification.state === "unknown" && (!isChatGptSurfaceUrl(snapshot.url) || !(await hasProjectControls(page)))) {
+        return { ok: false, reason: "surface-unrecognised" };
+      }
       const newChat = await firstVisible(page, CHATGPT_SELECTORS.projectNewChat);
       if (newChat === undefined) return { ok: false, reason: "surface-unrecognised" };
       const linkedConversation = parseConversationIdFromHref(await newChat.getAttribute("href").catch(() => null) ?? undefined);

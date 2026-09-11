@@ -13,11 +13,17 @@
  */
 
 import type { AdviserProjectSurface } from "../browser/runtime-types.js";
-import type { AdviserStateLayout } from "../config/state-layout.js";
+import { stateFileNameForKey, type AdviserStateLayout } from "../config/state-layout.js";
 import type { FullCommitSha } from "../protocol/sha.js";
 import type { GitHubRepositoryKey } from "../protocol/repo.js";
 import type { StateStoreFileSystem } from "../ledger/state-store.js";
-import { ensurePrivateDirectory, nodeStateStore } from "../ledger/state-store.js";
+import {
+  acquireStateLock,
+  ensurePrivateDirectory,
+  lockFilePath,
+  nodeStateStore,
+  type StateStoreError,
+} from "../ledger/state-store.js";
 import {
   conversationIsReusableFor,
   readConversationRecord,
@@ -30,6 +36,7 @@ import { conversationKeyForTask, type ChatGptConversationKey, type ConversationS
 
 export type ConversationRefusalReason =
   | "state-corrupt"
+  | "state-unreadable"
   | "state-busy"
   | "needs-human"
   | "start-failed"
@@ -88,7 +95,40 @@ export async function ensureConversationForTask(
   dependencies: EnsureConversationDependencies,
 ): Promise<EnsureConversationResult> {
   const key = conversationKeyForTask(dependencies.scope);
-  return withConversationWriteLock(key, () => ensureInsideLock(dependencies, key));
+  const fileSystem = dependencies.fileSystem ?? nodeStateStore;
+  if (!isOpaqueId(dependencies.projectId)) {
+    return {
+      ok: false,
+      reason: "surface-unrecognised",
+      explanation: "The recorded ChatGPT Project id is not a usable opaque id; no conversation was started.",
+    };
+  }
+  try {
+    await ensurePrivateDirectory(dependencies.layout.locksDir, fileSystem);
+    return await withConversationWriteLock(key, async () => {
+      let lock;
+      try {
+        lock = await acquireStateLock({
+          path: lockFilePath(
+            dependencies.layout.locksDir,
+            stateFileNameForKey("conversation", key, "lock").replace(/\.lock$/u, ""),
+          ),
+          fileSystem,
+        });
+      } catch (error) {
+        return { ok: false, reason: stateReason(error), explanation: stateExplanation(error) };
+      }
+      try {
+        return await ensureInsideLock({ ...dependencies, fileSystem }, key);
+      } catch (error) {
+        return { ok: false, reason: stateReason(error), explanation: stateExplanation(error) };
+      } finally {
+        await lock.release();
+      }
+    });
+  } catch (error) {
+    return { ok: false, reason: stateReason(error), explanation: stateExplanation(error) };
+  }
 }
 
 async function ensureInsideLock(
@@ -111,14 +151,15 @@ async function ensureInsideLock(
   const existing = read.record;
   // Narrowing is captured in a boolean on purpose: inside the branch `existing` is still
   // `| undefined`, and the helper's job is to say *why* it is unusable, not to assert it is absent.
-  const reusable =
-    conversationIsReusableFor(existing, { projectId: dependencies.projectId, key }) && existing !== undefined;
+  const reusable = conversationIsReusableFor(existing, { projectId: dependencies.projectId, key });
 
   if (reusable && existing !== undefined) {
     const record = existing;
     const inspection = await dependencies.surface.inspectConversation(record.conversationId);
     if (inspection.state === "live") {
-      const touched = stamp(record, "reused", now());
+      const touched = stamp(record, "reused", now(), {
+        conversationUrl: inspection.conversationUrl ?? record.conversationUrl ?? canonicalConversationUrl(record.conversationId),
+      });
       await writeConversationRecord(dependencies.layout, touched, fileSystem);
       return { ok: true, outcome: "reused", record: touched, key };
     }
@@ -136,19 +177,20 @@ async function ensureInsideLock(
     return await startReplacement({ ...dependencies, fileSystem, now }, key, record);
   }
 
-  // A record inside a different Project is unreachable: that Project was deleted and replaced (INV-08).
-  // It is retired, never rewritten, and a fresh conversation is opened in the current Project.
-  if (existing !== undefined && existing.state !== "replaced" && existing.projectId !== dependencies.projectId) {
-    await writeConversationRecord(
-      dependencies.layout,
-      { ...existing, state: "replaced", lastEvent: "replaced" },
-      fileSystem,
-    );
-  }
+  // A record in another Project, or one already marked stale/replaced, cannot be reused. Open a fresh
+  // thread in the requested Project and retain the old id as `replacedFromConversationId` below.
+  if (existing !== undefined) return await startReplacement({ ...dependencies, fileSystem, now }, key, existing);
 
   const started = await dependencies.surface.startConversation(dependencies.projectId);
   if (!started.ok) {
     return { ok: false, reason: startReason(started.reason), explanation: startExplanation(started.reason) };
+  }
+  if (!isOpaqueId(started.conversationId)) {
+    return {
+      ok: false,
+      reason: "surface-unrecognised",
+      explanation: "ChatGPT reported a conversation without a usable opaque id; no conversation record was written.",
+    };
   }
   const timestamp = now().toISOString();
   const record: ChatGptConversationRecord = {
@@ -158,6 +200,7 @@ async function ensureInsideLock(
     taskId: dependencies.scope.taskId,
     kind: dependencies.scope.kind,
     conversationId: started.conversationId,
+    conversationUrl: canonicalConversationUrl(started.conversationId),
     createdAt: timestamp,
     lastUsedAt: timestamp,
     state: "active",
@@ -184,14 +227,14 @@ async function startReplacement(
   if (!started.ok) {
     return { ok: false, reason: startReason(started.reason), explanation: startExplanation(started.reason) };
   }
+  if (!isOpaqueId(started.conversationId)) {
+    return {
+      ok: false,
+      reason: "surface-unrecognised",
+      explanation: "ChatGPT reported a conversation without a usable opaque id; no conversation record was written.",
+    };
+  }
   const timestamp = dependencies.now().toISOString();
-  const retired: ChatGptConversationRecord = {
-    ...dead,
-    state: "replaced",
-    replacedBy: started.conversationId,
-    lastEvent: "replaced",
-  };
-  await writeConversationRecord(dependencies.layout, retired, dependencies.fileSystem);
   const record: ChatGptConversationRecord = {
     conversationKey: key,
     repository: dependencies.repository,
@@ -199,12 +242,15 @@ async function startReplacement(
     taskId: dependencies.scope.taskId,
     kind: dependencies.scope.kind,
     conversationId: started.conversationId,
+    conversationUrl: canonicalConversationUrl(started.conversationId),
     createdAt: timestamp,
     lastUsedAt: timestamp,
     state: "active",
-    handoffAt: dependencies.continuity === undefined ? undefined : timestamp,
+    // The returned handoff is ready for the dispatcher; `handoffAt` remains unset until it is actually sent.
+    replacedFromConversationId: dead.conversationId,
+    replacedFromConversationUrl: dead.conversationUrl ?? canonicalConversationUrl(dead.conversationId),
     revision: 1,
-    lastEvent: "created",
+    lastEvent: "replaced",
   };
   await writeConversationRecord(dependencies.layout, record, dependencies.fileSystem);
   const handoff: TaskHandoffBrief | undefined =
@@ -227,9 +273,15 @@ async function startReplacement(
   };
 }
 
-function stamp(record: ChatGptConversationRecord, event: ConversationEvent, date: Date): ChatGptConversationRecord {
+function stamp(
+  record: ChatGptConversationRecord,
+  event: ConversationEvent,
+  date: Date,
+  patch: Partial<ChatGptConversationRecord> = {},
+): ChatGptConversationRecord {
   return {
     ...record,
+    ...patch,
     lastEvent: event,
     lastUsedAt: date.toISOString(),
     revision: record.revision + 1,
@@ -282,4 +334,30 @@ function startExplanation(reason: ConversationRefusalReason | "name-taken"): str
     default:
       return "The adviser conversation could not be opened.";
   }
+}
+
+function isStateStoreError(error: unknown): error is StateStoreError {
+  return error instanceof Error && ["state-busy", "state-corrupt", "state-unreadable"].includes((error as StateStoreError).code);
+}
+
+function stateReason(error: unknown): ConversationRefusalReason {
+  if (isStateStoreError(error) && error.code === "state-busy") return "state-busy";
+  if (isStateStoreError(error) && error.code === "state-corrupt") return "state-corrupt";
+  return "state-unreadable";
+}
+
+function stateExplanation(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Adviser conversation state is busy or unreadable, so no second conversation was started: ${message}`;
+}
+
+function canonicalConversationUrl(conversationId: string): string {
+  if (!/^[A-Za-z0-9_-]{4,120}$/u.test(conversationId)) {
+    throw new Error(`Invalid ChatGPT conversation id: ${conversationId.slice(0, 24)}`);
+  }
+  return `https://chatgpt.com/g/${encodeURIComponent(conversationId)}`;
+}
+
+function isOpaqueId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{4,120}$/u.test(value);
 }

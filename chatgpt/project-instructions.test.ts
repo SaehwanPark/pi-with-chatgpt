@@ -32,17 +32,17 @@ describe("Project instructions (INV-08, INV-14)", () => {
   });
 
   it("carries no branch, SHA, or task value", () => {
-    const text = buildProjectInstructions({ repository: REPOSITORY, description: "adviser for the runtime" });
+    const text = buildProjectInstructions({ repository: REPOSITORY });
     expect(findEphemeralValues(text)).toEqual([]);
     expect(() => assertProjectInstructionsAreEphemeralFree(text)).not.toThrow();
   });
 
-  it("rejects an owner note that quotes a commit or a ref", () => {
-    // An owner note is the one free-text field, and it is rendered into every consultation in this Project;
-    // a quoted commit there silently outranks the checkpoint (INV-14).
+  it("rejects instructions that quote a commit or a ref", () => {
+    // The assertion is also applied at the Project-mapping boundary, so a future caller cannot add a free
+    // standing-instruction field that silently outranks the checkpoint (INV-14).
     const sha = "0f2c8f4a1d6b4f1e9c2d8e6a5b4c3d2e1f0a9b8c";
     const violations = findEphemeralValues(
-      buildProjectInstructions({ repository: REPOSITORY, description: `start from ${sha} please` }),
+      `start from ${sha} please`,
     );
     expect(violations.map((violation) => violation.label)).toContain("full commit SHA");
     expect(() =>

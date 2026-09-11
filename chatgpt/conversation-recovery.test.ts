@@ -102,7 +102,9 @@ describe("conversation recovery (INV-09, INV-14)", () => {
     const rendered = renderTaskHandoff(replacement.handoff);
     expect(rendered).toContain(`Previous conversation reviewed ${PREVIOUS_CHECKPOINT}.`);
     expect(rendered).toContain(`This request is anchored to ${CURRENT_CHECKPOINT}.`);
-    expect(replacement.record.handoffAt).toBeDefined();
+    // Recovery returns the handoff to the dispatcher; it must not claim that the text was sent before M5/M6
+    // performs that effect.
+    expect(replacement.record.handoffAt).toBeUndefined();
   });
 
   it("never substitutes Project memory for the checkpoint", () => {

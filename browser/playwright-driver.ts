@@ -57,6 +57,7 @@ type AdviserPlaywrightPage = {
 type AdviserElement = {
   isVisible(): Promise<boolean>;
   innerText(): Promise<string>;
+  inputValue(): Promise<string>;
   /** Only `href` is ever read (M4 resolves Project/conversation ids out of links). */
   getAttribute(name: string): Promise<string | null>;
   click(): Promise<void>;

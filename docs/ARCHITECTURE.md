@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M1 (checkpoint subsystem implemented). This document is the prose authority for the architecture invariants; the
+Status: M4 (Project and conversation management implemented). This document is the prose authority for the architecture invariants; the
 machine-readable index is `protocol/invariants.ts`, and the review checklist is
 `.agents/skills/pwc-invariant-review/references/invariants.md`. When these three disagree, the most
 conservative reading wins and the others are bugs to fix.
@@ -133,15 +133,20 @@ No blanket staging, no auto-commit, no auto-push; `origin` is not authorisation.
 **One ChatGPT Project per GitHub repository.**
 
 `projectKeyForRepository` keys the Project on canonical `owner/repo` only, never on session, branch,
-or task (`chatgpt/scope.ts`, `protocol/repo.ts`).
+or task (`chatgpt/scope.ts`, `protocol/repo.ts`). `ensureProjectForRepository` persists the mapping under
+the owner-only state tree, serialises setup with the `projects` lock, adopts exact-title races, retains the
+id across renames, and recreates only after positive deletion evidence (`chatgpt/project-mapping.ts`,
+`ledger/state-store.ts`).
 
 ### INV-09
 
 **Task conversation isolation.**
 
-`conversationKeyForTask` requires a task identity (a repository-wide shared thread throws), delivery
-is addressed by `consultationId` + `piSessionId`, and job states are an explicit allowlist
-(`chatgpt/scope.ts`, `jobs/state.ts`).
+`conversationKeyForTask` requires a task identity (a repository-wide shared thread throws), and
+`ensureConversationForTask` stores one conversation record per task/kind. The process-wide `KeyedMutex`
+and the cross-process digest lock serialise one conversation while leaving different task keys concurrent;
+deleted or stale records are replaced inside the same Project (`chatgpt/scope.ts`,
+`chatgpt/conversation-mapping.ts`, `chatgpt/conversation-recovery.ts`).
 
 ### INV-10
 
@@ -169,8 +174,10 @@ latching it as a blanket refusal would deadlock the manual login that opens by r
 **Credential containment.**
 
 Configuration that looks like credential material is rejected rather than ignored
-(`config/schema.ts`), and ledger writes are scanned for credential-shaped keys and values
-(`ledger/record.ts`).
+(`config/schema.ts`), ledger writes and M4 Project/conversation state are scanned for credential-shaped
+keys and values (`ledger/record.ts`, `chatgpt/project-mapping.ts`, `chatgpt/conversation-mapping.ts`). The
+M4 state store writes private temporary files and atomically renames them under the extension-owned state
+root (`config/state-layout.ts`, `ledger/state-store.ts`).
 
 ### INV-13
 
@@ -181,18 +188,22 @@ action items — built by allowlist, never by serialising internal state (`ui/wo
 
 ### INV-14
 
-**Trust order.** (planned:M6)
+**Trust order.** (standing-instruction guard implemented; full request protocol planned:M6)
 
 Code at the requested commit > consultation brief > task conversation > Project instructions >
-Project memory. Enforced when the request builder and response parser land in M6.
+Project memory. M4's `buildProjectInstructions` states the order and
+`assertProjectInstructionsAreEphemeralFree` rejects branch, SHA, PR, and task values before a Project is
+ensured (`chatgpt/project-instructions.ts`, `chatgpt/project-mapping.ts`). The request builder and response
+parser that enforce the complete order land in M6.
 
 ### INV-15
 
 **Durable provenance outside model context.**
 
-`assertPersistenceOrder` encodes "job persisted before dispatch, response persisted before wake-up",
-and `LEDGER_PUBLICATION_TARGETS === ["none"]`: advice is never auto-published to a repository file,
-issue, or PR (`ledger/record.ts`).
+`writeJsonFileAtomically` and the keyed state locks provide crash-safe M4 mapping persistence; the later
+`assertPersistenceOrder` contract still encodes "job persisted before dispatch, response persisted before
+wake-up", and `LEDGER_PUBLICATION_TARGETS === ["none"]` keeps advice from auto-publishing to a repository
+file, issue, or PR (`ledger/state-store.ts`, `ledger/record.ts`).
 
 ### INV-16
 

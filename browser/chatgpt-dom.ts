@@ -203,6 +203,11 @@ function isChatGptUrl(url: string): boolean {
   }
 }
 
+/** Host guard for secondary surfaces such as Projects; callers must not trust a redirected page. */
+export function isChatGptSurfaceUrl(url: string): boolean {
+  return isChatGptUrl(url);
+}
+
 function hostOf(url: string): string | undefined {
   try {
     return new URL(url).hostname;

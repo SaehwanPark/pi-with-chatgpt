@@ -59,6 +59,7 @@ describe("repository to Project mapping (INV-08, INV-12, INV-15)", () => {
     expect(first.mapping.projectKey).toBe(projectKeyFor(REPOSITORY));
     expect((await readProjectMappingFile(layout)).file.projects[projectKeyFor(REPOSITORY)]).toMatchObject({
       projectId: first.mapping.projectId,
+      projectUrl: "https://chatgpt.com/p/project-1",
       repository: REPOSITORY,
     });
   });
@@ -159,6 +160,24 @@ describe("repository to Project mapping (INV-08, INV-12, INV-15)", () => {
     expect(fake.calls.list).toBe(0);
     expect(fake.calls.create).toHaveLength(0);
     expect(await readFile(layout.projectMappingFile, "utf8")).toBe(corrupt);
+  });
+
+  it("refuses Project instructions that carry mutable checkpoint state", async () => {
+    const { layout } = await tempStateLayout("project-instructions-boundary");
+    const fake = fakeProjectSurface();
+
+    const result = await ensureProjectForRepository({
+      ...dependencies(layout, fake.surface),
+      instructions: `${INSTRUCTIONS}\nReview PR #42 at ${"a".repeat(40)}.`,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "invalid-instructions",
+      explanation: expect.stringContaining("mutable repository state"),
+    });
+    expect(fake.calls.list).toBe(0);
+    expect(fake.calls.create).toHaveLength(0);
   });
 
   it("persists the mapping before reporting it as ready", async () => {

@@ -5,7 +5,7 @@ can be trusted against, and what it refuses to do on the way there.
 
 Authority for the invariants named here: `docs/ARCHITECTURE.md` (INV-02, INV-03, INV-04, INV-06,
 INV-12), machine-readable index in `protocol/invariants.ts`. Implementation lives in `git/` and
-`protocol/`; `docs/CONSULTATION_PROTOCOL.md` (M4) describes what happens once an anchor exists.
+`protocol/`; the consultation protocol document (M5/M6) will describe what happens once an anchor exists.
 
 ## 1. Why a checkpoint at all
 

@@ -13,7 +13,8 @@
  *   already exists (INV-08) and forget live conversations (INV-09).
  *
  * Locks are advisory and same-host only, which is exactly the scale V1 runs at: one machine, possibly two
- * Pi sessions. They are held for the duration of one read-modify-write, never across a browser round trip.
+ * Pi sessions. Project/conversation mapping deliberately holds its keyed lock across the bounded browser
+ * probe because inspection plus create/adopt is one read-modify-write decision.
  */
 
 import { constants, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
@@ -213,10 +214,11 @@ export const DEFAULT_LOCK_POLL_MS = 50;
  * Take an advisory lock, waiting up to `timeoutMs`.
  *
  * Creation is `O_EXCL`, so two processes cannot both believe they hold it. A lock whose mtime is older
- * than `staleAfterMs` is broken rather than waited on forever: the alternative is one crashed Pi session
- * permanently wedging the Project mapping. Breaking is a `unlink` + retry, and a process that wakes up
- * after being desuspended still finds a valid store — the guarded operations are idempotent read-modify-
- * writes with an adoption path for the "someone else did it" case.
+ * than `staleAfterMs` is broken only when its recorded owner is absent or no longer alive: the alternative
+ * is one crashed Pi session permanently wedging the Project mapping. A live owner is allowed to exceed the
+ * age threshold because browser reconciliation is intentionally bounded by a separate timeout; this also
+ * prevents a desuspended process from later releasing a lock that a stale-breaker already handed to another
+ * writer.
  */
 export async function acquireStateLock(
   options: StateLockOptions,
@@ -241,7 +243,8 @@ export async function acquireStateLock(
       if (!isAlreadyExists(error)) throw error;
       const modifiedAt = await fileSystem.modifiedAt(options.path);
       const age = modifiedAt === undefined ? timeoutMs : fileSystem.now() - modifiedAt;
-      if (age >= staleAfterMs) {
+      const owner = await readLockOwner(fileSystem, options.path);
+      if (age >= staleAfterMs && owner !== null && (owner === undefined || !isProcessAlive(owner))) {
         await fileSystem.unlink(options.path).catch(() => undefined);
         continue;
       }
@@ -269,4 +272,25 @@ export function isNotFound(error: unknown): boolean {
 
 function isAlreadyExists(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: string }).code === "EEXIST";
+}
+
+async function readLockOwner(fileSystem: StateStoreFileSystem, path: string): Promise<number | null | undefined> {
+  try {
+    const contents = await fileSystem.readFile(path);
+    if (contents === undefined) return undefined;
+    const value = JSON.parse(contents) as { pid?: unknown };
+    return typeof value.pid === "number" && Number.isInteger(value.pid) && value.pid > 0 ? value.pid : undefined;
+  } catch {
+    // An unreadable lock is not evidence that its owner is dead; waiting is safer than breaking it.
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: string }).code === "EPERM";
+  }
 }

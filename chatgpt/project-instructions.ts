@@ -15,8 +15,6 @@ import type { GitHubRepositoryKey } from "../protocol/repo.js";
 
 export interface ProjectInstructionsInput {
   readonly repository: GitHubRepositoryKey;
-  /** Optional one-line project description the user controls; free text, never a checkpoint value. */
-  readonly description?: string;
 }
 
 /** A Project is per repository, so the title is derived from the repository and nothing else (INV-08). */
@@ -44,16 +42,12 @@ export const PROJECT_INSTRUCTION_HEADER = "pi-with-chatgpt adviser Project";
  * repository, so the canonical `owner/repo` cannot go stale without the Project itself becoming invalid.
  */
 export function buildProjectInstructions(input: ProjectInstructionsInput): string {
-  const description = input.description?.trim();
   const lines = [
     PROJECT_INSTRUCTION_HEADER,
     `Repository: ${input.repository}`,
     "",
     ...PROJECT_INSTRUCTION_RULES.map((rule, index) => `${index + 1}. ${rule}`),
   ];
-  if (description !== undefined && description.length > 0) {
-    lines.push("", `Owner note: ${description}`);
-  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -70,8 +64,8 @@ export type EphemeralValueViolation = { readonly label: string; readonly excerpt
 /**
  * Prove the instructions carry no ephemeral values.
  *
- * Runs over the *rendered* text, so an owner-supplied description that quotes a commit cannot slip a
- * second, stale provenance claim into every consultation.
+ * Runs over the complete text passed to the surface, so a future caller cannot slip a second, stale
+ * provenance claim into every consultation.
  */
 export function findEphemeralValues(text: string): readonly EphemeralValueViolation[] {
   const violations: EphemeralValueViolation[] = [];

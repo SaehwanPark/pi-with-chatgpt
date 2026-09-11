@@ -24,7 +24,7 @@ import {
   writeJsonFileAtomically,
 } from "../ledger/state-store.js";
 import { stateFileNameForKey } from "../config/state-layout.js";
-import type { ChatGptConversationKey, ConversationScope } from "./scope.js";
+import type { ChatGptConversationKey } from "./scope.js";
 
 export const CONVERSATION_SCHEMA_VERSION = 1;
 
@@ -99,13 +99,26 @@ export function parseConversationFile(raw: unknown): ConversationRecordFile | un
   if (!CONVERSATION_STATES.includes(value.state as ConversationState)) return undefined;
   if (!CONVERSATION_EVENTS.includes(value.lastEvent as ConversationEvent)) return undefined;
   if (!isConsultationKind(value.kind as string)) return undefined;
+  if (!isOpaqueId(value.projectId as string)) return undefined;
   if (!isOpaqueId(value.conversationId as string)) return undefined;
-  if (value.conversationUrl !== undefined && !isCanonicalConversationUrl(value.conversationUrl)) return undefined;
+  if (
+    value.conversationUrl !== undefined &&
+    (!isCanonicalConversationUrl(value.conversationUrl) || value.conversationUrl !== canonicalConversationUrl(value.conversationId as string))
+  ) {
+    return undefined;
+  }
   if (value.replacedFromConversationId !== undefined && !isOpaqueId(value.replacedFromConversationId as string)) {
     return undefined;
   }
-  if (value.replacedFromConversationUrl !== undefined && !isCanonicalConversationUrl(value.replacedFromConversationUrl)) {
-    return undefined;
+  if (value.replacedBy !== undefined && !isOpaqueId(value.replacedBy as string)) return undefined;
+  if (value.replacedFromConversationUrl !== undefined) {
+    if (!isCanonicalConversationUrl(value.replacedFromConversationUrl)) return undefined;
+    if (
+      value.replacedFromConversationId === undefined ||
+      value.replacedFromConversationUrl !== canonicalConversationUrl(value.replacedFromConversationId as string)
+    ) {
+      return undefined;
+    }
   }
   if (
     conversationKeyForTask({
@@ -217,4 +230,8 @@ function isOpaqueId(value: string): boolean {
 
 function isCanonicalConversationUrl(value: unknown): value is string {
   return typeof value === "string" && /^https:\/\/chatgpt\.com\/g\/[A-Za-z0-9_-]{4,120}$/u.test(value);
+}
+
+function canonicalConversationUrl(conversationId: string): string {
+  return `https://chatgpt.com/g/${encodeURIComponent(conversationId)}`;
 }

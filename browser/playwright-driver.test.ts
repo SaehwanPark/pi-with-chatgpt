@@ -81,6 +81,7 @@ function fakePage(thread: FakeThread, startUrl: string) {
         return {
           isVisible: () => Promise.resolve(target !== undefined && target.visible),
           innerText: () => Promise.resolve(target?.text ?? ""),
+          inputValue: () => Promise.resolve(target?.text ?? ""),
           getAttribute: (name: string) =>
             Promise.resolve(name === "href" ? (target?.href ?? null) : null),
           click: () => {
