@@ -88,15 +88,13 @@ describe("repository to Project mapping (INV-08, INV-12, INV-15)", () => {
       projectUrl: "https://chatgpt.com/project/external-project-42",
     };
     let listCalls = 0;
-    // The mapping implementation consumes this seam as an array; keep the race script at that
-    // runtime boundary while the in-progress browser type is being reconciled separately.
-    const surface = {
+    const surface: AdviserProjectSurface = {
       ...fake.surface,
       listProjects: () => {
         listCalls += 1;
-        return Promise.resolve(listCalls === 1 ? [] : [external]);
+        return Promise.resolve({ ok: true as const, projects: listCalls === 1 ? [] : [external] });
       },
-    } as unknown as AdviserProjectSurface;
+    };
 
     const result = success(await ensureProjectForRepository(dependencies(layout, surface)));
 
