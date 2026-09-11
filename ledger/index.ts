@@ -1,8 +1,9 @@
 /**
  * `ledger/` — durable consultation state that outlives model context.
  *
- * M0 fixes the record shape, the credential-free write guard, and the persist-before-dispatch /
- * persist-before-wake-up ordering. The append-only store implementation lands in M6.
+ * M4 adds private atomic state files and locks for Project/conversation mappings; the consultation
+ * ledger and job integration remain later-milestone work.
  */
 
 export * from "./record.js";
+export * from "./state-store.js";

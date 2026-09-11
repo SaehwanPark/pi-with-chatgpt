@@ -37,6 +37,7 @@ function fakeDriver(script: DriverScript = {}) {
   // None of these fakes await anything, so they return resolved promises rather than being declared
   // `async`: the runtime only ever calls them through `await`, and an empty async body trips lint.
   const driver: AdviserPageDriver = {
+    runExclusive: <T>(operation: () => Promise<T>) => operation(),
     start: (options: RuntimeStartOptions) => {
       calls.push(`start:${options.purpose}`);
       // When the script runs out, starts succeed: only scripted failures should stop the runtime.

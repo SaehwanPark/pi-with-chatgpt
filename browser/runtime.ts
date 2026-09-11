@@ -112,20 +112,60 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }
 
   async status(): Promise<RuntimeStatus> {
-    const processAlive = this.#phase === "ready" || this.#phase === "degraded" ? await this.#safeHealth() : false;
-    return {
-      phase: this.#phase,
-      processAlive,
-      headed: this.#headed,
-      profileDir: this.#profileDir,
-      ...(this.#chromeVersion === undefined ? {} : { chromeVersion: this.#chromeVersion }),
-      launchCount: this.#launchCount,
-      ...(this.#lastFailure === undefined ? {} : { lastFailure: this.#lastFailure }),
-      humanAttentionRequired: this.#humanAttentionRequired,
-    };
+    return await this.#driver.runExclusive(async () => {
+      const processAlive = this.#phase === "ready" || this.#phase === "degraded" ? await this.#safeHealth() : false;
+      return {
+        phase: this.#phase,
+        processAlive,
+        headed: this.#headed,
+        profileDir: this.#profileDir,
+        ...(this.#chromeVersion === undefined ? {} : { chromeVersion: this.#chromeVersion }),
+        launchCount: this.#launchCount,
+        ...(this.#lastFailure === undefined ? {} : { lastFailure: this.#lastFailure }),
+        humanAttentionRequired: this.#humanAttentionRequired,
+      };
+    });
   }
 
   async ensureReady(options: RuntimeStartOptions = { purpose: "consultation" }): Promise<{
+    readonly ok: boolean;
+    readonly rejection?: RuntimeRejection;
+  }> {
+    return await this.#driver.runExclusive(() => this.#ensureReady(options));
+  }
+
+  async probeSurface(): Promise<SurfaceObservation> {
+    return await this.#driver.runExclusive(async () => {
+      const ready = await this.#ensureReady({ purpose: "capability-probe" });
+      if (!ready.ok) {
+        return {
+          state: "unknown",
+          explanation: `Browser unavailable (${ready.rejection ?? "unknown"}).`,
+          actionable: false,
+        };
+      }
+      // Open the ChatGPT surface before classifying it: a freshly launched tab is `about:blank`, and a
+      // classifier that ran there would report "not ChatGPT" about a page it never navigated to.
+      return this.#surface();
+    });
+  }
+
+  async discoverModels(): Promise<{
+    readonly ok: boolean;
+    readonly models?: readonly ModelOption[];
+    readonly rejection?: RuntimeRejection;
+  }> {
+    return await this.#driver.runExclusive(async () => {
+      const ready = await this.#ensureReady({ purpose: "model-discovery" });
+      if (!ready.ok) return { ok: false, rejection: ready.rejection ?? "launch-failed" };
+      const surface = await this.#surface();
+      if (!surface.actionable) return { ok: false, rejection: "needs-human" };
+      return { ok: true, models: await this.#driver.listModels() };
+    });
+  }
+
+  /** Internal form: callers that already own the driver operation lock use this to avoid a nested lock. */
+  async #ensureReady(options: RuntimeStartOptions): Promise<{
     readonly ok: boolean;
     readonly rejection?: RuntimeRejection;
   }> {
@@ -143,32 +183,6 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     return await this.#launchOrReuse(options);
   }
 
-  async probeSurface(): Promise<SurfaceObservation> {
-    const ready = await this.ensureReady({ purpose: "capability-probe" });
-    if (!ready.ok) {
-      return {
-        state: "unknown",
-        explanation: `Browser unavailable (${ready.rejection ?? "unknown"}).`,
-        actionable: false,
-      };
-    }
-    // Open the ChatGPT surface before classifying it: a freshly launched tab is `about:blank`, and a
-    // classifier that ran there would report "not ChatGPT" about a page it never navigated to.
-    return this.#surface();
-  }
-
-  async discoverModels(): Promise<{
-    readonly ok: boolean;
-    readonly models?: readonly ModelOption[];
-    readonly rejection?: RuntimeRejection;
-  }> {
-    const ready = await this.ensureReady({ purpose: "model-discovery" });
-    if (!ready.ok) return { ok: false, rejection: ready.rejection ?? "launch-failed" };
-    const surface = await this.#surface();
-    if (!surface.actionable) return { ok: false, rejection: "needs-human" };
-    return { ok: true, models: await this.#driver.listModels() };
-  }
-
   /**
    * Ask one question and wait for one answer.
    *
@@ -176,7 +190,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
    * "the model refused" from "we timed out": a caller must know whether retrying could help.
    */
   async consult(request: ConsultationRequest): Promise<ConsultationOutcome> {
-    const run = this.#turnQueue.then(() => this.#runTurn(request));
+    const run = this.#turnQueue.then(() => this.#driver.runExclusive(() => this.#runTurn(request)));
     // Keep the queue alive regardless of how this turn ends; a rejected promise here would poison it.
     this.#turnQueue = run.then(
       () => undefined,
@@ -186,18 +200,20 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }
 
   async shutdown(): Promise<void> {
-    if (this.#phase === "stopped") return;
-    this.#phase = "stopping";
-    try {
-      await this.#driver.shutdown();
-    } finally {
-      this.#phase = "stopped";
-      this.#chromeVersion = undefined;
-    }
+    await this.#driver.runExclusive(async () => {
+      if (this.#phase === "stopped") return;
+      this.#phase = "stopping";
+      try {
+        await this.#driver.shutdown();
+      } finally {
+        this.#phase = "stopped";
+        this.#chromeVersion = undefined;
+      }
+    });
   }
 
   async #runTurn(request: ConsultationRequest): Promise<ConsultationOutcome> {
-    const ready = await this.ensureReady({ purpose: "consultation" });
+    const ready = await this.#ensureReady({ purpose: "consultation" });
     if (!ready.ok) {
       // Report the reason the browser could not start. A remembered human gate is not the cause here,
       // and reporting it would send the user to fix a login while Chrome is what is actually missing.

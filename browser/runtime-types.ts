@@ -163,10 +163,12 @@ export interface ModelOption {
 }
 
 /**
- * The seam the real Playwright code implements. Kept deliberately narrow: nine methods, none of which
+ * The seam the real Playwright code implements. Kept deliberately narrow: ten methods, none of which
  * accept a selector or a script from the caller.
  */
 export interface AdviserPageDriver {
+  /** Serialize a complete browser operation across the runtime and the Project/conversation surface. */
+  runExclusive<T>(operation: () => Promise<T>): Promise<T>;
   /** Start (or return the running) browser+context rooted at the extension-owned profile. */
   start(options: RuntimeStartOptions): Promise<{ readonly chromeVersion: string }>;
   /** False when the process died or the page stopped answering; the runtime then restarts. */
@@ -213,3 +215,87 @@ export const DIAGNOSTIC_POLICY = Object.freeze({
   /** Hard cap on retained artifacts, oldest first out. */
   maxArtifacts: 20,
 } as const);
+
+/**
+ * M4 — the ChatGPT Project / conversation surface.
+ *
+ * Separate from {@link AdviserPageDriver} because the rules differ: the page driver answers "is the page
+ * usable and did a turn complete", this answers "does this Project exist, create it, start a conversation
+ * in it". Kept in `browser/` so `chatgpt/` can consume it without importing Playwright, and kept as
+ * deliberately narrow as the driver:
+ *
+ * - Every parameter is an **identifier this extension minted**, never a URL, a selector, a script, or a
+ *   page handle. There is no method that could navigate the adviser somewhere the extension did not
+ *   choose, and no method that could send text other than the Project instructions and a new conversation.
+ * - Creation and inspection are separate calls because the mapping layer must be able to *verify* before
+ *   it creates; that ordering is what stops a duplicate Project (INV-08).
+ */
+
+/** A Project as ChatGPT reports it. `url` is display/ops metadata only — nothing navigates by it. */
+export interface ProjectSummary {
+  readonly projectId: string;
+  readonly title: string;
+  /** Canonical ChatGPT URL, retained for operator navigation but never treated as identity. */
+  readonly projectUrl: string;
+}
+
+/**
+ * Whether a Project this extension recorded is still there.
+ *
+ * `unknown` is a real answer and must never be collapsed into `gone`: recreating a Project because a
+ * request timed out would leave two Projects for one repository (INV-08) and orphan the first one's
+ * conversations.
+ */
+export type ProjectInspection =
+  | { readonly state: "present"; readonly title: string; readonly projectUrl?: string }
+  | { readonly state: "gone" }
+  | { readonly state: "unknown"; readonly reason: "network" | "needs-human" | "surface-unrecognised" };
+
+export type ProjectCreationFailure =
+  | "name-taken"
+  | "needs-human"
+  | "surface-unrecognised"
+  | "provider-error"
+  | "browser-lost";
+
+export type ProjectCreationResult =
+  | {
+      readonly ok: true;
+      readonly projectId: string;
+      readonly title: string;
+      readonly projectUrl: string;
+      /** False means the Project exists but its standing instructions could not be confirmed yet. */
+      readonly instructionsApplied: boolean;
+    }
+  | { readonly ok: false; readonly reason: ProjectCreationFailure };
+
+export type ProjectListFailure = Exclude<ProjectCreationFailure, "name-taken">;
+
+/** Listing failure is explicit; an empty list is never used as a synonym for an unreadable surface. */
+export type ProjectListResult =
+  | { readonly ok: true; readonly projects: readonly ProjectSummary[] }
+  | { readonly ok: false; readonly reason: ProjectListFailure };
+
+export type ConversationInspection =
+  | { readonly state: "live"; readonly title?: string; readonly conversationUrl?: string }
+  | { readonly state: "gone" }
+  | { readonly state: "unknown"; readonly reason: "network" | "needs-human" | "surface-unrecognised" };
+
+export type ConversationStartFailure = ProjectCreationFailure;
+
+export type ConversationStartResult =
+  | { readonly ok: true; readonly conversationId: string; readonly conversationUrl: string }
+  | { readonly ok: false; readonly reason: ConversationStartFailure };
+
+export interface AdviserProjectSurface {
+  /** Titles and ids of the Projects visible to the signed-in adviser account. */
+  listProjects(): Promise<ProjectListResult>;
+  inspectProject(projectId: string): Promise<ProjectInspection>;
+  /** Create a Project. The caller has already checked `inspectProject`/`listProjects` (INV-08). */
+  createProject(input: { readonly title: string; readonly instructions: string }): Promise<ProjectCreationResult>;
+  /** Replace a Project's instructions. False means "could not verify it was written". */
+  applyInstructions(projectId: string, instructions: string): Promise<boolean>;
+  /** Open a fresh conversation inside an existing Project (INV-09). */
+  startConversation(projectId: string): Promise<ConversationStartResult>;
+  inspectConversation(conversationId: string): Promise<ConversationInspection>;
+}

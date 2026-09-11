@@ -71,14 +71,24 @@ export class UnsafeLedgerRecordError extends Error {
 }
 
 export function assertLedgerRecordSafe(record: LedgerRecord): void {
-  walk(record, (key, value) => {
+  assertCredentialFreeValue("ledger record", record);
+}
+
+/**
+ * The same key/value scan, for the other files this extension persists (Project mappings, conversation
+ * records, job records). They are not ledger records, but they live in the same state root and are
+ * therefore held to the same credential rule (INV-12); one implementation keeps the pattern list from
+ * drifting between them.
+ */
+export function assertCredentialFreeValue(label: string, value: unknown): void {
+  walk(value, (key, value) => {
     if (SENSITIVE_LEDGER_KEY_PATTERN.test(key)) {
-      throw new UnsafeLedgerRecordError(`field "${key}" looks like credential material`);
+      throw new UnsafeLedgerRecordError(`${label}: field "${key}" looks like credential material`);
     }
     if (typeof value === "string") {
       const pattern = SENSITIVE_VALUE_PATTERNS.find((candidate) => candidate.test(value));
       if (pattern !== undefined) {
-        throw new UnsafeLedgerRecordError(`field "${key || "<root>"}" matches the secret pattern ${pattern}`);
+        throw new UnsafeLedgerRecordError(`${label}: field "${key || "<root>"}" matches the secret pattern ${pattern}`);
       }
     }
   });

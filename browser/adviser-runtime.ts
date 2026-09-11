@@ -22,7 +22,7 @@ import type { AdviserLoginPort, SessionObservation } from "../auth/login-flow.js
 import { adviserProfileFor, prepareStateStorage, type StateStoragePaths } from "./state-storage.js";
 import { createPlaywrightDriverFactory, type PlaywrightLauncher } from "./playwright-driver.js";
 import { AdviserRuntime } from "./runtime.js";
-import type { AdviserBrowserRuntime, SurfaceState } from "./runtime-types.js";
+import type { AdviserBrowserRuntime, AdviserProjectSurface, SurfaceState } from "./runtime-types.js";
 import type { AdviserProfile } from "./profile.js";
 
 /**
@@ -50,6 +50,8 @@ const driverFor = createPlaywrightDriverFactory(launchChrome);
 export interface AdviserBrowserBundle {
   readonly runtime: AdviserBrowserRuntime;
   readonly loginPort: AdviserLoginPort;
+  /** M4 Project/conversation surface over the *same* tab the runtime consults through (INV-09). */
+  readonly projectSurface: AdviserProjectSurface;
   readonly profile: AdviserProfile;
 }
 
@@ -64,7 +66,7 @@ export async function createAdviserBrowser(paths: StateStoragePaths): Promise<Ad
   const profile = adviserProfileFor(paths);
   const driver = driverFor(profile);
   const runtime = new AdviserRuntime({ driver, profileDir: profile.userDataDir });
-  return { runtime, loginPort: loginPortFor(profile, runtime), profile };
+  return { runtime, loginPort: loginPortFor(profile, runtime), projectSurface: driver.projectSurface(), profile };
 }
 
 /**

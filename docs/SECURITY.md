@@ -26,12 +26,13 @@ prose is [`docs/ARCHITECTURE.md`](ARCHITECTURE.md).
 | INV-05 | Adviser output is untrusted, non-authoritative input | `protocol/trust.ts` (`AdviserText` provenance brand, `assertNotAdviserAuthored`, `ApprovedAction` requires a `WorkerDecision`), `browser/playwright-driver.ts` (`safeSelectorFragment`: text read off the page — a model id from the picker — can never address an element other than a model option) |
 | INV-06 | A consultation implies no git authority | `git/authority.ts` (`READ_ONLY_GIT_INVOCATIONS` allowlist, `FORBIDDEN_GIT_ARG_TOKENS` incl. file-write/exec arguments such as `--output`, `--ext-diff`, `--upload-pack`, `-c`) |
 | INV-04 | The adviser is never shown work that is not published on GitHub | `git/remote-availability.ts` (`assessCheckpointAvailability`, `isDispatchPermitted`), `git/github-api.ts` (exact-object probe; a 404 is only `absent` when the repository itself is visible), `protocol/checkpoint.ts` (`checkDispatchReadiness` refuses `unknown` and `unavailable`) |
-| INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) |
+| INV-08 | One Project per canonical repository identity | `protocol/repo.ts` (`canonicalRepositoryKey`) + `chatgpt/scope.ts` (`projectKeyForRepository`) + `chatgpt/project-mapping.ts` (`ensureProjectForRepository` under the `projects` state lock) |
+| INV-09 | Task conversations are isolated and writes are serialised | `chatgpt/scope.ts` (`conversationKeyForTask`) + `chatgpt/conversation-mapping.ts` (`KeyedMutex`) + `chatgpt/conversation-recovery.ts` (cross-process lock and same-Project replacement) + `browser/playwright-driver.ts` (driver-owned lock across the shared tab) |
 | INV-10 | No silent OpenAI/ChatGPT account switch | `auth/identity.ts` (**single authority** `resolveAccountIdentity` answers every case; `compareAccountIdentity`, namespace-scoped `accountIdNamespace`, pair-bound `decideAccountMismatch` — only a `keep-current` minted for this account pair resolves a mismatch, and there is no boolean override), `auth/adviser-auth.ts` (`resolveAdviserAuth` delegates to it and holds no second copy of the rule) |
 | INV-11 | Isolated, extension-owned browser runtime; the user's active browser is never automated | `browser/profile.ts` (`createAdviserProfile`, `isLikelyUserBrowserProfile`, `ProfileOwnershipError`), `browser/state-storage.ts` (ownership marker read before any write, `0700`/`0600`, `writePrivateFileNoFollow`/`symlink-refused`, `assertPrivateDirectory`), `browser/cookie-import.ts` (copy-only allowlist, refuses running source / self-import / non-empty destination / path escape, `Local State` scrub, `authorizeChromeStateImport` → `applyChromeStateImport(plan, authorization)`), `auth/login-flow.ts` (`AdviserLoginPort` has no click/type/navigate/solve method), `protocol/adviser.ts` (`import-chrome-state` is human-gated), `browser/runtime.ts` (`consult()` refuses on a non-actionable surface rather than pushing through a challenge; observation stays available so a completed manual login can be detected), `browser/chatgpt-dom.ts` (a Cloudflare interstitial is `human-verification`, never `unknown` a caller retries through) |
-| INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse), `protocol/masking.ts` + `browser/chrome-state.ts` (account metadata masked while parsing), `browser/diagnostics.ts` (DOM dumps redact credential-shaped attributes; screenshots refused before login) |
+| INV-12 | Credentials never enter logs, ledger, config, or model context | `config/schema.ts` (`FORBIDDEN_CONFIG_KEYS`), `ledger/record.ts` (`assertLedgerRecordSafe` with `SENSITIVE_LEDGER_KEY_PATTERN` / `SENSITIVE_VALUE_PATTERNS`), `chatgpt/project-mapping.ts` + `chatgpt/conversation-mapping.ts` (`assertCredentialFreeValue` before M4 state writes), `auth/secret-text.ts` (`SecretText` inert under coercion/inspect), `auth/status.ts` (`adviserStatus` masked fields + `assertStatusIsRedacted`), `auth/pi-credential.ts` (refresh token dropped at parse), `protocol/masking.ts` + `browser/chrome-state.ts` (account metadata masked while parsing), `browser/diagnostics.ts` (DOM dumps redact credential-shaped attributes; screenshots refused before login) |
 | INV-13 | Worker sees only a purpose-built advice surface | `ui/worker-facing.ts` (`toWorkerFacingAdvisory` projection, `WORKER_FACING_FORBIDDEN_KEY_PATTERN`), `browser/chatgpt-dom.ts` (`scrubPageText` strips credential shapes from page-derived strings), `browser/playwright-driver.ts` (`#snapshot` reads presence only) |
-| INV-15 | Provenance persists before dispatch and before wake-up, and is never auto-published | `ledger/record.ts` (`assertPersistenceOrder`, `LEDGER_PUBLICATION_TARGETS === ["none"]`) |
+| INV-15 | Provenance persists before dispatch and before wake-up, and is never auto-published | `ledger/state-store.ts` (private atomic M4 state writes) + `ledger/record.ts` (`assertPersistenceOrder`, `LEDGER_PUBLICATION_TARGETS === ["none"]`) |
 
 The canonical statement of each invariant is
 [`references/invariants.md`](../.agents/skills/pwc-invariant-review/references/invariants.md);
@@ -116,6 +117,22 @@ named in a table.
   refused, because that is the one mistake that would publish a credential.
   The diagnostics dir is part of the owned state tree: `prepareStateStorage` creates it `0700` and re-reads
   its mode, because `mkdir`'s mode is umask-masked and ignored for a directory that already exists.
+
+## Project and conversation state (M4)
+
+The M4 state tree is derived in one place (`config/state-layout.ts`) below the extension-owned root:
+`projects.json` maps canonical `owner/repo` identities to opaque Project ids, and one digest-named file in
+`conversations/` maps each task/kind to an opaque conversation id. URLs are canonical display metadata and
+are checked against their ids; they are never used as identity or arbitrary navigation input. The state
+store writes private temporary files and atomically renames them, refuses symlink targets, and uses owner-only
+directories/files (`ledger/state-store.ts`).
+
+An inconclusive browser probe keeps an existing mapping. Only positive deletion evidence permits recreation;
+a replacement conversation stays in the existing Project and returns a checkpoint-naming handoff brief. The
+handoff does not carry repository prose or claim that Project memory is provenance. The browser adapter uses
+only the runtime's already-owned tab; a driver-owned exclusive operation lock prevents it from interleaving
+with consultation, login, or model navigation, and it returns a structured refusal when the ChatGPT surface
+cannot be recognised. Live ChatGPT interaction remains a manual validation drill, not a unit-test dependency.
 
 ## Prompt injection posture
 

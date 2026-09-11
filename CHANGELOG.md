@@ -9,6 +9,24 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M4 (ChatGPT Project and conversation management)
+
+- `config/state-layout.ts` and `ledger/state-store.ts` define the extension-owned durable state tree,
+  private atomic JSON writes, and same-host advisory locks with safe stale-lock recovery.
+- `chatgpt/project-mapping.ts` maps one canonical GitHub `owner/repo` to one ChatGPT Project, persists its
+  opaque id and canonical URL, adopts concurrent exact-title creation, preserves ids across renames, and
+  recreates only after positive deletion evidence.
+- `chatgpt/project-instructions.ts` supplies concise GitHub-only, Pi-decides/ChatGPT-advises instructions;
+  mutable branch, SHA, PR, and task values are rejected before provisioning.
+- `chatgpt/conversation-mapping.ts` and `chatgpt/conversation-recovery.ts` isolate task/kind conversations,
+  serialize same-task writes, allow different tasks to proceed concurrently, and replace deleted/stale
+  conversations inside the same Project with a checkpoint-anchored handoff brief.
+- `browser/playwright-project-surface.ts` adds the bounded, single-tab Project/conversation adapter, with
+  pure DOM parsing and positive-evidence deletion checks. Tests cover the adapter without a live ChatGPT
+  session; no live round trip is claimed.
+- The driver-owned browser operation lock serializes Project/conversation navigation with consultation,
+  login, and model operations on that tracked tab.
+
 ### Added — M0 (repository and architecture foundation)
 
 - Toolchain and package: `package.json` for `pi-with-chatgpt` (ESM, `engines.node >= 22.19.0`,
@@ -326,7 +344,7 @@ mutates *between polls*, which is the only way to express "the old answer was al
 
 - Toolchain fixed to TypeScript + Node 22 + npm + vitest (previously "to be fixed in M0");
   `README.md` development commands updated from the provisional `bun` examples.
-- Roadmap M0, M1, M2, and M3 checkboxes ticked with a named artifact/test per item.
+- Roadmap M0, M1, M2, M3, and M4 checkboxes ticked with a named artifact/test per item.
 - INV-10, INV-11, INV-12 and INV-13 guards in `protocol/invariants.ts` now cite the M2 modules that
   enforce them (`auth/adviser-auth.ts`, `auth/login-flow.ts`, `browser/cookie-import.ts`,
   `auth/secret-text.ts`, `auth/status.ts`).

@@ -535,46 +535,52 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 ## Repository → Project Mapping
 
-- [ ] Define stable repository identity key.
-- [ ] Detect whether a ChatGPT Project mapping already exists.
-- [ ] Create one ChatGPT Project per GitHub repository when needed.
-- [ ] Persist Project identifier/URL locally.
-- [ ] Reuse existing mapping across Pi sessions.
-- [ ] Recover if the Project is renamed.
-- [ ] Recover if the Project is deleted.
-- [ ] Avoid creating duplicate Projects during concurrent setup.
+- [x] Define stable repository identity key.
+- [x] Detect whether a ChatGPT Project mapping already exists.
+- [x] Create one ChatGPT Project per GitHub repository when needed.
+- [x] Persist Project identifier/URL locally.
+- [x] Reuse existing mapping across Pi sessions.
+- [x] Recover if the Project is renamed.
+- [x] Recover if the Project is deleted.
+- [x] Avoid creating duplicate Projects during concurrent setup.
 
 ## Project Instructions
 
-- [ ] Define concise Project instructions.
-- [ ] State that the Project is bound to one GitHub repository.
-- [ ] State that Pi executes and ChatGPT advises.
-- [ ] State that requested commit SHA is authoritative.
-- [ ] State that ChatGPT should inspect GitHub directly.
-- [ ] State that ChatGPT should not ask Pi to paste repository files.
-- [ ] State that Project memory is lower priority than current checkpoint code.
-- [ ] Avoid embedding ephemeral branch/commit values in Project instructions.
+- [x] Define concise Project instructions.
+- [x] State that the Project is bound to one GitHub repository.
+- [x] State that Pi executes and ChatGPT advises.
+- [x] State that requested commit SHA is authoritative.
+- [x] State that ChatGPT should inspect GitHub directly.
+- [x] State that ChatGPT should not ask Pi to paste repository files.
+- [x] State that Project memory is lower priority than current checkpoint code.
+- [x] Avoid embedding ephemeral branch/commit values in Project instructions.
 
 ## Task Conversation Mapping
 
-- [ ] Define task/session identity.
-- [ ] Create one adviser conversation per task.
-- [ ] Persist conversation ID/URL.
-- [ ] Reuse same conversation for follow-ups.
-- [ ] Start a new conversation for unrelated tasks.
-- [ ] Prevent concurrent writes to the same conversation.
-- [ ] Permit concurrent consultations in different task conversations.
+- [x] Define task/session identity.
+- [x] Create one adviser conversation per task.
+- [x] Persist conversation ID/URL.
+- [x] Reuse same conversation for follow-ups.
+- [x] Start a new conversation for unrelated tasks.
+- [x] Prevent concurrent writes to the same conversation.
+- [x] Permit concurrent consultations in different task conversations.
 
 ## Recovery
 
-- [ ] Detect deleted/stale conversation.
-- [ ] Start a replacement conversation in the same Project.
-- [ ] Send a concise task handoff if continuity matters.
-- [ ] Never treat Project memory as a substitute for exact checkpoint provenance.
+- [x] Detect deleted/stale conversation.
+- [x] Start a replacement conversation in the same Project.
+- [x] Return a concise task handoff for the dispatcher when continuity matters.
+- [x] Never treat Project memory as a substitute for exact checkpoint provenance.
 
 ## Exit Criteria
 
-- [ ] One repository consistently maps to one ChatGPT Project and multiple task-specific conversations can coexist safely.
+- [x] One repository consistently maps to one ChatGPT Project and multiple task-specific conversations can coexist safely.
+      — Evidence: `chatgpt/project-mapping.test.ts` covers stable identity, exact-once races, adoption,
+      rename, deletion/recreation, corruption refusal, and persist-before-ready; `chatgpt/project-instructions.test.ts`
+      covers all standing rules and ephemeral-value rejection; `chatgpt/conversation-mapping.test.ts` covers
+      task isolation and keyed concurrency; `chatgpt/conversation-recovery.test.ts` covers same-Project
+      replacement and checkpoint-anchored handoff; `browser/playwright-project-surface.test.ts` and
+      `browser/chatgpt-project-dom.test.ts` cover the bounded DOM adapter. No live ChatGPT round trip is claimed.
 
 ---
 
