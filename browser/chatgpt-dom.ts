@@ -258,10 +258,184 @@ export const CHATGPT_SELECTORS = Object.freeze({
   errorNotice: ['[data-testid="banner-title"]', '[role="alert"]', '[data-is-markdown="false"].banner'],
   modelPicker: ['button[aria-label*="model" i]', '[data-testid="model-switcher"]'],
   modelOption: ['[role="menuitem"]', '[data-testid="model-switcher-menu"] [role="option"]'],
+  // M4: Project and conversation management. Selector sets, like every other set here, are a fallback
+  // chain rather than one guess — and the caller treats "none matched" as `surface-unrecognised`, never
+  // as success.
+  projectCard: ['[data-testid="project-card"]', 'a[href*="/p/"]', 'a[href*="/project/"]'],
+  newProject: [
+    '[data-testid="create-project-button"]',
+    'button:has-text("New project")',
+    '[aria-label*="New project" i]',
+  ],
+  projectNameInput: [
+    '[data-testid="project-name-input"]',
+    'input[placeholder*="name" i]',
+    'input[aria-label*="name" i]',
+  ],
+  projectInstructions: [
+    '[data-testid="project-custom-instruction-input"]',
+    'textarea[aria-label*="instruction" i]',
+    'textarea[placeholder*="instruction" i]',
+  ],
+  projectSave: ['[data-testid="project-save-button"]', 'button:has-text("Save")', 'button:has-text("Create")'],
+  projectNewChat: ['[data-testid="project-new-chat"]', 'button:has-text("New chat")', 'a:has-text("New chat")'],
+  deletedConversation: [
+    ':text("chat is unavailable")',
+    ':text("This chat may have been deleted")',
+    ':text("Conversation not found")',
+  ],
+  projectUnavailable: [
+    ':text("Project not found")',
+    ':text("Project unavailable")',
+    ':text("This project may have been deleted")',
+  ],
 } as const);
 
 /** URLs that establish the surface without disturbing the session. */
 export const CHATGPT_URLS = Object.freeze({
   home: "https://chatgpt.com/",
   newChat: "https://chatgpt.com/",
+  projects: "https://chatgpt.com/project",
+  /** Template for a Project page. Nothing else may navigate: ids are opaque and never user text. */
+  project: (projectId: string): string => `https://chatgpt.com/p/${encodeURIComponent(assertOpaqueId(projectId))}`,
+  conversation: (conversationId: string): string =>
+    `https://chatgpt.com/g/${encodeURIComponent(assertOpaqueId(conversationId))}`,
 } as const);
+
+/**
+ * Ids this module is asked to build URLs from are ids we or ChatGPT minted, and they must stay opaque.
+ * A dot or slash in one would let a stored identifier walk the browser to an arbitrary page (INV-02:
+ * ChatGPT is the only site the adviser surface opens).
+ */
+function assertOpaqueId(value: string): string {
+  if (!/^[A-Za-z0-9_-]{4,120}$/u.test(value)) {
+    throw new Error(`Refusing to build an adviser URL from "${value.slice(0, 24)}": not an opaque id.`);
+  }
+  return value;
+}
+
+/**
+ * M4 — Projects and conversations as pure decisions.
+ *
+ * Same rule as the surface classifier: the DOM is untrusted, so this module takes already-extracted
+ * hrefs and labels and returns ids, presence, and matches. Playwright only ever supplies strings.
+ */
+
+import type { ConversationInspection, ProjectInspection, SurfaceState } from "./runtime-types.js";
+
+/** One Project as the Projects list reports it. */
+export interface ProjectEntry {
+  readonly projectId: string;
+  readonly title: string;
+}
+
+export interface ProjectCardSnapshot {
+  readonly href: string | undefined;
+  readonly label: string | undefined;
+}
+
+/**
+ * Extract the Project id from a Projects-list link.
+ *
+ * ChatGPT routes Projects as `/p/<id>` or `/project/<id>` depending on the build; anything else is not a
+ * Project link. A missing id means the card was unreadable, which is reported as absent rather than
+ * guessed from position.
+ */
+export function parseProjectIdFromHref(href: string | undefined): string | undefined {
+  if (href === undefined) return undefined;
+  const pathname = safeChatGptPathname(href);
+  const match = pathname === undefined ? undefined : /^\/(?:p|project)\/([A-Za-z0-9_-]{4,120})\/?$/u.exec(pathname);
+  return match?.[1];
+}
+
+/** Turn scraped cards into entries, dropping the ones that carry no usable id or title. */
+export function parseProjectEntries(cards: readonly ProjectCardSnapshot[]): readonly ProjectEntry[] {
+  const entries: ProjectEntry[] = [];
+  const seen = new Set<string>();
+  for (const card of cards) {
+    const projectId = parseProjectIdFromHref(card.href);
+    const title = card.label?.trim();
+    if (projectId === undefined || title === undefined || title.length === 0) continue;
+    if (seen.has(projectId)) continue;
+    seen.add(projectId);
+    entries.push({ projectId, title });
+  }
+  return entries;
+}
+
+/**
+ * Exact-title match, which is what makes Project creation race-safe: two Pi sessions deriving the same
+ * title from the same repository find each other's Project instead of each creating one (INV-08).
+ */
+export function findProjectByTitle(
+  entries: readonly ProjectEntry[],
+  title: string,
+): ProjectEntry | undefined {
+  const wanted = title.trim();
+  return entries.find((entry) => entry.title.trim() === wanted);
+}
+
+/**
+ * Is the Project we recorded still there?
+ *
+ * `gone` requires positive evidence: a Projects list that loaded and does not contain the id. A signed-out
+ * or unrecognised page is `unknown`, because treating it as absent would recreate a Project on a network
+ * blip and leave two Projects for one repository.
+ */
+export function classifyProjectPresence(
+  entries: readonly ProjectEntry[] | undefined,
+  projectId: string,
+  page: { readonly signedOut: boolean; readonly loaded: boolean; readonly needsHuman?: boolean },
+): ProjectInspection {
+  if (page.needsHuman === true) return { state: "unknown", reason: "needs-human" };
+  if (page.signedOut) return { state: "unknown", reason: "needs-human" };
+  if (!page.loaded || entries === undefined) return { state: "unknown", reason: "surface-unrecognised" };
+  const match = entries.find((entry) => entry.projectId === projectId);
+  if (match !== undefined) return { state: "present", title: match.title };
+  return { state: "gone" };
+}
+
+/** What a conversation page says about itself, before any of it becomes an id or a verdict. */
+export interface ConversationPageSignals {
+  /** The M3 surface classification for the same page: the single source of "is this usable". */
+  readonly surface: SurfaceState;
+  /** Positive page evidence that the chat was deleted or is unavailable. */
+  readonly showsDeletedNotice: boolean;
+}
+
+/**
+ * Is the recorded conversation still openable?
+ *
+ * `gone` needs positive evidence (the page says the chat is gone). A sign-in wall, a challenge, or a
+ * provider error is `unknown`: replacing a conversation on that evidence would orphan the thread that
+ * still holds the task's context, and a live conversation the probe failed to read is the more likely
+ * explanation.
+ */
+export function classifyConversationPresence(signals: ConversationPageSignals): ConversationInspection {
+  if (signals.surface === "signed-out" || signals.surface === "human-verification") {
+    return { state: "unknown", reason: "needs-human" };
+  }
+  if (signals.showsDeletedNotice) return { state: "gone" };
+  if (signals.surface === "conversation-ready" || signals.surface === "generating" || signals.surface === "response-complete") {
+    return { state: "live" };
+  }
+  if (signals.surface === "provider-error") return { state: "unknown", reason: "network" };
+  return { state: "unknown", reason: "surface-unrecognised" };
+}
+
+/** Conversation ids come from the URL (`/c/<id>` or `/g/<id>`); nothing else is trusted as an id. */
+export function parseConversationIdFromHref(href: string | undefined): string | undefined {
+  if (href === undefined) return undefined;
+  const pathname = safeChatGptPathname(href);
+  const match = pathname === undefined ? undefined : /^\/(?:c|g|chat)\/([A-Za-z0-9_-]{4,120})\/?$/u.exec(pathname);
+  return match?.[1];
+}
+
+function safeChatGptPathname(href: string): string | undefined {
+  try {
+    const url = new URL(href, CHATGPT_URLS.home);
+    return isChatGptUrl(url.toString()) ? url.pathname : undefined;
+  } catch {
+    return undefined;
+  }
+}

@@ -26,8 +26,10 @@ import {
   type SurfaceSnapshot,
 } from "./chatgpt-dom.js";
 import type { AdviserProfile } from "./profile.js";
+import { createPlaywrightProjectSurface } from "./playwright-project-surface.js";
 import type {
   AdviserPageDriver,
+  AdviserProjectSurface,
   ConsultationOutcome,
   ConsultationRequest,
   ModelOption,
@@ -55,6 +57,8 @@ type AdviserPlaywrightPage = {
 type AdviserElement = {
   isVisible(): Promise<boolean>;
   innerText(): Promise<string>;
+  /** Only `href` is ever read (M4 resolves Project/conversation ids out of links). */
+  getAttribute(name: string): Promise<string | null>;
   click(): Promise<void>;
   fill(text: string): Promise<void>;
   pressSequentially(text: string, options: { delay: number }): Promise<void>;
@@ -264,6 +268,21 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     return { ok: false, failure: "generation-timeout" };
   }
 
+  /**
+   * The M4 Project/conversation surface, bound to this driver's single tracked tab.
+   *
+   * Returned from the driver rather than constructed independently so there is exactly one page handle per
+   * browser: a second tab in a `launchPersistentContext` profile is how two writers end up in one ChatGPT
+   * conversation (INV-09). The page type it hands back stays inside `browser/`.
+   */
+  projectSurface(): AdviserProjectSurface {
+    return createPlaywrightProjectSurface({
+      page: () => this.#requirePage(),
+      timeoutMs: this.#navigationTimeoutMs,
+      sleep: this.#sleep,
+    });
+  }
+
   async shutdown(): Promise<void> {
     const context = this.#context;
     this.#context = undefined;
@@ -335,7 +354,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
  */
 export function createPlaywrightDriverFactory(
   launch: PlaywrightLauncher,
-): (profile: AdviserProfile) => AdviserPageDriver {
+): (profile: AdviserProfile) => PlaywrightAdviserDriver {
   return (profile) => new PlaywrightAdviserDriver({ profile, launch });
 }
 

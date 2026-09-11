@@ -39,6 +39,8 @@ const TURN: ConsultationRequest = {
 interface FakeNode {
   readonly text: string;
   readonly visible: boolean;
+  /** Only `href` is read (M4 parses Project/conversation ids out of links). */
+  readonly href?: string;
 }
 
 /** Mutable on purpose: the thread has to change while the driver is polling it. */
@@ -79,6 +81,8 @@ function fakePage(thread: FakeThread, startUrl: string) {
         return {
           isVisible: () => Promise.resolve(target !== undefined && target.visible),
           innerText: () => Promise.resolve(target?.text ?? ""),
+          getAttribute: (name: string) =>
+            Promise.resolve(name === "href" ? (target?.href ?? null) : null),
           click: () => {
             clicked.push(target?.text ?? "<no node>");
             return Promise.resolve();
