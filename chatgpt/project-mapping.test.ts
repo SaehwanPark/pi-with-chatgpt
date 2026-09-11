@@ -82,12 +82,12 @@ describe("repository to Project mapping (INV-08, INV-12, INV-15)", () => {
 
   it("adopts a Project created concurrently outside this process", async () => {
     const { layout } = await tempStateLayout("project-adopt");
-    const fake = fakeProjectSurface({ refuseCreation: "name-taken" });
     const external = {
       projectId: "external-project-42",
       title: projectTitleForRepository(REPOSITORY),
       projectUrl: "https://chatgpt.com/project/external-project-42",
     };
+    const fake = fakeProjectSurface({ refuseCreation: "name-taken", projects: [external] });
     let listCalls = 0;
     const surface: AdviserProjectSurface = {
       ...fake.surface,
@@ -102,8 +102,12 @@ describe("repository to Project mapping (INV-08, INV-12, INV-15)", () => {
     expect(result.outcome).toBe("adopted");
     expect(result.mapping.projectId).toBe(external.projectId);
     expect(result.mapping.projectTitle).toBe(external.title);
+    expect(result.mapping.instructionsApplied).toBe(true);
     expect(listCalls).toBe(2);
     expect(fake.calls.create).toHaveLength(1);
+    expect(fake.calls.applyInstructions).toEqual([
+      { projectId: external.projectId, instructions: INSTRUCTIONS },
+    ]);
     expect((await readProjectMappingFile(layout)).file.projects[projectKeyFor(REPOSITORY)]?.projectId).toBe(
       external.projectId,
     );

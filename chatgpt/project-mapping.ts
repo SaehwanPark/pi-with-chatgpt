@@ -27,6 +27,7 @@ import {
   lockFilePath,
   nodeStateStore,
   readJsonFile,
+  StateStoreError,
   writeJsonFileAtomically,
 } from "../ledger/state-store.js";
 import { assertProjectInstructionsAreEphemeralFree, projectTitleForRepository } from "./project-instructions.js";
@@ -172,6 +173,7 @@ export interface ProjectMappingRead {
   readonly file: ProjectMappingFile;
   /** Set when the file on disk could not be trusted; callers must surface it, never overwrite silently. */
   readonly corrupt: boolean;
+  readonly failure?: "state-corrupt" | "state-unreadable";
 }
 
 export async function readProjectMappingFile(
@@ -183,7 +185,7 @@ export async function readProjectMappingFile(
     parseProjectMappingFile,
     fileSystem,
   );
-  if (!result.ok) return { file: EMPTY_PROJECT_MAPPING_FILE, corrupt: true };
+  if (!result.ok) return { file: EMPTY_PROJECT_MAPPING_FILE, corrupt: result.code === "state-corrupt", failure: result.code };
   return { file: result.value ?? EMPTY_PROJECT_MAPPING_FILE, corrupt: false };
 }
 
@@ -191,8 +193,11 @@ export async function listProjectMappings(
   layout: AdviserStateLayout,
   fileSystem: StateStoreFileSystem = nodeStateStore,
 ): Promise<readonly ChatGptProjectMapping[]> {
-  const { file } = await readProjectMappingFile(layout, fileSystem);
-  return Object.values(file.projects);
+  const read = await readProjectMappingFile(layout, fileSystem);
+  if (read.failure !== undefined) {
+    throw new StateStoreError(read.failure, layout.projectMappingFile, "Project mapping state could not be trusted.");
+  }
+  return Object.values(read.file.projects);
 }
 
 /**
@@ -234,10 +239,10 @@ export async function ensureProjectForRepository(
 
   try {
     const read = await readProjectMappingFile(dependencies.layout, fileSystem);
-    if (read.corrupt) {
+    if (read.failure !== undefined) {
       return {
         ok: false,
-        reason: "state-corrupt",
+        reason: read.failure,
         explanation: `The Project mapping file at ${dependencies.layout.projectMappingFile} is unreadable and was not overwritten; repair it before consulting the adviser.`,
       };
     }
@@ -371,9 +376,17 @@ async function createOrAdopt(
   if (!listed.ok) return { ok: false, reason: listed.reason, explanation: createExplanation(listed.reason) };
   const existing = listed.projects.find((project) => project.title.trim() === title.trim());
   if (existing !== undefined) {
-    return persistCreated(context, key, existing.projectId, existing.title, "adopted", file, true, {
-      note: "Adopted an existing ChatGPT Project for this repository instead of creating a duplicate.",
-    });
+    return persistCreated(
+      context,
+      key,
+      existing.projectId,
+      existing.title,
+      "adopted",
+      file,
+      false,
+      { note: "Adopted an existing ChatGPT Project for this repository instead of creating a duplicate." },
+      true,
+    );
   }
 
   const created = await context.surface.createProject({ title, instructions: context.instructions });
@@ -398,6 +411,7 @@ async function persistCreated(
   file: ProjectMappingFile,
   instructionsApplied: boolean,
   extra: { readonly note?: string } = {},
+  applyInstructions = false,
 ): Promise<EnsureProjectResult> {
   if (!isOpaqueId(projectId) || projectTitle.trim().length === 0) {
     return {
@@ -423,7 +437,22 @@ async function persistCreated(
   };
   const persisted = await persist(context, key, mapping, file);
   if (!persisted.ok) return persisted.refusal;
-  return { ok: true, outcome: event, mapping, instructionsApplied, ...extra };
+  let finalMapping = mapping;
+  if (applyInstructions) {
+    const applied = await applyInstructionsIfNeeded(context, mapping);
+    if (applied !== mapping) {
+      const instructionPersisted = await persist(context, key, applied, file);
+      if (!instructionPersisted.ok) return instructionPersisted.refusal;
+      finalMapping = applied;
+    }
+  }
+  return {
+    ok: true,
+    outcome: event,
+    mapping: finalMapping,
+    instructionsApplied: finalMapping.instructionsApplied,
+    ...extra,
+  };
 }
 
 async function applyInstructionsIfNeeded(context: Context, mapping: ChatGptProjectMapping): Promise<ChatGptProjectMapping> {
@@ -458,12 +487,12 @@ async function persist(
     };
   }
   const read = base === undefined ? await readProjectMappingFile(context.layout, context.fileSystem) : undefined;
-  if (read?.corrupt === true) {
+  if (read?.failure !== undefined) {
     return {
       ok: false,
       refusal: {
         ok: false,
-        reason: "state-corrupt",
+        reason: read.failure,
         explanation: `The Project mapping file at ${context.layout.projectMappingFile} became unreadable; refusing to overwrite it.`,
       },
     };
@@ -481,7 +510,9 @@ async function persist(
 
 function stateReason(error: unknown): ProjectRefusalReason {
   const code = (error as { code?: string }).code;
-  return code === "state-busy" ? "state-busy" : "state-unreadable";
+  if (code === "state-busy") return "state-busy";
+  if (code === "state-corrupt") return "state-corrupt";
+  return "state-unreadable";
 }
 
 function stateExplanation(error: unknown): string {

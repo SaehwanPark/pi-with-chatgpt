@@ -51,7 +51,7 @@ type AdviserPlaywrightPage = {
   waitForLoadState(state: string, options: { timeout: number }): Promise<unknown>;
   locator(selector: string): AdviserLocator;
   keyboard: { press(key: string): Promise<void> };
-  frames(): readonly { locator(selector: string): AdviserLocator }[];
+  frames(): readonly { url(): string; locator(selector: string): AdviserLocator }[];
   close(): Promise<void>;
 };
 type AdviserElement = {
@@ -111,6 +111,8 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   #context: BrowserContext | undefined;
   #page: TrackedPage | undefined;
   #chromeVersion = "unknown";
+  /** One queue for every operation that can touch the tracked tab, including M4's Project surface. */
+  #operationTail: Promise<void> = Promise.resolve();
 
   constructor(options: PlaywrightDriverOptions) {
     this.#profile = options.profile;
@@ -119,6 +121,23 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     this.#navigationTimeoutMs = options.navigationTimeoutMs ?? 45_000;
     this.#pollIntervalMs = options.pollIntervalMs ?? 750;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  }
+
+  async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#operationTail;
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => current);
+    this.#operationTail = tail;
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#operationTail === tail) this.#operationTail = Promise.resolve();
+    }
   }
 
   async start(options: RuntimeStartOptions): Promise<{ readonly chromeVersion: string }> {
@@ -279,6 +298,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   projectSurface(): AdviserProjectSurface {
     return createPlaywrightProjectSurface({
       page: () => this.#requirePage(),
+      runExclusive: (operation) => this.runExclusive(operation),
       timeoutMs: this.#navigationTimeoutMs,
       sleep: this.#sleep,
     });

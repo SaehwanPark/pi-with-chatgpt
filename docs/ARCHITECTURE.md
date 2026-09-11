@@ -145,8 +145,10 @@ id across renames, and recreates only after positive deletion evidence (`chatgpt
 `conversationKeyForTask` requires a task identity (a repository-wide shared thread throws), and
 `ensureConversationForTask` stores one conversation record per task/kind. The process-wide `KeyedMutex`
 and the cross-process digest lock serialise one conversation while leaving different task keys concurrent;
-deleted or stale records are replaced inside the same Project (`chatgpt/scope.ts`,
-`chatgpt/conversation-mapping.ts`, `chatgpt/conversation-recovery.ts`).
+deleted or stale records are replaced inside the same Project. The driver-owned exclusive browser
+operation lock also serialises Project/conversation navigation with consultation, login, and model
+operations on the single tracked tab (`chatgpt/scope.ts`, `chatgpt/conversation-mapping.ts`,
+`chatgpt/conversation-recovery.ts`, `browser/runtime.ts`, `browser/playwright-driver.ts`).
 
 ### INV-10
 

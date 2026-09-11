@@ -94,13 +94,22 @@ export interface EnsureConversationDependencies {
 export async function ensureConversationForTask(
   dependencies: EnsureConversationDependencies,
 ): Promise<EnsureConversationResult> {
-  const key = conversationKeyForTask(dependencies.scope);
   const fileSystem = dependencies.fileSystem ?? nodeStateStore;
   if (!isOpaqueId(dependencies.projectId)) {
     return {
       ok: false,
       reason: "surface-unrecognised",
       explanation: "The recorded ChatGPT Project id is not a usable opaque id; no conversation was started.",
+    };
+  }
+  let key: ChatGptConversationKey;
+  try {
+    key = conversationKeyForTask(dependencies.scope);
+  } catch {
+    return {
+      ok: false,
+      reason: "surface-unrecognised",
+      explanation: "The task identity could not be converted into a safe conversation key; no conversation was started.",
     };
   }
   try {
@@ -140,10 +149,10 @@ async function ensureInsideLock(
   await ensurePrivateDirectory(dependencies.layout.conversationsDir, fileSystem);
 
   const read = await readConversationRecord(dependencies.layout, key, fileSystem);
-  if (read.corrupt) {
+  if (read.corrupt || read.failure !== undefined) {
     return {
       ok: false,
-      reason: "state-corrupt",
+      reason: read.failure ?? "state-corrupt",
       explanation: `The conversation record for this task is unreadable and was not overwritten; refusing to start a second thread for the same task.`,
     };
   }
@@ -155,11 +164,11 @@ async function ensureInsideLock(
 
   if (reusable && existing !== undefined) {
     const record = existing;
-      const inspection = await dependencies.surface.inspectConversation(record.conversationId);
-      if (inspection.state === "live") {
-        const touched = stamp(record, "reused", now(), {
-          conversationUrl: canonicalConversationUrl(record.conversationId),
-        });
+    const inspection = await dependencies.surface.inspectConversation(record.conversationId);
+    if (inspection.state === "live") {
+      const touched = stamp(record, "reused", now(), {
+        conversationUrl: canonicalConversationUrl(record.conversationId),
+      });
       await writeConversationRecord(dependencies.layout, touched, fileSystem);
       return { ok: true, outcome: "reused", record: touched, key };
     }
@@ -298,12 +307,17 @@ function stamp(
 export function renderTaskHandoff(brief: TaskHandoffBrief): string {
   return [
     "TASK HANDOFF — this conversation replaces one that was deleted.",
-    `Task: ${brief.taskId}`,
+    `Task: ${safeHandoffIdentifier(brief.taskId)}`,
     `Request kind: ${brief.kind}`,
     `Previous conversation reviewed ${brief.previousCheckpoint}.`,
     `This request is anchored to ${brief.currentCheckpoint}.`,
     "Do not rely on Project memory or on this handoff for repository facts: inspect the repository at the checkpoint above through GitHub.",
   ].join("\n");
+}
+
+function safeHandoffIdentifier(value: string): string {
+  const normalized = value.replace(/[^A-Za-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "");
+  return normalized.slice(0, 96) || "unknown";
 }
 
 /** Guard used by the dispatcher: a handoff may never be the only source of the checkpoint claim. */

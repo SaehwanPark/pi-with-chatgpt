@@ -228,14 +228,28 @@ export async function acquireStateLock(
   const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const pollMs = options.pollMs ?? DEFAULT_LOCK_POLL_MS;
   const deadline = fileSystem.now() + timeoutMs;
-  const payload = JSON.stringify({ pid: process.pid, takenAt: new Date(fileSystem.now()).toISOString() });
+  const lockContents = `${JSON.stringify({
+    pid: process.pid,
+    takenAt: new Date(fileSystem.now()).toISOString(),
+    nonce: Math.random().toString(36).slice(2),
+  })}\n`;
 
   for (;;) {
     try {
-      await fileSystem.createFilePrivate(options.path, `${payload}\n`);
+      await fileSystem.createFilePrivate(options.path, lockContents);
       return {
         path: options.path,
         release: async () => {
+          // A process can be descheduled after its lock is broken and reacquired by another writer. Only
+          // remove the file if it is still the exact lock this acquisition created; an unconditional unlink
+          // would let the old owner release the new owner's lock (INV-08/INV-09).
+          let current: string | undefined;
+          try {
+            current = await fileSystem.readFile(options.path);
+          } catch {
+            return;
+          }
+          if (current !== lockContents) return;
           await fileSystem.unlink(options.path).catch(() => undefined);
         },
       };
@@ -244,7 +258,8 @@ export async function acquireStateLock(
       const modifiedAt = await fileSystem.modifiedAt(options.path);
       const age = modifiedAt === undefined ? timeoutMs : fileSystem.now() - modifiedAt;
       const owner = await readLockOwner(fileSystem, options.path);
-      if (age >= staleAfterMs && owner !== null && (owner === undefined || !isProcessAlive(owner))) {
+      const stillSameFile = modifiedAt !== undefined && (await fileSystem.modifiedAt(options.path)) === modifiedAt;
+      if (stillSameFile && age >= staleAfterMs && owner !== null && (owner === undefined || !isProcessAlive(owner))) {
         await fileSystem.unlink(options.path).catch(() => undefined);
         continue;
       }

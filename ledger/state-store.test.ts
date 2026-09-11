@@ -98,6 +98,19 @@ describe("state store (INV-15)", () => {
     await second.release();
   });
 
+  it("does not let an old owner release a replacement lock", async () => {
+    const dir = await workspace("lock-owner");
+    const path = lockFilePath(dir, "projects");
+    const first = await acquireStateLock({ path });
+    // Model stale-lock recovery handing the path to a new owner before the old owner resumes.
+    await nodeStateStore.unlink(path);
+    const second = await acquireStateLock({ path });
+
+    await first.release();
+    expect(await nodeStateStore.modifiedAt(path)).toBeDefined();
+    await second.release();
+  });
+
   it("breaks a lock left behind by a crashed process", async () => {
     const dir = await workspace("stale");
     const path = join(dir, "stale.lock");

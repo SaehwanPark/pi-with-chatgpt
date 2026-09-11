@@ -214,6 +214,46 @@ describe("PlaywrightAdviserDriver.openChatGPT", () => {
   });
 });
 
+describe("PlaywrightAdviserDriver.runExclusive", () => {
+  it("serializes operations that share the tracked browser tab", async () => {
+    const { driver } = await startedDriver({ thread: {} });
+    let active = 0;
+    let maximumActive = 0;
+    let firstEntered: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      firstEntered = resolve;
+    });
+    let releaseFirst: () => void = () => undefined;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let secondFinished = false;
+
+    const first = driver.runExclusive(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      firstEntered();
+      await firstMayFinish;
+      active -= 1;
+    });
+    await entered;
+
+    const second = driver.runExclusive(() => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      active -= 1;
+      secondFinished = true;
+      return Promise.resolve();
+    });
+    await Promise.resolve();
+    expect(secondFinished).toBe(false);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(maximumActive).toBe(1);
+  });
+});
+
 describe("PlaywrightAdviserDriver.selectModel", () => {
   const PICKER = 'button[aria-label*="model" i]';
   const OPTION = '[role="menuitem"]';

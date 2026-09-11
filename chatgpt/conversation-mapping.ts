@@ -94,7 +94,7 @@ export function parseConversationFile(raw: unknown): ConversationRecordFile | un
     "lastEvent",
   ] as const) {
     const rawField = value[field];
-    if (typeof rawField !== "string" || rawField.length === 0) return undefined;
+    if (typeof rawField !== "string" || rawField.trim().length === 0) return undefined;
   }
   if (typeof value.revision !== "number" || !Number.isInteger(value.revision) || value.revision < 1) return undefined;
   if (!CONVERSATION_STATES.includes(value.state as ConversationState)) return undefined;
@@ -121,13 +121,17 @@ export function parseConversationFile(raw: unknown): ConversationRecordFile | un
       return undefined;
     }
   }
-  if (
-    conversationKeyForTask({
-      repository: value.repository as GitHubRepositoryKey,
-      taskId: value.taskId as string,
-      kind: value.kind as ConsultationKind,
-    }) !== value.conversationKey
-  ) {
+  try {
+    if (
+      conversationKeyForTask({
+        repository: value.repository as GitHubRepositoryKey,
+        taskId: value.taskId as string,
+        kind: value.kind as ConsultationKind,
+      }) !== value.conversationKey
+    ) {
+      return undefined;
+    }
+  } catch {
     return undefined;
   }
   try {
@@ -141,6 +145,7 @@ export function parseConversationFile(raw: unknown): ConversationRecordFile | un
 export interface ConversationRead {
   readonly record: ChatGptConversationRecord | undefined;
   readonly corrupt: boolean;
+  readonly failure?: "state-corrupt" | "state-unreadable";
 }
 
 export async function readConversationRecord(
@@ -150,7 +155,7 @@ export async function readConversationRecord(
 ): Promise<ConversationRead> {
   const path = conversationFilePath(layout, key);
   const result = await readJsonFile<ConversationRecordFile>(path, parseConversationFile, fileSystem);
-  if (!result.ok) return { record: undefined, corrupt: true };
+  if (!result.ok) return { record: undefined, corrupt: result.code === "state-corrupt", failure: result.code };
   if (result.value === undefined) return { record: undefined, corrupt: false };
   // A record stored under one key but naming another is a mismatch we refuse rather than adopt: silently
   // accepting it is how advice from task A lands in task B's thread.

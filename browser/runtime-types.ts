@@ -163,10 +163,12 @@ export interface ModelOption {
 }
 
 /**
- * The seam the real Playwright code implements. Kept deliberately narrow: nine methods, none of which
+ * The seam the real Playwright code implements. Kept deliberately narrow: ten methods, none of which
  * accept a selector or a script from the caller.
  */
 export interface AdviserPageDriver {
+  /** Serialize a complete browser operation across the runtime and the Project/conversation surface. */
+  runExclusive<T>(operation: () => Promise<T>): Promise<T>;
   /** Start (or return the running) browser+context rooted at the extension-owned profile. */
   start(options: RuntimeStartOptions): Promise<{ readonly chromeVersion: string }>;
   /** False when the process died or the page stopped answering; the runtime then restarts. */

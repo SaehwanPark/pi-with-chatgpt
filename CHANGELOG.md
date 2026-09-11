@@ -24,6 +24,8 @@ change invalidates (see `AGENTS.md`).
 - `browser/playwright-project-surface.ts` adds the bounded, single-tab Project/conversation adapter, with
   pure DOM parsing and positive-evidence deletion checks. Tests cover the adapter without a live ChatGPT
   session; no live round trip is claimed.
+- The driver-owned browser operation lock serializes Project/conversation navigation with consultation,
+  login, and model operations on that tracked tab.
 
 ### Added — M0 (repository and architecture foundation)
 

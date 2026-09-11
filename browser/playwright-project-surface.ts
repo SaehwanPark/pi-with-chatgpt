@@ -55,23 +55,30 @@ export interface ProjectSurfaceLocator {
   first(): ProjectSurfaceElement;
 }
 
+export interface ProjectSurfaceFrame {
+  url(): string;
+  locator(selector: string): ProjectSurfaceLocator;
+}
+
 export interface ProjectSurfacePage {
   url(): string;
   title(): Promise<string>;
   goto(url: string, options: { readonly waitUntil: string; readonly timeout: number }): Promise<unknown>;
   locator(selector: string): ProjectSurfaceLocator;
-  frames(): readonly { locator(selector: string): ProjectSurfaceLocator }[];
+  frames(): readonly ProjectSurfaceFrame[];
 }
 
 export interface PlaywrightProjectSurfaceOptions {
   /** The runtime's single tracked tab; this module never opens a second one. */
   readonly page: () => Promise<ProjectSurfacePage>;
+  /** Driver-owned lock shared with consultation/login/model operations on the same tracked tab. */
+  readonly runExclusive?: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly timeoutMs?: number;
   readonly pollIntervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** Cards scraped before the list settles are a partial truth, so the list is bounded and re-read once. */
+  /** Cards scraped before the list settles are a partial truth, so the list is bounded and re-read once. */
 const MAX_PROJECT_CARDS = 60;
 const DEFAULT_TIMEOUT_MS = 45_000;
 const DEFAULT_POLL_MS = 250;
@@ -81,6 +88,10 @@ interface ProjectCardScrape {
   readonly entries: readonly ProjectEntry[];
 }
 
+interface ProjectSurfaceScope {
+  readonly locator: (selector: string) => ProjectSurfaceLocator;
+}
+
 export function createPlaywrightProjectSurface(
   options: PlaywrightProjectSurfaceOptions,
 ): AdviserProjectSurface {
@@ -88,15 +99,25 @@ export function createPlaywrightProjectSurface(
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let surfaceTail: Promise<void> = Promise.resolve();
+  const runExclusive = options.runExclusive ?? withSurfaceLock;
 
   async function firstVisible(page: ProjectSurfacePage, selectors: readonly string[]): Promise<ProjectSurfaceElement | undefined> {
-    const frames = [{ locator: (selector: string) => page.locator(selector) }, ...page.frames()];
-    for (const frame of frames) {
+    for (const frame of pageScopes(page)) {
       for (const selector of selectors) {
-        const locator = frame.locator(selector);
+        let locator: ProjectSurfaceLocator;
+        try {
+          locator = frame.locator(selector);
+        } catch {
+          continue;
+        }
         const count = await locator.count().catch(() => 0);
         for (let index = 0; index < Math.min(count, 12); index += 1) {
-          const element = locator.nth(index);
+          let element: ProjectSurfaceElement;
+          try {
+            element = locator.nth(index);
+          } catch {
+            continue;
+          }
           if (await element.isVisible().catch(() => false)) return element;
         }
       }
@@ -149,16 +170,37 @@ export function createPlaywrightProjectSurface(
   }
 
   async function scrapeProjectCards(page: ProjectSurfacePage): Promise<ProjectCardScrape> {
+    const first = await scrapeProjectCardsOnce(page);
+    await sleep(Math.min(pollIntervalMs, timeoutMs));
+    const second = await scrapeProjectCardsOnce(page);
+    const entries = [...first.entries];
+    for (const entry of second.entries) {
+      if (!entries.some((candidate) => candidate.projectId === entry.projectId)) entries.push(entry);
+    }
+    return { found: first.found || second.found, entries };
+  }
+
+  async function scrapeProjectCardsOnce(page: ProjectSurfacePage): Promise<ProjectCardScrape> {
     const cards: { href: string | undefined; label: string | undefined }[] = [];
     let found = false;
-    for (const frame of [{ locator: (selector: string) => page.locator(selector) }, ...page.frames()]) {
+    for (const frame of pageScopes(page)) {
       for (const selector of CHATGPT_SELECTORS.projectCard) {
-        const locator = frame.locator(selector);
+        let locator: ProjectSurfaceLocator;
+        try {
+          locator = frame.locator(selector);
+        } catch {
+          continue;
+        }
         const count = await locator.count().catch(() => 0);
         if (count === 0) continue;
         found = true;
         for (let index = 0; index < Math.min(count, MAX_PROJECT_CARDS); index += 1) {
-          const card = locator.nth(index);
+          let card: ProjectSurfaceElement;
+          try {
+            card = locator.nth(index);
+          } catch {
+            continue;
+          }
           const href = await card.getAttribute("href").catch(() => null);
           const label = scrubPageText(await card.innerText().catch(() => ""), 200);
           cards.push({ href: href ?? undefined, label });
@@ -328,8 +370,11 @@ export function createPlaywrightProjectSurface(
       } catch {
         return { ok: false, reason: "browser-lost" };
       }
-      const snapshot = await gotoRecognised(page, CHATGPT_URLS.project(projectId));
+      const projectUrl = safeProjectUrl(projectId);
+      if (projectUrl === undefined) return { ok: false, reason: "surface-unrecognised" };
+      const snapshot = await gotoRecognised(page, projectUrl);
       if (snapshot === undefined) return { ok: false, reason: "provider-error" };
+      if (!isProjectUrl(snapshot.url, projectId)) return { ok: false, reason: "surface-unrecognised" };
       const classification = classifySurface(snapshot);
       if (classification.state === "signed-out" || classification.state === "human-verification") {
         return { ok: false, reason: "needs-human" };
@@ -348,7 +393,9 @@ export function createPlaywrightProjectSurface(
       }
       const deadline = Date.now() + timeoutMs;
       for (;;) {
-        const conversationId = parseConversationIdFromHref(page.url()) ?? linkedConversation;
+        const currentUrl = safePageUrl(page);
+        if (currentUrl === undefined) return { ok: false, reason: "browser-lost" };
+        const conversationId = parseConversationIdFromHref(currentUrl) ?? linkedConversation;
         if (conversationId !== undefined) {
           return { ok: true, conversationId, conversationUrl: CHATGPT_URLS.conversation(conversationId) };
         }
@@ -364,10 +411,14 @@ export function createPlaywrightProjectSurface(
       } catch {
         return { state: "unknown", reason: "network" };
       }
-      const snapshot = await gotoRecognised(page, CHATGPT_URLS.conversation(conversationId));
+      const conversationUrl = safeConversationUrl(conversationId);
+      if (conversationUrl === undefined) return { state: "unknown", reason: "surface-unrecognised" };
+      const snapshot = await gotoRecognised(page, conversationUrl);
       if (snapshot === undefined) return { state: "unknown", reason: "network" };
+      if (!isConversationUrl(snapshot.url, conversationId)) {
+        return { state: "unknown", reason: "surface-unrecognised" };
+      }
       const surface = classifySurface(snapshot);
-      if (!isChatGptSurfaceUrl(snapshot.url)) return { state: "unknown", reason: "surface-unrecognised" };
       if (surface.state === "provider-error") return { state: "unknown", reason: "network" };
       const deleted = await firstVisible(page, CHATGPT_SELECTORS.deletedConversation);
       const result = classifyConversationPresence({
@@ -384,12 +435,12 @@ export function createPlaywrightProjectSurface(
   // task keys from navigating that tab at once; serialize the browser effect while leaving their state
   // operations independently keyed.
   return {
-    listProjects: () => withSurfaceLock(() => rawSurface.listProjects()),
-    inspectProject: (projectId) => withSurfaceLock(() => rawSurface.inspectProject(projectId)),
-    createProject: (input) => withSurfaceLock(() => rawSurface.createProject(input)),
-    applyInstructions: (projectId, instructions) => withSurfaceLock(() => rawSurface.applyInstructions(projectId, instructions)),
-    startConversation: (projectId) => withSurfaceLock(() => rawSurface.startConversation(projectId)),
-    inspectConversation: (conversationId) => withSurfaceLock(() => rawSurface.inspectConversation(conversationId)),
+    listProjects: () => runExclusive(() => rawSurface.listProjects()),
+    inspectProject: (projectId) => runExclusive(() => rawSurface.inspectProject(projectId)),
+    createProject: (input) => runExclusive(() => rawSurface.createProject(input)),
+    applyInstructions: (projectId, instructions) => runExclusive(() => rawSurface.applyInstructions(projectId, instructions)),
+    startConversation: (projectId) => runExclusive(() => rawSurface.startConversation(projectId)),
+    inspectConversation: (conversationId) => runExclusive(() => rawSurface.inspectConversation(conversationId)),
   };
 
   async function withSurfaceLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -434,7 +485,10 @@ export function createPlaywrightProjectSurface(
     instructions: string,
   ): Promise<boolean> {
     try {
-      await page.goto(CHATGPT_URLS.project(projectId), { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      const projectUrl = safeProjectUrl(projectId);
+      if (projectUrl === undefined) return false;
+      await page.goto(projectUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      if (!isProjectUrl(page.url(), projectId)) return false;
       const field = await firstVisible(page, CHATGPT_SELECTORS.projectInstructions);
       if (field === undefined) return false;
       await field.fill(instructions);
@@ -455,12 +509,22 @@ export function createPlaywrightProjectSurface(
   }
 
   async function inspectProjectPage(page: ProjectSurfacePage, projectId: string): Promise<ProjectInspection> {
+    const projectUrl = safeProjectUrl(projectId);
+    if (projectUrl === undefined) return { state: "unknown", reason: "surface-unrecognised" };
     try {
-      await page.goto(CHATGPT_URLS.project(projectId), { waitUntil: "domcontentloaded", timeout: timeoutMs });
+      await page.goto(projectUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     } catch {
       return { state: "unknown", reason: "network" };
     }
-    const snapshot = await readSnapshot(page);
+    let snapshot: SurfaceSnapshot;
+    try {
+      snapshot = await readSnapshot(page);
+    } catch {
+      return { state: "unknown", reason: "network" };
+    }
+    if (!isProjectUrl(snapshot.url, projectId)) {
+      return { state: "unknown", reason: "surface-unrecognised" };
+    }
     const classification = classifySurface(snapshot);
     if (classification.state === "signed-out" || classification.state === "human-verification") {
       return { state: "unknown", reason: "needs-human" };
@@ -468,17 +532,35 @@ export function createPlaywrightProjectSurface(
     if (classification.state === "provider-error") return { state: "unknown", reason: "network" };
     const unavailable = await firstVisible(page, CHATGPT_SELECTORS.projectUnavailable);
     if (unavailable !== undefined) return { state: "gone" };
-    if (!isProjectUrl(page.url(), projectId) || !(await hasProjectControls(page))) {
+    if (!(await hasProjectControls(page))) {
       return { state: "unknown", reason: "surface-unrecognised" };
     }
     // Ambiguity never proves absence. A Project page we cannot read leaves the verdict `unknown`, and the
     // mapping layer keeps the recorded id instead of creating a second Project (INV-08).
     if (classification.state === "unknown") return { state: "unknown", reason: "surface-unrecognised" };
-    const title = scrubPageText((await page.title().catch(() => "")).replace(/ - ChatGPT$/u, ""), 200);
+    const title = scrubPageText(snapshot.title.replace(/ - ChatGPT$/u, ""), 200);
     if (title.length === 0 || title.toLowerCase() === "chatgpt") {
       return { state: "unknown", reason: "surface-unrecognised" };
     }
     return { state: "present", title, projectUrl: CHATGPT_URLS.project(projectId) };
+  }
+
+  function pageScopes(page: ProjectSurfacePage): readonly ProjectSurfaceScope[] {
+    const main: ProjectSurfaceScope = { locator: (selector: string) => page.locator(selector) };
+    const scopes: ProjectSurfaceScope[] = [main];
+    try {
+      for (const frame of page.frames()) {
+        try {
+          if (isChatGptSurfaceUrl(frame.url())) scopes.push(frame);
+        } catch {
+          // A foreign or closing frame is not a trusted ChatGPT surface; skip it rather than using its DOM.
+        }
+      }
+    } catch {
+      // A closing page can throw while enumerating frames. The main document is still the only safe
+      // scope to probe; callers will return an unrecognised surface if it cannot answer either.
+    }
+    return scopes;
   }
 }
 
@@ -491,9 +573,33 @@ function projectSurfaceFailure(snapshot: SurfaceSnapshot): "needs-human" | "surf
 }
 
 function isProjectUrl(url: string, projectId: string): boolean {
+  return isChatGptSurfaceUrl(url) && parseProjectIdFromHref(url) === projectId;
+}
+
+function isConversationUrl(url: string, conversationId: string): boolean {
+  return isChatGptSurfaceUrl(url) && parseConversationIdFromHref(url) === conversationId;
+}
+
+function safeProjectUrl(projectId: string): string | undefined {
   try {
-    return new URL(url).toString() === CHATGPT_URLS.project(projectId);
+    return CHATGPT_URLS.project(projectId);
   } catch {
-    return false;
+    return undefined;
+  }
+}
+
+function safeConversationUrl(conversationId: string): string | undefined {
+  try {
+    return CHATGPT_URLS.conversation(conversationId);
+  } catch {
+    return undefined;
+  }
+}
+
+function safePageUrl(page: ProjectSurfacePage): string | undefined {
+  try {
+    return page.url();
+  } catch {
+    return undefined;
   }
 }

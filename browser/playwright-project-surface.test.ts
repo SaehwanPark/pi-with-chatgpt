@@ -27,6 +27,9 @@ interface FakeSurfacePage {
   readonly setBlankProjects: (blank: boolean) => void;
   readonly setUnreadableProjectCard: (unreadable: boolean) => void;
   readonly setDeletedProject: (projectId: string) => void;
+  readonly setProjectRedirect: (projectId: string | undefined) => void;
+  readonly setConversationRedirect: (conversationId: string | undefined) => void;
+  readonly setForeignFrameCard: (present: boolean) => void;
 }
 
 function fakeSurfacePage(): FakeSurfacePage {
@@ -35,6 +38,9 @@ function fakeSurfacePage(): FakeSurfacePage {
   let blankProjects = false;
   let unreadableProjectCard = false;
   let deletedProjectId: string | undefined;
+  let redirectedProjectId: string | undefined;
+  let redirectedConversationId: string | undefined;
+  let foreignFrameCard = false;
   let instructions = "";
   const navigations: string[] = [];
   const typed: string[] = [];
@@ -48,22 +54,32 @@ function fakeSurfacePage(): FakeSurfacePage {
       if (url === CHATGPT_URLS.projects) {
         mode = "projects";
       } else if (url === CHATGPT_URLS.project(PROJECT_ID)) {
+        currentUrl = CHATGPT_URLS.project(redirectedProjectId ?? PROJECT_ID);
         mode = "project";
       } else if (url === CHATGPT_URLS.project("project-new")) {
         mode = "project";
       } else if (deletedProjectId !== undefined && url === CHATGPT_URLS.project(deletedProjectId)) {
         mode = "deleted";
       } else if (url === CHATGPT_URLS.conversation(CONVERSATION_ID)) {
+        currentUrl = CHATGPT_URLS.conversation(redirectedConversationId ?? CONVERSATION_ID);
         mode = "conversation";
       }
       return Promise.resolve(undefined);
     },
     locator: (selector) => locatorFor(selector),
-    frames: () => [],
+    frames: () =>
+      foreignFrameCard
+        ? [
+            {
+              url: () => "https://evil.example/frame",
+              locator: (selector: string) => locatorFor(selector, true),
+            },
+          ]
+        : [],
   };
 
-  function locatorFor(selector: string): ProjectSurfaceLocator {
-    const nodes = nodesFor(selector);
+  function locatorFor(selector: string, foreign = false): ProjectSurfaceLocator {
+    const nodes = nodesFor(selector, foreign);
     return {
       count: () => Promise.resolve(nodes.length),
       nth: (index) => elementFor(nodes[index]!),
@@ -71,7 +87,10 @@ function fakeSurfacePage(): FakeSurfacePage {
     };
   }
 
-  function nodesFor(selector: string): FakeNode[] {
+  function nodesFor(selector: string, foreign = false): FakeNode[] {
+    if (foreign && selector === CHATGPT_SELECTORS.projectCard[0]) {
+      return [{ kind: "card", text: "attacker project", href: "/p/foreign-project", visible: true, value: "" }];
+    }
     if (mode === "projects") {
       if (selector === CHATGPT_SELECTORS.projectCard[0] && !blankProjects) {
         return [
@@ -160,6 +179,15 @@ function fakeSurfacePage(): FakeSurfacePage {
     setDeletedProject: (projectId) => {
       deletedProjectId = projectId;
     },
+    setProjectRedirect: (projectId) => {
+      redirectedProjectId = projectId;
+    },
+    setConversationRedirect: (conversationId) => {
+      redirectedConversationId = conversationId;
+    },
+    setForeignFrameCard: (present) => {
+      foreignFrameCard = present;
+    },
   };
 }
 
@@ -193,6 +221,15 @@ describe("Playwright Project/conversation surface", () => {
   it("does not treat a visible but unreadable Project card as an empty list", async () => {
     const fake = fakeSurfacePage();
     fake.setUnreadableProjectCard(true);
+    const surface = createPlaywrightProjectSurface({ page: () => Promise.resolve(fake.page), timeoutMs: 20, pollIntervalMs: 1 });
+
+    await expect(surface.listProjects()).resolves.toEqual({ ok: false, reason: "surface-unrecognised" });
+  });
+
+  it("ignores Project-looking controls inside a foreign iframe", async () => {
+    const fake = fakeSurfacePage();
+    fake.setBlankProjects(true);
+    fake.setForeignFrameCard(true);
     const surface = createPlaywrightProjectSurface({ page: () => Promise.resolve(fake.page), timeoutMs: 20, pollIntervalMs: 1 });
 
     await expect(surface.listProjects()).resolves.toEqual({ ok: false, reason: "surface-unrecognised" });
@@ -232,6 +269,36 @@ describe("Playwright Project/conversation surface", () => {
       state: "live",
       conversationUrl: CHATGPT_URLS.conversation(CONVERSATION_ID),
     });
+  });
+
+  it("refuses a valid but different Project or conversation after a page redirect", async () => {
+    const fake = fakeSurfacePage();
+    const surface = createPlaywrightProjectSurface({ page: () => Promise.resolve(fake.page), timeoutMs: 20, pollIntervalMs: 1 });
+
+    fake.setProjectRedirect("project-other");
+    await expect(surface.startConversation(PROJECT_ID)).resolves.toEqual({ ok: false, reason: "surface-unrecognised" });
+
+    fake.setProjectRedirect(undefined);
+    fake.setConversationRedirect("conversation-other");
+    await expect(surface.inspectConversation(CONVERSATION_ID)).resolves.toEqual({
+      state: "unknown",
+      reason: "surface-unrecognised",
+    });
+  });
+
+  it("returns a structured refusal for malformed mapped ids", async () => {
+    const fake = fakeSurfacePage();
+    const surface = createPlaywrightProjectSurface({ page: () => Promise.resolve(fake.page), timeoutMs: 20, pollIntervalMs: 1 });
+
+    await expect(surface.startConversation("../../outside")).resolves.toEqual({
+      ok: false,
+      reason: "surface-unrecognised",
+    });
+    await expect(surface.inspectConversation("../../outside")).resolves.toEqual({
+      state: "unknown",
+      reason: "surface-unrecognised",
+    });
+    await expect(surface.applyInstructions("../../outside", "unsafe")).resolves.toBe(false);
   });
 
   it("requires positive deletion evidence before recreating a Project", async () => {
