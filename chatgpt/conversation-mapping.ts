@@ -22,6 +22,7 @@ import {
   nodeStateStore,
   readJsonFile,
   writeJsonFileAtomically,
+  StateStoreError,
 } from "../ledger/state-store.js";
 import { stateFileNameForKey } from "../config/state-layout.js";
 import type { ChatGptConversationKey } from "./scope.js";
@@ -164,6 +165,13 @@ export async function writeConversationRecord(
 ): Promise<void> {
   assertCredentialFreeValue("conversation record", record);
   const file: ConversationRecordFile = { version: CONVERSATION_SCHEMA_VERSION, record };
+  if (parseConversationFile(file) === undefined) {
+    throw new StateStoreError(
+      "state-corrupt",
+      conversationFilePath(layout, record.conversationKey),
+      "Refusing to persist a conversation record that does not match the M4 schema.",
+    );
+  }
   await ensurePrivateDirectory(layout.conversationsDir, fileSystem);
   await writeJsonFileAtomically(conversationFilePath(layout, record.conversationKey), file, fileSystem);
 }

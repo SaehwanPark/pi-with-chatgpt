@@ -306,11 +306,11 @@ async function reconcileExisting(
     const mapping = renamed
       ? stamped("renamed", {
           projectTitle: inspection.title,
-          projectUrl: inspection.projectUrl ?? existing.projectUrl ?? canonicalProjectUrl(existing.projectId),
+          projectUrl: canonicalProjectUrl(existing.projectId),
           renameCount: existing.renameCount + 1,
         })
       : stamped("reused", {
-          projectUrl: inspection.projectUrl ?? existing.projectUrl ?? canonicalProjectUrl(existing.projectId),
+          projectUrl: canonicalProjectUrl(existing.projectId),
         });
     const persisted = await persist(context, key, mapping);
     if (!persisted.ok) return persisted.refusal;
@@ -457,7 +457,18 @@ async function persist(
       },
     };
   }
-  const source = base ?? (await readProjectMappingFile(context.layout, context.fileSystem)).file;
+  const read = base === undefined ? await readProjectMappingFile(context.layout, context.fileSystem) : undefined;
+  if (read?.corrupt === true) {
+    return {
+      ok: false,
+      refusal: {
+        ok: false,
+        reason: "state-corrupt",
+        explanation: `The Project mapping file at ${context.layout.projectMappingFile} became unreadable; refusing to overwrite it.`,
+      },
+    };
+  }
+  const source = base ?? read!.file;
   const next: ProjectMappingFile = {
     version: PROJECT_MAPPING_SCHEMA_VERSION,
     projects: { ...source.projects, [key]: mapping },

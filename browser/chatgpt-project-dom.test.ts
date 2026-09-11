@@ -14,6 +14,7 @@ describe("Project and conversation DOM decisions (M4)", () => {
     expect(parseProjectIdFromHref("/project/project-123")).toBe("project-123");
     expect(parseProjectIdFromHref("https://evil.example/p/project-123")).toBeUndefined();
     expect(parseProjectIdFromHref("https://chatgpt.com/p/not safe")).toBeUndefined();
+    expect(parseProjectIdFromHref("https://evil.chatgpt.com/p/project-123")).toBeUndefined();
 
     expect(parseConversationIdFromHref("https://chatgpt.com/g/conversation-123")).toBe("conversation-123");
     expect(parseConversationIdFromHref("/c/conversation-123#latest")).toBe("conversation-123");

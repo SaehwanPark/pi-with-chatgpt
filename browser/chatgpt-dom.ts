@@ -197,7 +197,7 @@ export function titleIndicatesChallenge(title: string): boolean {
 function isChatGptUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
-    return CHATGPT_HOSTS.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+    return CHATGPT_HOSTS.includes(host);
   } catch {
     return false;
   }

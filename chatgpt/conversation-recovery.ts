@@ -155,11 +155,11 @@ async function ensureInsideLock(
 
   if (reusable && existing !== undefined) {
     const record = existing;
-    const inspection = await dependencies.surface.inspectConversation(record.conversationId);
-    if (inspection.state === "live") {
-      const touched = stamp(record, "reused", now(), {
-        conversationUrl: inspection.conversationUrl ?? record.conversationUrl ?? canonicalConversationUrl(record.conversationId),
-      });
+      const inspection = await dependencies.surface.inspectConversation(record.conversationId);
+      if (inspection.state === "live") {
+        const touched = stamp(record, "reused", now(), {
+          conversationUrl: canonicalConversationUrl(record.conversationId),
+        });
       await writeConversationRecord(dependencies.layout, touched, fileSystem);
       return { ok: true, outcome: "reused", record: touched, key };
     }

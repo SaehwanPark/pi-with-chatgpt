@@ -365,9 +365,12 @@ export function createPlaywrightProjectSurface(
       }
       const snapshot = await gotoRecognised(page, CHATGPT_URLS.conversation(conversationId));
       if (snapshot === undefined) return { state: "unknown", reason: "network" };
+      const surface = classifySurface(snapshot);
+      if (!isChatGptSurfaceUrl(snapshot.url)) return { state: "unknown", reason: "surface-unrecognised" };
+      if (surface.state === "provider-error") return { state: "unknown", reason: "network" };
       const deleted = await firstVisible(page, CHATGPT_SELECTORS.deletedConversation);
       const result = classifyConversationPresence({
-        surface: classifySurface(snapshot).state,
+        surface: surface.state,
         showsDeletedNotice: deleted !== undefined,
       });
       return result.state === "live"
