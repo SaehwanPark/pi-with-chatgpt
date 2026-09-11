@@ -87,6 +87,7 @@ export function createPlaywrightProjectSurface(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let surfaceTail: Promise<void> = Promise.resolve();
 
   async function firstVisible(page: ProjectSurfacePage, selectors: readonly string[]): Promise<ProjectSurfaceElement | undefined> {
     const frames = [{ locator: (selector: string) => page.locator(selector) }, ...page.frames()];
@@ -167,7 +168,7 @@ export function createPlaywrightProjectSurface(
     return { found, entries: parseProjectEntries(cards) };
   }
 
-  return {
+  const rawSurface: AdviserProjectSurface = {
     async listProjects(): Promise<ProjectListResult> {
       let page: ProjectSurfacePage;
       try {
@@ -378,6 +379,35 @@ export function createPlaywrightProjectSurface(
         : result;
     },
   };
+
+  // The M3 runtime owns one tracked tab. State locks isolate records, but they do not stop two different
+  // task keys from navigating that tab at once; serialize the browser effect while leaving their state
+  // operations independently keyed.
+  return {
+    listProjects: () => withSurfaceLock(() => rawSurface.listProjects()),
+    inspectProject: (projectId) => withSurfaceLock(() => rawSurface.inspectProject(projectId)),
+    createProject: (input) => withSurfaceLock(() => rawSurface.createProject(input)),
+    applyInstructions: (projectId, instructions) => withSurfaceLock(() => rawSurface.applyInstructions(projectId, instructions)),
+    startConversation: (projectId) => withSurfaceLock(() => rawSurface.startConversation(projectId)),
+    inspectConversation: (conversationId) => withSurfaceLock(() => rawSurface.inspectConversation(conversationId)),
+  };
+
+  async function withSurfaceLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = surfaceTail;
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(() => current);
+    surfaceTail = tail;
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (surfaceTail === tail) surfaceTail = Promise.resolve();
+    }
+  }
 
   async function hasProjectControls(page: ProjectSurfacePage): Promise<boolean> {
     return (
