@@ -9,6 +9,17 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-12
+
+### Added — M10 (Cross-Platform Validation, Documentation, and V1 Release)
+
+- Package version bumped to `1.0.0` for official V1 release.
+- `test/m10-release-validation.test.ts` provides release validation test suite covering live Pi installation, end-to-end slash command dispatch, agent tool execution, configuration parsing, worker model independence, and platform path isolation.
+- Real `pi` CLI verification: tested `pi install` and `pi list` against isolated agent directories on Pi 0.85.1.
+- `docs/TROUBLESHOOTING.md` created, providing complete operational guide for authentication repair, manual browser login, CAPTCHA handling (INV-09), state directory permissions (0700), remote reachability, GitHub connector permissions, and drift classification.
+- `README.md` updated with complete V1 documentation: slash command table, agent tool reference, install commands, architecture diagrams, and security/privacy guarantees.
+- Verified all 19 criteria of the V1 Definition of Done across the runtime.
+
 ### Added — M9 (concurrency, recovery, and hardening)
 
 - `test/m9-concurrency-recovery.test.ts` provides a comprehensive hardening test suite verifying 13 failure recovery, cross-context isolation, security, git safety, and concurrency race scenarios.

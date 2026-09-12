@@ -14,26 +14,16 @@ The relationship is deliberately asymmetric:
 | **Pi** | edits, shell, tests, git, commits, pushes, and the final decision |
 | **ChatGPT** | advisory reasoning only — no execution, no orchestration, no write access |
 
-**Status:** M4 complete — the package builds, installs into Pi, and activates with zero side effects.
-The Git/GitHub checkpoint subsystem anchors every future consultation to a full commit SHA whose
-availability on the selected GitHub remote is verified before dispatch; the authentication layer resolves
-the Pi-side OpenAI identity, maintains an extension-owned isolated browser profile (import or manual
-sign-in), and gates consultation on a capability check; and the browser runtime now launches that isolated
-profile over Playwright, opens ChatGPT, classifies the surface (signed-out, human-verification, ready),
-selects a model, and can carry a prompt/response turn — all behind a seam that exposes no page, selector,
-or script to the worker. A full consultation round trip needs a signed-in profile (human-gated) and closes
-with the M9 command flow. M4 now provides one durable Project mapping per repository, task-scoped
-conversations, bounded Project/conversation recovery, and checkpoint-safe handoff text. Milestones M5–M10
-(consultation protocol, UI, release) are still open; no adviser can be consulted from a command yet.
+**Status:** V1.0.0 released and verified. The package builds cleanly, installs into Pi, activates with pure zero-side-effect registration, and provides 11 user-facing slash commands and 8 agent-facing tools. Every consultation anchors to an immutable git commit SHA whose availability on GitHub is verified before dispatch; isolated Playwright browser profiles keep ChatGPT session cookies protected; durable ledgers track consultations and action items; and real-time drift analysis ensures advice remains auditable and safe as local code evolves. All architecture invariants (INV-01 through INV-16) are enforced across the runtime.
+
 See [`docs/pi-with-chatgpt-ROADMAP.md`](docs/pi-with-chatgpt-ROADMAP.md) for the roadmap,
 [`docs/pi-with-chatgpt-PROPOSAL.md`](docs/pi-with-chatgpt-PROPOSAL.md) for the product contract,
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the invariant authority,
-[`docs/SECURITY.md`](docs/SECURITY.md) for the security contract, and
-[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) for how the adviser signs in without this extension
-ever holding a credential.
-
-There is **no usable adviser surface from a command yet**: `/advisor*` commands arrive in M8, and the extension
-registers nothing until then by design.
+[`docs/SECURITY.md`](docs/SECURITY.md) for the security contract,
+[`docs/AUTHENTICATION.md`](docs/AUTHENTICATION.md) for authentication details,
+[`docs/CHECKPOINT_PROTOCOL.md`](docs/CHECKPOINT_PROTOCOL.md) for checkpoint resolution,
+[`docs/CONSULTATION_PROTOCOL.md`](docs/CONSULTATION_PROTOCOL.md) for protocol and durable storage, and
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) for configuration and error resolution.
 
 ## Why
 
@@ -87,46 +77,59 @@ A ── B ── C ── D ── E
  checkpoint       cursor        → advice stays anchored to B; Pi judges it at E
 ```
 
-## Planned user surface
+## User Surface
 
-Names may still shift before V1 ships.
+### User Slash Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/advisor <request>` | General senior advice on the current checkpoint |
+| `/advisor-plan <request>` | Implementation planning anchored to checkpoint |
+| `/advisor-review [request]` | Code review of current commit, branch delta, or PR |
+| `/advisor-audit <request>` | Adversarial audit (concurrency, security, recovery) |
+| `/advisor-debug <request>` | Root-cause analysis from repository-visible evidence |
+| `/advisor-challenge <request>` | Challenge proposed design and surface trade-offs |
+| `/advisor-followup <id> <req>` | Continue prior task conversation with drift awareness |
+| `/advisor-status [id]` | Show consultation status and graph/file drift |
+| `/advisor-read [id]` | Expand full advisory response in markdown |
+| `/advisor-cancel <id>` | Cancel in-flight consultation |
+| `/advisor-auth` | Inspect authentication and launch browser login |
+
+### Agent-Facing Tools
+
+Pi workers can consult the adviser programmatically through 8 tools:
+- `advisor_preflight`: Pre-check remote reachability of commit SHA before dispatch.
+- `advisor_submit`: Submit consultation and record in durable ledger.
+- `advisor_read`: Read full markdown advisory and structured action items.
+- `advisor_status`: Query graph and file drift against current HEAD.
+- `advisor_followup`: Continue task conversation with action-item context.
+- `advisor_cancel`: Cancel in-flight consultation without worker blocking.
+- `advisor_auth`: Check credential and browser profile status safely.
+- `advisor_disposition`: Record worker action-item disposition with required rationale.
+
+A normal flow feels like this:
 
 ```text
-/advisor <request>              senior advice on the current checkpoint
-/advisor-plan <request>         implementation plan from the checkpoint
-/advisor-review [request]       review a checkpoint, branch delta, or PR
-/advisor-audit <request>        adversarial audit (concurrency, security, recovery)
-/advisor-debug <request>        root-cause strategy from repository-visible evidence
-/advisor-challenge <request>    try to invalidate a proposed design
-/advisor-followup <id> <req>    continue the same task conversation
-/advisor-status / -read / -cancel / -auth
-```
+You: /advisor-audit Audit this ownership design before we continue.
 
-Agent-facing primitives (`advisor_preflight`, `advisor_submit`, `advisor_read`,
-`advisor_disposition`, …) keep browser, DOM, OAuth, and job internals entirely out of the worker
-model's context.
-
-A normal flow should feel like this:
-
-```text
-You: Audit this ownership design before we continue.
-
-✓ Repository: owner/repo   ✓ Checkpoint: 8f731e2   ✓ ChatGPT adviser dispatched
+[advisor:audit] dispatching adv-4f2a-1 (owner/repo@8f731e2, sync)
 Pi may continue working while the audit runs.
 
 ChatGPT adviser completed the audit of 8f731e2.
 Current HEAD: da5c991 (3 commits ahead) — relevant drift in 2 files.
-A1 … A2 … A3 …
+A1: enforce owner-only permissions on state directory
+A2: add divergence test for remote force-push
 ```
 
-## Install (after the first release)
+## Installation
+
+Install directly into Pi:
 
 ```bash
-pi install git:github.com:SaehwanPark/pi-with-chatgpt
-pi update --extensions
+pi install git:github.com/SaehwanPark/pi-with-chatgpt
 ```
 
-Try without installing, or run from a local checkout:
+Or run directly from a local clone:
 
 ```bash
 pi -e ./pi-with-chatgpt
