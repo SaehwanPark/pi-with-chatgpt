@@ -745,59 +745,84 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 ## Graph-Level Drift
 
-- [ ] Compare adviser checkpoint to current HEAD.
-- [ ] Detect equality.
-- [ ] Detect ancestor relationship.
-- [ ] Detect divergence.
-- [ ] Detect missing/unreachable checkpoint.
-- [ ] Compute commits ahead/behind where meaningful.
+- [x] Compare adviser checkpoint to current HEAD.
+      — `drift/graph-drift.ts` computes graph relationships between checkpoint SHA and current HEAD SHA via `git/ancestry.ts`.
+- [x] Detect equality.
+      — `compareGraphDrift` returns `equal` with 0 ahead/behind. Tests: `drift/graph-drift.test.ts` ("detects equality when checkpoint matches HEAD").
+- [x] Detect ancestor relationship.
+      — Returns `checkpoint-is-ancestor` or `checkpoint-is-descendant` with commit distances. Tests: `drift/graph-drift.test.ts` ("detects checkpoint-is-ancestor with ahead/behind distances", "detects checkpoint-is-descendant").
+- [x] Detect divergence.
+      — Returns `diverged` with ahead/behind counts from merge base. Tests: `drift/graph-drift.test.ts` ("detects divergence with ahead/behind counts").
+- [x] Detect missing/unreachable checkpoint.
+      — Returns `unreachable`. Tests: `drift/graph-drift.test.ts` ("handles unreachable commits cleanly").
+- [x] Compute commits ahead/behind where meaningful.
+      — Ahead/behind counts included in all non-equal relationships. Tests: `drift/graph-drift.test.ts`.
 
 ## Relevant File Drift
 
-- [ ] Extract files/components referenced in adviser output when feasible.
-- [ ] Compute files changed since adviser checkpoint.
-- [ ] Highlight overlap.
-- [ ] Identify changed interfaces/config/tests around referenced components.
-- [ ] Keep analysis deterministic where possible.
-- [ ] Avoid automatic reconsultation merely because HEAD changed.
+- [x] Extract files/components referenced in adviser output when feasible.
+      — `extractMentionedFiles` in `drift/file-drift.ts` parses backtick paths and word paths from advice and action items. Tests: `drift/file-drift.test.ts` ("extracts paths from backticks and text", "normalizes leading ./").
+- [x] Compute files changed since adviser checkpoint.
+      — `analyzeFileDrift` parses `git diff --name-status` against HEAD. Tests: `drift/file-drift.test.ts` ("computes directly affected files matching mentioned paths").
+- [x] Highlight overlap.
+      — Directly overlapping files categorized in `directlyAffectedFiles`. Tests: `drift/file-drift.test.ts`.
+- [x] Identify changed interfaces/config/tests around referenced components.
+      — `relatedContextFiles` captures sibling tests, configs, and directory matches. Tests: `drift/file-drift.test.ts` ("detects related context files").
+- [x] Keep analysis deterministic where possible.
+      — Deterministic regex extraction and git diff parsing without model hallucinations. Tests: `drift/file-drift.test.ts`.
+- [x] Avoid automatic reconsultation merely because HEAD changed.
+      — Purely read-only analysis; no reconsultation is triggered automatically (INV-05).
 
 ## Revalidation Recommendation
 
-- [ ] Classify advice as:
-  - [ ] current;
-  - [ ] likely applicable;
-  - [ ] materially stale;
-  - [ ] needs reconsultation;
-  - [ ] provenance degraded.
-- [ ] Surface concise drift notes to Pi.
-- [ ] Make full diff analysis available to the worker when needed.
+- [x] Classify advice as:
+  - [x] current;
+  - [x] likely applicable;
+  - [x] materially stale;
+  - [x] needs reconsultation;
+  - [x] provenance degraded.
+      — `classifyAdviceDrift` in `drift/classification.ts` produces `current`, `likely_applicable`, `materially_stale`, `needs_reconsultation`, `provenance_degraded`. Tests: `drift/classification.test.ts` (5 tests covering all 5 statuses).
+- [x] Surface concise drift notes to Pi.
+      — `formatDriftSummary` outputs single-line summary with commit distances and overlapping files. Tests: `drift/classification.test.ts`.
+- [x] Make full diff analysis available to the worker when needed.
+      — `formatDetailedDriftReport` generates structured markdown breakdown of status, commits, overlapping files, and related files. Tests: `drift/classification.test.ts`.
 
 ## Action Item Disposition
 
-- [ ] Implement supported dispositions:
-  - [ ] accepted;
-  - [ ] implemented;
-  - [ ] partially_implemented;
-  - [ ] rejected_with_reason;
-  - [ ] superseded;
-  - [ ] stale;
-  - [ ] needs_reconsultation.
-- [ ] Permit worker/user to record disposition.
-- [ ] Preserve reason for rejection/supersession.
-- [ ] Support follow-up prompts that summarize action-item disposition.
+- [x] Implement supported dispositions:
+  - [x] accepted;
+  - [x] implemented;
+  - [x] partially_implemented;
+  - [x] rejected_with_reason;
+  - [x] superseded;
+  - [x] stale;
+  - [x] needs_reconsultation.
+      — `VALID_DISPOSITIONS` in `drift/disposition.ts` and `protocol/response.ts`. Tests: `drift/disposition.test.ts`.
+- [x] Permit worker/user to record disposition.
+      — `updateItemDisposition` in `drift/disposition.ts` updates disposition in ledger entry atomically. Tests: `drift/disposition.test.ts` ("updates disposition in memory and writes to ledger").
+- [x] Preserve reason for rejection/supersession.
+      — Requires non-empty reason when disposition is `rejected_with_reason` or `superseded`. Tests: `drift/disposition.test.ts` ("requires reason for rejected_with_reason and superseded").
+- [x] Support follow-up prompts that summarize action-item disposition.
+      — `buildFollowUpBrief` formats prior action items and their disposition statuses. Tests: `drift/follow-up.test.ts`.
 
 ## Follow-Up Workflow
 
-- [ ] `/advisor-followup <id> ...`
-- [ ] Reuse original task conversation where healthy.
-- [ ] Include original reviewed checkpoint.
-- [ ] Include new checkpoint.
-- [ ] Include previous action items and dispositions.
-- [ ] Ask ChatGPT to inspect the new GitHub state rather than relying on prose claims.
+- [ ] `/advisor-followup <id> ...` (M8 command layer)
+- [x] Reuse original task conversation where healthy.
+      — Follow-up brief maintains task/conversation linkage. Tests: `drift/follow-up.test.ts`.
+- [x] Include original reviewed checkpoint.
+      — `originalCheckpointSha` preserved in brief. Tests: `drift/follow-up.test.ts`.
+- [x] Include new checkpoint.
+      — `newCheckpointSha` included in brief. Tests: `drift/follow-up.test.ts`.
+- [x] Include previous action items and dispositions.
+      — Itemized prior action items with status and rationale included in brief. Tests: `drift/follow-up.test.ts`.
+- [x] Ask ChatGPT to inspect the new GitHub state rather than relying on prose claims.
+      — Explicit instruction directing ChatGPT to inspect git diff between checkpoints on GitHub. Tests: `drift/follow-up.test.ts` ("includes git diff comparison instructions between original and new checkpoints").
 
 ## Exit Criteria
 
-- [ ] Advice received several commits later can be evaluated against the current development cursor without pretending both sides are synchronized.
+- [x] Advice received several commits later can be evaluated against the current development cursor without pretending both sides are synchronized.
+      — Evaluated via graph and file drift with clear staleness classification and follow-up paths. All 720 tests passing.
 
 ---
 

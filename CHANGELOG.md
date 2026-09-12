@@ -9,6 +9,14 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M7 (drift analysis and advice disposition)
+
+- `drift/graph-drift.ts` implements graph-level drift analysis between consultation checkpoint SHA and current HEAD SHA (`equal`, `checkpoint-is-ancestor`, `checkpoint-is-descendant`, `diverged`, `unreachable`) with ahead/behind commit distances (INV-03, INV-05).
+- `drift/file-drift.ts` implements regex-based mentioned-file extraction from adviser responses and action items, parses `git diff --name-status` against HEAD, and classifies directly affected overlapping files and related contextual files (configs, sibling tests, directories).
+- `drift/classification.ts` implements advice drift classification (`current`, `likely_applicable`, `materially_stale`, `needs_reconsultation`, `provenance_degraded`), concise worker summaries, and structured diff markdown reports (INV-07).
+- `drift/disposition.ts` manages worker action item dispositions (`accepted`, `implemented`, `partially_implemented`, `rejected_with_reason`, `superseded`, `stale`, `needs_reconsultation`) with mandatory rationale for rejection and supersession, committing updates atomically to `ConsultationLedger`.
+- `drift/follow-up.ts` provides `buildFollowUpBrief` constructing follow-up consultation decision briefs that link the previous checkpoint, new checkpoint, prior action items and dispositions, with explicit instructions for ChatGPT to inspect GitHub diffs rather than relying on prose claims (INV-01, INV-02, INV-04).
+
 ### Added — M6 (consultation protocol and adviser ledger)
 
 - `protocol/brief.ts` implements canonical decision brief formatting across 6 consultation request kinds (`consult`, `plan`, `review`, `audit`, `debug`, `challenge`) with validation enforcing GitHub-only context and rejecting embedded code dumps or credentials (INV-02, INV-12).
