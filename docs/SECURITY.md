@@ -134,6 +134,21 @@ only the runtime's already-owned tab; a driver-owned exclusive operation lock pr
 with consultation, login, or model navigation, and it returns a structured refusal when the ChatGPT surface
 cannot be recognised. Live ChatGPT interaction remains a manual validation drill, not a unit-test dependency.
 
+## Durable consultation jobs (M5)
+
+`jobs/record.ts` validates a closed, versioned job shape and refuses an unverified or mismatched
+GitHub anchor. `jobs/store.ts` uses private atomic writes and per-consultation same-host locks;
+creation cannot overwrite a record, and claims and terminal transitions cannot rewrite its identity.
+Response files carry the job/repository/task/checkpoint binding and a text digest to detect corrupted
+or substituted artifacts. This is corruption detection, not cryptographic attestation against the
+state-directory owner.
+
+Pi delivery routing uses a SHA-256 digest of the originating Pi session identifier. Raw Pi session
+identifiers and ChatGPT credentials are absent from job records; internal delivery digests, Project
+and conversation identifiers, and paths must also stay out of worker-facing output. All stored text
+passes the existing credential scan. Raw filesystem exceptions are replaced with fixed storage codes.
+The store refuses managed directory/file symlinks and never submits, wakes, executes, or publishes.
+
 ## Prompt injection posture
 
 Repository content is untrusted input to the adviser, and adviser output is untrusted input to the

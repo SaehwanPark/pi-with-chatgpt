@@ -586,33 +586,46 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 # M5 — Consultation Job Engine
 
+## Durable Job Storage Evidence (partial M5)
+
+- `jobs/record.ts` defines strict version-1 job records and `adv-…` IDs. `jobs/record.test.ts`
+  verifies immutable, remotely available GitHub anchors, closed state shapes, defaults, and refusals.
+- `jobs/store.ts` persists creation, claims, terminal outcomes, and identity-bound response files.
+  `jobs/store.test.ts` covers independent-store races, wrong repository/task/Pi routing digest,
+  dispatch/receipt snapshots, interrupted completion, restart lookup, private files, and corruption.
+- Mode/dependency and parsed action-item fields are supported as stored metadata. The unchecked
+  execution items below require a browser dispatcher, background lifecycle, and targeted Pi delivery.
+  No actual submission or wake-up is claimed by storage tests, and the M5 exit criterion stays open.
+- Storage/recovery contract: `docs/CONSULTATION_PROTOCOL.md`. The next execution slice must make
+  conversation selection and submission one protected browser operation on the shared tab.
+
 ## Job Model
 
-- [ ] Define consultation job state machine.
-- [ ] Support queued, running, completed, failed, cancelled.
+- [x] Define consultation job state machine.
+- [x] Support queued, running, completed, failed, cancelled.
 - [ ] Support synchronous and asynchronous modes.
 - [ ] Support `dependency: advisory | required`.
-- [ ] Allocate stable consultation IDs such as `adv-...`.
+- [x] Allocate stable consultation IDs such as `adv-...`.
 - [ ] Persist state before browser submission.
 - [ ] Persist result before wake-up delivery.
 
 ## Suggested Job Record
 
-- [ ] repository identity;
-- [ ] branch;
-- [ ] requested ref;
-- [ ] resolved SHA;
-- [ ] HEAD at dispatch;
-- [ ] optional PR;
-- [ ] request type;
-- [ ] dependency type;
-- [ ] ChatGPT Project ID;
-- [ ] conversation ID;
-- [ ] timestamps;
-- [ ] result status;
-- [ ] HEAD at receipt;
-- [ ] response path;
-- [ ] parsed action items.
+- [x] repository identity;
+- [x] branch;
+- [x] requested ref;
+- [x] resolved SHA;
+- [x] HEAD at dispatch;
+- [x] optional PR;
+- [x] request type;
+- [x] dependency type;
+- [x] ChatGPT Project ID;
+- [x] conversation ID;
+- [x] timestamps;
+- [x] result status;
+- [x] HEAD at receipt;
+- [x] response path;
+- [x] parsed action items. (Persisted fields; adviser-text extraction remains M6.)
 
 ## Synchronous Execution
 

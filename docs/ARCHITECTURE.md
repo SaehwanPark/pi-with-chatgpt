@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M4 (Project and conversation management implemented). This document is the prose authority for the architecture invariants; the
+Status: M5 durable job storage implemented; dispatch and Pi delivery remain open. This document is the prose authority for the architecture invariants; the
 machine-readable index is `protocol/invariants.ts`, and the review checklist is
 `.agents/skills/pwc-invariant-review/references/invariants.md`. When these three disagree, the most
 conservative reading wins and the others are bugs to fix.
@@ -93,6 +93,9 @@ No archives, uploads, tunnels, workspace bridges, or local log/screenshot attach
 Every consultation resolves to a full commit SHA; `requestedRef` is stored separately and the anchor
 is never retargeted. Encoded in `protocol/sha.ts` (only a 40-character lowercase SHA parses) and
 `protocol/checkpoint.ts` (readonly `ConsultationAnchor`).
+
+`jobs/record.ts` validates the persisted anchor and selected remote together. `jobs/store.ts` exposes
+only creation, claim, and terminal transitions; none can rewrite the original consultation identity.
 
 ### INV-04
 
@@ -202,10 +205,14 @@ parser that enforce the complete order land in M6.
 
 **Durable provenance outside model context.**
 
-`writeJsonFileAtomically` and the keyed state locks provide crash-safe M4 mapping persistence; the later
-`assertPersistenceOrder` contract still encodes "job persisted before dispatch, response persisted before
-wake-up", and `LEDGER_PUBLICATION_TARGETS === ["none"]` keeps advice from auto-publishing to a repository
-file, issue, or PR (`ledger/state-store.ts`, `ledger/record.ts`).
+`writeJsonFileAtomically` and the keyed state locks provide atomic mapping and job persistence.
+`ConsultationJobStore.claim` persists a running job before returning a successful claim;
+`complete` writes an identity-bound response before the terminal record. Interrupted completion keeps
+the response readable, and a running job cannot be automatically reclaimed after restart
+(`jobs/store.ts`). The forthcoming dispatcher must submit only after claiming and notify only after
+completion; `assertPersistenceOrder` encodes that ordering contract. `LEDGER_PUBLICATION_TARGETS ===
+["none"]` keeps advice from auto-publishing to a repository file, issue, or PR (`ledger/record.ts`).
+See [consultation storage and recovery](CONSULTATION_PROTOCOL.md) for the versioned record and failure rules.
 
 ### INV-16
 
