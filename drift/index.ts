@@ -50,3 +50,9 @@ export function adviceCurrencyFor(verdict: DriftVerdict): AdviceCurrency {
       return "unreliable";
   }
 }
+
+export * from "./graph-drift.js";
+export * from "./file-drift.js";
+export * from "./classification.js";
+export * from "./disposition.js";
+export * from "./follow-up.js";
