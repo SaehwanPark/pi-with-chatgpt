@@ -35,6 +35,7 @@ export interface CapabilityChecklist {
 export const REQUIRED_BEFORE_FIRST_CONSULTATION: readonly VerificationItem[] = [
   "chatgpt-access",
   "adviser-model",
+  "github-connector",
   "target-repository",
 ];
 
@@ -71,7 +72,11 @@ export function evaluateConsultationPrerequisites(
     : { ok: false, blocking };
 }
 
-/** A connector that is merely unverified does not block a consultation; it degrades what the adviser can see. */
+/**
+ * V1 is GitHub-only: an adviser that cannot use the GitHub connector cannot inspect the anchored
+ * repository. Treating that check as optional would let a generic-looking answer masquerade as a
+ * repository-grounded consultation, so every required item uses the same strict passing rule.
+ */
 function isPassing(outcome: VerificationOutcome | undefined): boolean {
   return outcome === "verified" || outcome === "not-applicable";
 }
@@ -157,7 +162,7 @@ export function checklistToCapabilityRecord(
     return {
       status: "ready",
       checkedAt: checklist.checkedAt,
-      explanation: "ChatGPT access, adviser model, and checkpoint visibility are verified.",
+      explanation: "ChatGPT access, adviser model, GitHub connector, and checkpoint visibility are verified.",
       requiresManualIntervention: false,
       nextAction: "consult",
     };

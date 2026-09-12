@@ -13,6 +13,7 @@ import { access, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AdviserProfile } from "../browser/profile.js";
+import type { SessionObservation } from "./login-flow.js";
 import { piOpenAiIdentity } from "./openai-identity.js";
 import {
   readPiOpenAiCredential,
@@ -37,7 +38,28 @@ export interface AdviserStatusInput {
   readonly piAuthPath?: string;
   /** Loader for Pi's package, injectable so the `pi-api` path is testable without Pi installed. */
   readonly loadPiModule?: () => Promise<PiCredentialAccessor>;
+  /**
+   * A fresh observation from the extension-owned adviser browser, when the caller has one. Pi's
+   * OpenAI credential is an identity hint and never proves that this separate web session is signed in.
+   * Omitting the observation deliberately reports `unverified` rather than inferring readiness from the
+   * credential file or the historical session marker.
+   */
+  readonly browserSession?: SessionObservation;
 }
+
+/** Redacted adviser-browser session state suitable for command/tool output. */
+export type AdviserBrowserSessionStatus =
+  | { readonly state: "unverified"; readonly reason: "probe-required" }
+  | { readonly state: "signed-in" }
+  | { readonly state: "signed-out" }
+  | {
+      readonly state: "human-verification";
+      readonly challenge: "cloudflare" | "captcha" | "login-checkpoint";
+    }
+  | {
+      readonly state: "unreachable";
+      readonly reason: "network" | "browser-failed" | "profile-locked";
+    };
 
 export interface AdviserStatus {
   readonly piAuthFile: { readonly path: string; readonly readable: boolean; readonly mode?: string };
@@ -55,6 +77,11 @@ export interface AdviserStatus {
         readonly reason: "missing-file" | "unparsable" | "no-openai-credential" | "api-key-only";
       };
   readonly profile: { readonly userDataDir: string; readonly exists: boolean; readonly everSignedInHere: boolean };
+  /**
+   * Current ChatGPT web-session observation. `unverified` is the safe default: a Pi OAuth credential or
+   * `SESSION-ESTABLISHED` marker alone cannot establish that the isolated browser is authenticated now.
+   */
+  readonly browserSession: AdviserBrowserSessionStatus;
   readonly isolation: { readonly extensionOwned: true; readonly sharesDefaultChromeProfile: false };
 }
 
@@ -77,10 +104,28 @@ export async function adviserStatus(profile: AdviserProfile, input: AdviserStatu
     piAuthFile: await describeAuthFile(piAuthPath),
     openAiSignIn: await describeSignIn(credentialSource),
     profile: await describeProfile(profile),
+    browserSession: browserSessionStatus(input.browserSession),
     // Constant by design: if this ever became data-dependent it would mean the profile could stop being
     // ours, which is INV-11 rather than a status detail.
     isolation: { extensionOwned: true, sharesDefaultChromeProfile: false },
   };
+}
+
+/** Convert a live login-port observation into a credential-free status value. */
+export function browserSessionStatus(observation: SessionObservation | undefined): AdviserBrowserSessionStatus {
+  if (observation === undefined) return { state: "unverified", reason: "probe-required" };
+  switch (observation.kind) {
+    case "signed-in":
+      // Account identity hints belong to the auth resolver; status output needs only readiness state and
+      // must not accidentally grow into a browser-session identity dump.
+      return { state: "signed-in" };
+    case "signed-out":
+      return { state: "signed-out" };
+    case "human-verification":
+      return { state: "human-verification", challenge: observation.challenge };
+    case "unreachable":
+      return { state: "unreachable", reason: observation.reason };
+  }
 }
 
 async function describeAuthFile(path: string): Promise<AdviserStatus["piAuthFile"]> {
