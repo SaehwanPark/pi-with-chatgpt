@@ -9,6 +9,18 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M5 (durable job storage)
+
+- Versioned job records with immutable GitHub checkpoint identity, stable consultation IDs,
+  sync/async and advisory/required metadata, dispatch/receipt snapshots, and private Pi routing digests.
+- Atomic per-job creation, claim, completion, failure, and cancellation. Duplicate claims cannot
+  resubmit a running record; terminal races preserve the first persisted outcome.
+- Identity-bound response files written before completion, with explicit retrieval after interrupted
+  terminal writes and restart. Corrupt state, wrong delivery identities, and secret-shaped content
+  are refused without exposing raw filesystem errors.
+- Storage contracts and recovery limits in `docs/CONSULTATION_PROTOCOL.md`. Browser dispatch,
+  background execution, Pi delivery, and command integration remain unfinished M5 work.
+
 ### Added — M4 (ChatGPT Project and conversation management)
 
 - `config/state-layout.ts` and `ledger/state-store.ts` define the extension-owned durable state tree,

@@ -1,8 +1,10 @@
 /**
  * `jobs/` — synchronous and asynchronous consultation job state.
  *
- * M0 fixes the state machine and delivery addressing. The engine that owns processes, retries, and
- * wake-up lands in M5 on top of these transitions.
+ * The state machine and private, versioned job transactions preserve immutable provenance through
+ * claims and terminal races. Browser scheduling and Pi wake-up are the remaining M5 integration.
  */
 
 export * from "./state.js";
+export * from "./record.js";
+export * from "./store.js";
