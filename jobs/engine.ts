@@ -20,6 +20,8 @@ import { nodeStateStore } from "../ledger/state-store.js";
 import type { ConsultationAnchor, ConsultationId } from "../protocol/checkpoint.js";
 import type { DependencyMode } from "../protocol/dependency.js";
 import type { FullCommitSha } from "../protocol/sha.js";
+import { parseAdviserResponse } from "../protocol/response.js";
+import { ConsultationLedger } from "../ledger/ledger.js";
 import { buildProjectInstructions } from "../chatgpt/project-instructions.js";
 import { ensureProjectForRepository, type EnsureProjectResult } from "../chatgpt/project-mapping.js";
 import { ensureConversationForTask, type EnsureConversationResult } from "../chatgpt/conversation-recovery.js";
@@ -91,6 +93,7 @@ export interface ConsultationEngineDependencies {
   readonly surface: AdviserProjectSurface;
   readonly runtime: AdviserBrowserRuntime;
   readonly getHeadCommit: () => Promise<FullCommitSha>;
+  readonly ledger?: ConsultationLedger;
   readonly fileSystem?: StateStoreFileSystem;
   readonly maxConcurrentJobs?: number;
   readonly now?: () => Date;
@@ -104,6 +107,7 @@ export class ConsultationEngine {
   readonly #surface: AdviserProjectSurface;
   readonly #runtime: AdviserBrowserRuntime;
   readonly #getHeadCommit: () => Promise<FullCommitSha>;
+  readonly #ledger: ConsultationLedger;
   readonly #fileSystem: StateStoreFileSystem;
   readonly #maxConcurrentJobs: number;
   readonly #now: () => Date;
@@ -127,6 +131,17 @@ export class ConsultationEngine {
     this.#fileSystem = dependencies.fileSystem ?? nodeStateStore;
     this.#maxConcurrentJobs = dependencies.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS;
     this.#now = dependencies.now ?? (() => new Date());
+    this.#ledger =
+      dependencies.ledger ??
+      new ConsultationLedger({
+        layout: this.#layout,
+        fileSystem: this.#fileSystem,
+        now: () => this.#now().getTime(),
+      });
+  }
+
+  get ledger(): ConsultationLedger {
+    return this.#ledger;
   }
 
   /**
@@ -452,14 +467,59 @@ export class ConsultationEngine {
         // 7. Success: persist response and mark completed BEFORE wake-up (INV-15).
         assertCredentialFreeValue("engine completed text", outcome.text);
         const headAtReceipt = await this.#getHeadCommit();
-        const resultStatus: JobResultStatus = outcome.degraded ? "degraded" : "complete";
+        const parsed = parseAdviserResponse(outcome.text, {
+          expectedCommitSha: request.anchor.resolvedCommit,
+          expectedConsultationId: record.consultationId,
+        });
+        const resultStatus: JobResultStatus = outcome.degraded ? "degraded" : parsed.resultStatus;
+
+        const actionItems = parsed.actionItems.map((item) => ({
+          id: item.id,
+          summary: item.summary,
+        }));
 
         const completedRecord = await this.#store.complete(address, {
           resultStatus,
           headAtReceipt,
-          actionItems: [],
+          actionItems,
           text: outcome.text,
         });
+
+        // Record into persistent repository ledger (INV-15)
+        try {
+          await this.#ledger.recordConsultation(
+            {
+              schemaVersion: 1,
+              consultationId: record.consultationId,
+              taskId: record.taskId,
+              repository: request.anchor.repository,
+              branch: record.branch,
+              requestedRef: request.anchor.requestedRef,
+              resolvedCommit: request.anchor.resolvedCommit,
+              reviewedCommit: parsed.reviewedCommit,
+              headAtDispatch,
+              headAtReceipt,
+              prNumber: request.anchor.pullRequest?.number,
+              kind: record.kind,
+              dependency: record.dependency,
+              projectId,
+              conversationId,
+              status: "completed",
+              resultStatus,
+              actionItems: parsed.actionItems.map((item) => ({
+                id: item.id,
+                summary: item.summary,
+                disposition: "pending",
+              })),
+              createdAt: record.createdAt,
+              completedAt: completedRecord.finishedAt ?? new Date(this.#now()).toISOString(),
+              provenanceNotes: parsed.parsingNotes,
+            },
+            outcome.text,
+          );
+        } catch {
+          // Ledger recording failure is non-fatal if store write succeeded
+        }
 
         const persistedResponse = await this.#store.readPersistedResponse(address);
         if (!persistedResponse) {

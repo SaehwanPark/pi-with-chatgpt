@@ -13,13 +13,13 @@ import type { ConsultationId } from "../protocol/checkpoint.js";
 export type ChatGptProjectKey = string & { readonly __brand: "ChatGptProjectKey" };
 export type ChatGptConversationKey = string & { readonly __brand: "ChatGptConversationKey" };
 
-/** Request kinds that each get their own conversation when the task differs. */
-export const CONSULTATION_KINDS = ["consult", "plan", "review", "audit", "debug", "challenge"] as const;
-export type ConsultationKind = (typeof CONSULTATION_KINDS)[number];
+import {
+  CONSULTATION_KINDS,
+  type ConsultationKind,
+  isConsultationKind,
+} from "../protocol/brief.js";
 
-export function isConsultationKind(value: string): value is ConsultationKind {
-  return (CONSULTATION_KINDS as readonly string[]).includes(value);
-}
+export { CONSULTATION_KINDS, type ConsultationKind, isConsultationKind };
 
 /**
  * The Project key is deliberately the bare repository key: the same repository must resolve to the

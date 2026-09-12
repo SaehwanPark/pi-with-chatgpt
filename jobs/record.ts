@@ -42,8 +42,8 @@ export const JOB_FAILURE_CODES = [
 ] as const;
 export type JobFailureCode = (typeof JOB_FAILURE_CODES)[number];
 
-export const JOB_RESULT_STATUSES = ["complete", "degraded", "provenance-ambiguous"] as const;
-export type JobResultStatus = (typeof JOB_RESULT_STATUSES)[number];
+import { JOB_RESULT_STATUSES, type JobResultStatus } from "../protocol/response.js";
+export { JOB_RESULT_STATUSES, type JobResultStatus };
 
 /** Stable slots for M6 action-item parsing.  M5 stores, but does not interpret, adviser prose. */
 export interface JobActionItem {

@@ -38,3 +38,35 @@ export function maskOpaqueId(id: string): string {
   if (id.length <= OPAQUE_ID_PREFIX_LENGTH) return "***";
   return `${id.slice(0, OPAQUE_ID_PREFIX_LENGTH)}…`;
 }
+
+/** Keys that must never appear in a ledger record, brief, or state file at any depth (INV-12). */
+export const SENSITIVE_KEY_PATTERN =
+  /(cookie|authorization|token|secret|password|passwd|credential|apikey|api_key|sessionid|session_id|bearer|oauth|accesskey|privatekey|userdata|user_data|profilepath|profile_path)/iu;
+
+/** Value shapes that indicate a credential leaked into prose or state (INV-12). */
+export const SENSITIVE_VALUE_PATTERNS: readonly RegExp[] = [
+  /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/iu,
+  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}/u,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/u,
+  /\bsk-[A-Za-z0-9_-]{16,}/u,
+  /set-cookie\s*:/iu,
+  /cookie\s*:[^\n]{8,}/iu,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
+];
+
+/** Scans a value or object graph for credential patterns. */
+export function containsSensitiveData(value: unknown): boolean {
+  if (typeof value === "string") {
+    return SENSITIVE_VALUE_PATTERNS.some((pattern) => pattern.test(value));
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsSensitiveData(entry));
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) {
+      if (SENSITIVE_KEY_PATTERN.test(key)) return true;
+      if (containsSensitiveData(entry)) return true;
+    }
+  }
+  return false;
+}

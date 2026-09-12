@@ -5,5 +5,6 @@
  * ledger and job integration remain later-milestone work.
  */
 
+export * from "./ledger.js";
 export * from "./record.js";
 export * from "./state-store.js";

@@ -7,11 +7,13 @@
  * browser (M3), or persists state (M6) belongs in the other module trees.
  */
 
+export * from "./brief.js";
 export * from "./checkpoint.js";
 export * from "./context-channel.js";
 export * from "./dependency.js";
 export * from "./invariants.js";
 export * from "./provider.js";
 export * from "./repo.js";
+export * from "./response.js";
 export * from "./sha.js";
 export * from "./trust.js";
