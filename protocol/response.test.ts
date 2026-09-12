@@ -104,6 +104,71 @@ I looked at a newer commit.
     expect(parsed.raw).toBe(raw);
   });
 
+  it("detects a response from another consultation even when the commit matches", () => {
+    const raw = `
+ADVISOR
+consultation: adv-0099
+reviewed_commit: ${ANCHOR_SHA}
+status: actionable
+
+ASSESSMENT
+The response came from a different adviser thread.
+`.trim();
+
+    const parsed = parseAdviserResponse(raw, {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.consultationId).toBe("adv-0099");
+    expect(parsed.reviewedCommit).toBe(ANCHOR_SHA);
+    expect(parsed.provenance).toBe("mismatched");
+    expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.parsingNotes).toContain(
+      'Response consultation ID "adv-0099" does not match expected "adv-0014".',
+    );
+  });
+
+  it("requires a consultation ID when validating response provenance", () => {
+    const raw = `
+ADVISOR
+reviewed_commit: ${ANCHOR_SHA}
+status: actionable
+
+ASSESSMENT
+The response omitted its consultation identity.
+`.trim();
+
+    const parsed = parseAdviserResponse(raw, {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.consultationId).toBeUndefined();
+    expect(parsed.provenance).toBe("missing");
+    expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.parsingNotes).toContain("Missing consultation ID in adviser response.");
+  });
+
+  it("rejects malformed consultation IDs when validating response provenance", () => {
+    const raw = `
+ADVISOR
+consultation: not-an-adviser-id
+reviewed_commit: ${ANCHOR_SHA}
+status: actionable
+`.trim();
+
+    const parsed = parseAdviserResponse(raw, {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.consultationId).toBeUndefined();
+    expect(parsed.provenance).toBe("malformed");
+    expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.parsingNotes).toContain('Malformed consultation ID in adviser response: "not-an-adviser-id".');
+  });
+
   it("detects missing reviewed commit SHA", () => {
     const raw = `
 ADVISOR
@@ -175,6 +240,17 @@ ACTION ITEMS
     expect(parsed.status).toBe("unknown");
     expect(parsed.resultStatus).toBe("degraded");
     expect(parsed.parsingNotes).toContain("Response was empty");
+  });
+
+  it("treats an empty response as provenance-ambiguous when an ID was expected", () => {
+    const parsed = parseAdviserResponse("   ", {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.provenance).toBe("missing");
+    expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.parsingNotes).toContain("Missing consultation ID in adviser response.");
   });
 
   it("flags inconclusive or blocked status as degraded when provenance is verified", () => {
