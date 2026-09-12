@@ -1,0 +1,10 @@
+title: pi-with-chatgpt
+description: "ChatGPT advises. Pi decides and executes. Senior AI advisory extension for Pi coding agent."
+theme: jekyll-theme-primer
+url: "https://saehwanpark.github.io"
+baseurl: "/pi-with-chatgpt"
+github:
+  is_project_page: true
+  repository_url: "https://github.com/SaehwanPark/pi-with-chatgpt"
+markdown: kramdown
+permalink: /:basename/

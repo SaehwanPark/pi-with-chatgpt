@@ -16,8 +16,9 @@ change invalidates (see `AGENTS.md`).
 - Package version bumped to `1.0.0` for official V1 release.
 - `test/m10-release-validation.test.ts` provides release validation test suite covering live Pi installation, end-to-end slash command dispatch, agent tool execution, configuration parsing, worker model independence, and platform path isolation.
 - Real `pi` CLI verification: tested `pi install` and `pi list` against isolated agent directories on Pi 0.85.1.
-- `docs/TROUBLESHOOTING.md` created, providing complete operational guide for authentication repair, manual browser login, CAPTCHA handling (INV-09), state directory permissions (0700), remote reachability, GitHub connector permissions, and drift classification.
-- `README.md` updated with complete V1 documentation: slash command table, agent tool reference, install commands, architecture diagrams, and security/privacy guarantees.
+- Public-facing documentation suite expanded and published to GitHub Pages (`https://saehwanpark.github.io/pi-with-chatgpt/`) with dedicated guides: `getting-started.md`, `user-guide.md` (11 slash commands), `agent-tools.md` (8 worker tools), `configuration.md`, `drift-and-disposition.md`, `troubleshooting.md`, `architecture-and-safety.md` (16 safety invariants), and `_config.yml`.
+- `docs/TROUBLESHOOTING.md` / `docs/troubleshooting.md` enriched with FAQs, diagnostic procedures, and navigation headers.
+- `README.md` refactored into a slim, thin, concise portal focusing on the core value proposition, 30-second quickstart, and direct links to GitHub Pages.
 - Verified all 19 criteria of the V1 Definition of Done across the runtime.
 
 ### Added — M9 (concurrency, recovery, and hardening)
