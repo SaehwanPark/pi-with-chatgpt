@@ -6,3 +6,5 @@
  */
 
 export * from "./worker-facing.js";
+export * from "./tui.js";
+export * from "./policy.js";

@@ -9,6 +9,7 @@
  */
 
 import type { LedgerRecord } from "../ledger/record.js";
+import type { LedgerEntry } from "../ledger/ledger.js";
 import type { DriftVerdict } from "../drift/index.js";
 import type { AdviceCurrency } from "../drift/index.js";
 
@@ -20,13 +21,13 @@ export interface WorkerFacingCheckpoint {
 export interface WorkerFacingActionItem {
   readonly ordinal: number;
   readonly summary: string;
-  readonly disposition: LedgerRecord["actionItems"][number]["disposition"];
+  readonly disposition: string;
 }
 
 export interface WorkerFacingAdvisory {
   readonly consultationId: string;
   readonly kind: LedgerRecord["kind"];
-  readonly state: LedgerRecord["state"];
+  readonly state: string;
   readonly dependency: LedgerRecord["dependency"];
   readonly checkpoint: WorkerFacingCheckpoint;
   readonly drift?: { readonly verdict: DriftVerdict; readonly currency: AdviceCurrency };
@@ -42,22 +43,30 @@ export const WORKER_FACING_FORBIDDEN_KEY_PATTERN =
   /(dom|selector|xpath|screenshot|html|conversationurl|projecturl|userdata|user_data|profile|cookie|token|oauth|authorization|refreshtoken|pollstate|rawresponse)/iu;
 
 export function toWorkerFacingAdvisory(
-  record: LedgerRecord,
+  record: LedgerRecord | LedgerEntry,
   options: { readonly drift?: { readonly verdict: DriftVerdict; readonly currency: AdviceCurrency }; readonly degradation?: { readonly reason: string; readonly nextStep: string } } = {},
 ): WorkerFacingAdvisory {
+  const isEntry = "schemaVersion" in record;
+  const state = isEntry ? record.status : record.state;
+  const advice = "adviserAnswer" in record ? record.adviserAnswer : undefined;
+  const actionItems: WorkerFacingActionItem[] = record.actionItems.map((item, index) => {
+    const ordinal = "ordinal" in item ? item.ordinal : (parseInt(item.id.replace(/\D/gu, ""), 10) || index + 1);
+    return {
+      ordinal,
+      summary: item.summary,
+      disposition: item.disposition,
+    };
+  });
+
   return {
     consultationId: record.consultationId,
     kind: record.kind,
-    state: record.state,
+    state,
     dependency: record.dependency,
     checkpoint: { requestedRef: record.requestedRef, resolvedCommit: record.resolvedCommit },
     ...(options.drift === undefined ? {} : { drift: options.drift }),
-    ...(record.adviserAnswer === undefined ? {} : { advice: record.adviserAnswer }),
-    actionItems: record.actionItems.map((item) => ({
-      ordinal: item.ordinal,
-      summary: item.summary,
-      disposition: item.disposition,
-    })),
+    ...(advice === undefined ? {} : { advice }),
+    actionItems,
     ...(options.degradation === undefined ? {} : { degradation: options.degradation }),
   };
 }

@@ -830,62 +830,103 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 ## User-Facing Commands
 
-- [ ] `/advisor <request>`
-- [ ] `/advisor-plan <request>`
-- [ ] `/advisor-review [request]`
-- [ ] `/advisor-audit <request>`
-- [ ] `/advisor-debug <request>`
-- [ ] `/advisor-challenge <request>`
-- [ ] `/advisor-followup <consultation-id> <request>`
-- [ ] `/advisor-status [consultation-id]`
-- [ ] `/advisor-read [consultation-id]`
-- [ ] `/advisor-cancel <consultation-id>`
-- [ ] `/advisor-auth`
+- [x] `/advisor <request>`
+      — `extension/commands.ts:handleConsultation`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-plan <request>`
+      — `extension/commands.ts:handleConsultation(..., "plan")`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-review [request]`
+      — `extension/commands.ts:handleConsultation(..., "review")`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-audit <request>`
+      — `extension/commands.ts:handleConsultation(..., "audit")`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-debug <request>`
+      — `extension/commands.ts:handleConsultation(..., "debug")`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-challenge <request>`
+      — `extension/commands.ts:handleConsultation(..., "challenge")`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-followup <consultation-id> <request>`
+      — `extension/commands.ts:handleFollowUp`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-status [consultation-id]`
+      — `extension/commands.ts:handleStatus`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-read [consultation-id]`
+      — `extension/commands.ts:handleRead`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-cancel <consultation-id>`
+      — `extension/commands.ts:handleCancel`, tested in `extension/commands.test.ts`.
+- [x] `/advisor-auth`
+      — `extension/commands.ts:handleAuth`, tested in `extension/commands.test.ts`.
 
 ## Agent-Facing Tools
 
-- [ ] `advisor_preflight`
-- [ ] `advisor_submit`
-- [ ] `advisor_read`
-- [ ] `advisor_status`
-- [ ] `advisor_followup`
-- [ ] `advisor_cancel`
-- [ ] `advisor_auth`
-- [ ] `advisor_disposition`
+- [x] `advisor_preflight`
+      — `extension/tools.ts:createPreflightTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_submit`
+      — `extension/tools.ts:createSubmitTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_read`
+      — `extension/tools.ts:createReadTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_status`
+      — `extension/tools.ts:createStatusTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_followup`
+      — `extension/tools.ts:createFollowUpTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_cancel`
+      — `extension/tools.ts:createCancelTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_auth`
+      — `extension/tools.ts:createAuthTool`, tested in `extension/tools.test.ts`.
+- [x] `advisor_disposition`
+      — `extension/tools.ts:createDispositionTool`, tested in `extension/tools.test.ts`.
 
 ## Hidden vs Visible Instructions
 
-- [ ] Keep verbose browser/protocol instructions out of the visible user transcript.
-- [ ] Keep slash-command recall/history compact.
-- [ ] Give the worker structured tool outputs.
-- [ ] Avoid teaching the worker low-level ChatGPT DOM control.
-- [ ] Keep adviser-role guidance concise and stable.
+- [x] Keep verbose browser/protocol instructions out of the visible user transcript.
+      — `ui/tui.ts` formats clean summaries, hiding internal DOM/OAuth/browser details; tested in `ui/tui.test.ts`.
+- [x] Keep slash-command recall/history compact.
+      — `ui/tui.ts:formatDispatchStatus` outputs single-line status; tested in `ui/tui.test.ts`.
+- [x] Give the worker structured tool outputs.
+      — `extension/tools.ts` returns structured `content` and `details` objects for every tool; tested in `extension/tools.test.ts`.
+- [x] Avoid teaching the worker low-level ChatGPT DOM control.
+      — `ui/worker-facing.ts:toWorkerFacingAdvisory` filters out internal browser/DOM selectors; tested in `ui/worker-facing.test.ts`.
+- [x] Keep adviser-role guidance concise and stable.
+      — `chatgpt/project-instructions.ts` and `protocol/brief.ts` provide stable instructions; tested in `protocol/brief.test.ts`.
 
 ## Auto-Consultation Policy
 
-- [ ] Default auto-consultation to conservative/high-value only.
-- [ ] Define semantic triggers.
-- [ ] Avoid consulting for trivial edits.
-- [ ] Avoid consulting solely because line count is large.
-- [ ] Avoid simple fixed retry-count triggers as the only criterion.
-- [ ] Allow `off | high-value | always` if configuration is exposed.
-- [ ] Default to `high-value`.
+- [x] Default auto-consultation to conservative/high-value only.
+      — `ui/policy.ts:evaluateAutoConsultation` defaults to `high-value`; tested in `ui/policy.test.ts`.
+- [x] Define semantic triggers.
+      — `ui/policy.ts:HIGH_VALUE_PATTERNS` matches architectural, security, migration, and concurrency changes; tested in `ui/policy.test.ts`.
+- [x] Avoid consulting for trivial edits.
+      — `ui/policy.ts:TRIVIAL_PATTERNS` suppresses spelling, lint, whitespace, and doc changes; tested in `ui/policy.test.ts`.
+- [x] Avoid consulting solely because line count is large.
+      — `ui/policy.ts` evaluates semantic intent and module span, not LOC alone; tested in `ui/policy.test.ts`.
+- [x] Avoid simple fixed retry-count triggers as the only criterion.
+      — `ui/policy.ts` suppresses simple retry loops without semantic triggers; tested in `ui/policy.test.ts`.
+- [x] Allow `off | high-value | always` if configuration is exposed.
+      — `ui/policy.ts:AutoConsultPolicy` type and evaluation branches; tested in `ui/policy.test.ts`.
+- [x] Default to `high-value`.
+      — `ui/policy.ts:evaluateAutoConsultation` parameter default; tested in `ui/policy.test.ts`.
 
 ## TUI Experience
 
-- [ ] Compact dispatch status.
-- [ ] Show repo/checkpoint/PR.
-- [ ] Show sync vs async.
-- [ ] Show job ID.
-- [ ] Show adviser completion notification.
-- [ ] Show checkpoint drift summary.
-- [ ] Show top action items.
-- [ ] Allow full response expansion on demand.
-- [ ] Avoid exposing OAuth/cookie/browser internals unless troubleshooting requires it.
+- [x] Compact dispatch status.
+      — `ui/tui.ts:formatDispatchStatus`; tested in `ui/tui.test.ts`.
+- [x] Show repo/checkpoint/PR.
+      — Included in `formatDispatchStatus`; tested in `ui/tui.test.ts`.
+- [x] Show sync vs async.
+      — Included in `formatDispatchStatus`; tested in `ui/tui.test.ts`.
+- [x] Show job ID.
+      — Included in `formatDispatchStatus`; tested in `ui/tui.test.ts`.
+- [x] Show adviser completion notification.
+      — `ui/tui.ts:formatCompletionNotification`; tested in `ui/tui.test.ts`.
+- [x] Show checkpoint drift summary.
+      — `extension/commands.ts:handleStatus` formats real-time drift classification; tested in `extension/commands.test.ts`.
+- [x] Show top action items.
+      — Included in `formatCompletionNotification`; tested in `ui/tui.test.ts`.
+- [x] Allow full response expansion on demand.
+      — `/advisor-read` and `ui/tui.ts:formatFullAdvisoryView`; tested in `extension/commands.test.ts` and `ui/tui.test.ts`.
+- [x] Avoid exposing OAuth/cookie/browser internals unless troubleshooting requires it.
+      — `auth/status.ts` masks email/tokens, `ui/worker-facing.ts` filters secrets; tested in `auth/status.test.ts` and `ui/worker-facing.test.ts`.
 
 ## Exit Criteria
 
-- [ ] A normal user can request advice without understanding the implementation machinery.
+- [x] A normal user can request advice without understanding the implementation machinery.
+      — Verified via slash commands (`/advisor`, `/advisor-read`, etc.), clean TUI notifications, pure Pi extension registration, and `npm run smoke:pi`.
 
 ---
 
