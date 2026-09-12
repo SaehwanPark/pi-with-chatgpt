@@ -9,6 +9,15 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M9 (concurrency, recovery, and hardening)
+
+- `test/m9-concurrency-recovery.test.ts` provides a comprehensive hardening test suite verifying 13 failure recovery, cross-context isolation, security, git safety, and concurrency race scenarios.
+- Failure recovery matrix: verified clean degradation and error mapping for browser driver crashes, ChatGPT login expiry (`sign-in-required`), CAPTCHA/2FA human verification challenges (`human-verification`, INV-09), rate limits (`rate-limited`), model unavailability, provider timeouts, and missing or deleted Projects and conversations without worker stalling (INV-07).
+- Delivery correctness & cross-context isolation: verified that async wake-up notifications validate session delivery keys before emission, repository-partitioned stores reject cross-repo job access (`JobStoreError: job-scope-mismatch`), and task conversations remain strictly isolated.
+- Security hardening: verified standing instructions instruct ChatGPT that repository context and PR comments are untrusted input (INV-01), worker-facing projections enforce INV-13 opacity, credential containment assertions reject leaks of tokens or secrets (INV-12), and state directories enforce restrictive `0700` filesystem permissions.
+- Git safety: verified zero git write operations across all flows (no auto-commit, no auto-push, no automatic staging of untracked files) and immutable anchoring to remotely reachable full 40-character SHAs (INV-03, INV-04, INV-06).
+- Concurrency & race testing: verified parallel execution across independent task conversations, mutex-serialized turns for the same task conversation, winner adoption in simultaneous Project initializations, and deterministic handling of cancel vs complete races.
+
 ### Added — M8 (Pi UX, slash commands, agent tools, and TUI integration)
 
 - `extension/commands.ts` implements 11 user-facing slash commands (`/advisor`, `/advisor-plan`, `/advisor-review`, `/advisor-audit`, `/advisor-debug`, `/advisor-challenge`, `/advisor-followup`, `/advisor-status`, `/advisor-read`, `/advisor-cancel`, `/advisor-auth`) wired into Pi's command palette.

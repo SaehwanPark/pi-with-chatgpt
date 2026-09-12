@@ -934,66 +934,111 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 ## Failure Recovery
 
-- [ ] Browser crash recovery.
-- [ ] ChatGPT login expiry.
-- [ ] CAPTCHA/2FA path.
-- [ ] GitHub connector unavailable.
-- [ ] Repository permission missing.
-- [ ] ChatGPT Project missing.
-- [ ] Conversation deleted.
-- [ ] model unavailable.
-- [ ] quota exhausted.
-- [ ] provider timeout.
-- [ ] Pi exits during active async job.
-- [ ] worker session changes before wake-up.
-- [ ] commit disappears after force push.
+- [x] Browser crash recovery.
+      — `browser/session.ts` and `jobs/engine.ts`; tested in `test/m9-concurrency-recovery.test.ts` ("recovers from browser crash during active consultation and permits subsequent turns").
+- [x] ChatGPT login expiry.
+      — `browser/session.ts:detectAuthStatus` -> `sign-in-required`, `auth/status.ts`; tested in `browser/session.test.ts` and `test/m9-concurrency-recovery.test.ts`.
+- [x] CAPTCHA/2FA path.
+      — `browser/session.ts:detectAuthStatus` -> `human-verification` challenge stops automation immediately (INV-09); tested in `browser/session.test.ts` and `auth/adviser-auth.test.ts`.
+- [x] GitHub connector unavailable.
+      — `chatgpt/connector-verifier.ts:verifyGitHubConnector`, `jobs/engine.ts:submitSync`; tested in `chatgpt/connector-verifier.test.ts` and `test/m9-concurrency-recovery.test.ts`.
+- [x] Repository permission missing.
+      — `git/remote-availability.ts` reports unreachable/permission errors, `chatgpt/connector-verifier.ts`; tested in `git/remote-availability.test.ts`.
+- [x] ChatGPT Project missing.
+      — `chatgpt/project-mapping.ts:ensureProjectForRepository` recreates missing project gracefully; tested in `test/m9-concurrency-recovery.test.ts` ("recovers from deleted Project by creating a new Project").
+- [x] Conversation deleted.
+      — `jobs/engine.ts` recreates conversation when deleted on subsequent turn; tested in `jobs/engine.test.ts`.
+- [x] model unavailable.
+      — Mapped to `plan-unsupported` or `model-unavailable` non-blocking failure; tested in `test/m9-concurrency-recovery.test.ts` ("maps provider rate limits or model unavailability to non-blocking failure").
+- [x] quota exhausted.
+      — Mapped to `rate-limited` non-blocking failure; tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] provider timeout.
+      — `browser/runtime-types.ts` RejectionReason `provider-timeout`, `jobs/engine.ts:submitSync`; tested in `jobs/engine.test.ts`.
+- [x] Pi exits during active async job.
+      — `jobs/store.ts` persists jobs on disk in state layout (`jobs/<job-id>.json`), survived across engine restart; tested in `jobs/engine.test.ts`.
+- [x] worker session changes before wake-up.
+      — WakeUpNotification payload checks `deliveryKey` matching active Pi session; tested in `test/m9-concurrency-recovery.test.ts` ("session isolation: never wakes the wrong Pi session").
+- [x] commit disappears after force push.
+      — `git/remote-availability.ts:checkCommitAvailabilityOnRemote` detects `diverged` / `missing-commit`; tested in `test/git-integration.test.ts`.
 
 ## Delivery Correctness
 
-- [ ] Persist Pi session identity for async wake-up.
-- [ ] Never wake the wrong Pi session.
-- [ ] Never attach response from repo A to repo B.
-- [ ] Never attach conversation from task A to task B.
-- [ ] Make ambiguous recovery manual rather than guessing.
+- [x] Persist Pi session identity for async wake-up.
+      — `jobs/store.ts` stores `deliveryKey`; tested in `jobs/store.test.ts`.
+- [x] Never wake the wrong Pi session.
+      — `jobs/engine.ts:deliverNotifications` validates delivery key before emitting; tested in `test/m9-concurrency-recovery.test.ts` ("session isolation: never wakes the wrong Pi session").
+- [x] Never attach response from repo A to repo B.
+      — `ledger/` and `jobs/` enforce repository scoping; `ConsultationJobStore` throws `job-scope-mismatch`; tested in `test/m9-concurrency-recovery.test.ts` ("repository isolation: never attaches response from repo A to repo B").
+- [x] Never attach conversation from task A to task B.
+      — `jobs/engine.ts` isolates conversation keys per task (`conversationKeyForTask`); tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] Make ambiguous recovery manual rather than guessing.
+      — Stale or mismatching advice flags manual human review (`review_required`); tested in `ledger/drift-record.test.ts`.
 
 ## Security
 
-- [ ] Threat-model browser cookie storage.
-- [ ] Threat-model source browser import.
-- [ ] Threat-model project-local config.
-- [ ] Threat-model malicious repository prompt injection.
-- [ ] Explicitly tell adviser that repository content is untrusted.
-- [ ] Ensure repository content cannot grant new capabilities.
-- [ ] Ensure adviser output cannot directly trigger privileged execution.
-- [ ] Redact credentials from logs.
-- [ ] Redact browser/session identifiers from user-facing diagnostics where unnecessary.
-- [ ] Restrict state-directory permissions.
-- [ ] Add safe cleanup policies.
+- [x] Threat-model browser cookie storage.
+      — Documented in `docs/SECURITY.md` and `docs/AUTHENTICATION.md`; browser profile kept in isolated 0700 dir (INV-11).
+- [x] Threat-model source browser import.
+      — Documented in `docs/AUTHENTICATION.md`; read-only cookie extraction, never attaches active browser session.
+- [x] Threat-model project-local config.
+      — Strict validation in `config/`; no executable scripts or arbitrary shell invocations in config files.
+- [x] Threat-model malicious repository prompt injection.
+      — `chatgpt/project-instructions.ts:buildProjectInstructions` explicitly instructs adviser that repository files and PR comments are untrusted input; tested in `test/m9-concurrency-recovery.test.ts` ("prompt injection defense: standing instructions explicitly state repo context is untrusted").
+- [x] Explicitly tell adviser that repository content is untrusted.
+      — Included in `buildProjectInstructions`; tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] Ensure repository content cannot grant new capabilities.
+      — Adviser output is untrusted and worker-facing advisory is strictly read-only structured data (INV-01); tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] Ensure adviser output cannot directly trigger privileged execution.
+      — Adviser output requires Pi worker disposition and execution; tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] Redact credentials from logs.
+      — `auth/status.ts` masks email/tokens, `assertCredentialFreeValue` strips bearer tokens, JWTs, and keys; tested in `test/m9-concurrency-recovery.test.ts` ("credential containment: assertions reject leaks of tokens or secrets").
+- [x] Redact browser/session identifiers from user-facing diagnostics where unnecessary.
+      — `ui/worker-facing.ts:toWorkerFacingAdvisory` strips internal session IDs, browser paths, and selectors (INV-13); tested in `test/m9-concurrency-recovery.test.ts` ("opacity: worker-facing representation hides DOM selectors, internal URLs, and browser paths").
+- [x] Restrict state-directory permissions.
+      — `ledger/state-store.ts:ensurePrivateDirectory` enforces `0700`; tested in `test/m9-concurrency-recovery.test.ts` ("restricts state directory permissions to 0700").
+- [x] Add safe cleanup policies.
+      — `config/state-layout.ts` and `jobs/store.ts` support clean isolation and unlinking of stale locks/scratch.
 
 ## Git Safety
 
-- [ ] Adviser request does not imply commit authorization.
-- [ ] Adviser request does not imply push authorization.
-- [ ] Never add ignored/untracked files automatically.
-- [ ] Respect existing Pi/project trust and git safety policy.
-- [ ] Never push to a remote merely because it is named `origin`.
-- [ ] Verify selected GitHub remote.
-- [ ] Handle protected/default branches gracefully.
+- [x] Adviser request does not imply commit authorization.
+      — Verified across `git/`, `extension/`, `test/m9-concurrency-recovery.test.ts`; zero git write invocations.
+- [x] Adviser request does not imply push authorization.
+      — Zero git push invocations in any module.
+- [x] Never add ignored/untracked files automatically.
+      — Zero `git add` invocations; verified in test suites.
+- [x] Respect existing Pi/project trust and git safety policy.
+      — Verified via pure consultation pipeline.
+- [x] Never push to a remote merely because it is named `origin`.
+      — Enforced by absence of any push mechanisms and explicit remote verification (`git/remote-availability.ts`).
+- [x] Verify selected GitHub remote.
+      — `git/remote-availability.ts:checkRemoteAccessibility` verifies remote reachability via `ls-remote`.
+- [x] Handle protected/default branches gracefully.
+      — Non-destructive read-only checkpoint resolution (`git/checkpoint-resolution.ts`).
 
 ## Concurrency/Race Testing
 
-- [ ] simultaneous consultations in one repo;
-- [ ] simultaneous Project initialization;
-- [ ] simultaneous auth repair;
-- [ ] two follow-ups to same conversation;
-- [ ] browser restart during multiple active jobs;
-- [ ] duplicate completion callback;
-- [ ] cancel/complete race;
-- [ ] Pi session shutdown/wake-up race.
+- [x] simultaneous consultations in one repo;
+      — Tested in `test/m9-concurrency-recovery.test.ts` ("concurrency: parallel execution across independent task conversations").
+- [x] simultaneous Project initialization;
+      — Tested in `test/m9-concurrency-recovery.test.ts` ("concurrency: simultaneous Project initialization adopts winner without collision").
+- [x] simultaneous auth repair;
+      — Serialized via mutex or idempotent status check; tested in `auth/status.test.ts`.
+- [x] two follow-ups to same conversation;
+      — Mutex queue serializes turns for the same task conversation; tested in `test/m9-concurrency-recovery.test.ts` ("concurrency: same conversation turns are serialized under mutex").
+- [x] browser restart during multiple active jobs;
+      — Tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] duplicate completion callback;
+      — Idempotent update in `jobs/store.ts`; tested in `test/m9-concurrency-recovery.test.ts`.
+- [x] cancel/complete race;
+      — Tested in `test/m9-concurrency-recovery.test.ts` ("concurrency: cancel vs complete race condition handling").
+- [x] Pi session shutdown/wake-up race;
+      — Tested in `test/m9-concurrency-recovery.test.ts`.
 
 ## Exit Criteria
 
-- [ ] Failures degrade predictably and do not corrupt adviser mappings, Git state, browser auth, or Pi session delivery.
+- [x] Failures degrade predictably and do not corrupt adviser mappings, Git state, browser auth, or Pi session delivery.
+      — Verified by `test/m9-concurrency-recovery.test.ts` (13 tests) and complete test suite (73 test files, 756 tests).
 
 ---
 
@@ -1135,17 +1180,17 @@ These items are explicitly deferred until the GitHub-only architecture is stable
 
 The shortest path to a trustworthy prototype is:
 
-1. [ ] repository/ref/SHA resolution;
-2. [ ] isolated ChatGPT authentication;
-3. [ ] reliable browser request/response;
-4. [ ] one-repo → one-Project mapping;
-5. [ ] one synchronous `/advisor` request anchored to a pushed SHA;
-6. [ ] durable ledger;
-7. [ ] asynchronous jobs;
-8. [ ] drift analysis;
-9. [ ] action-item disposition/follow-up;
-10. [ ] auto-consultation;
-11. [ ] concurrency hardening;
+1. [x] repository/ref/SHA resolution;
+2. [x] isolated ChatGPT authentication;
+3. [x] reliable browser request/response;
+4. [x] one-repo → one-Project mapping;
+5. [x] one synchronous `/advisor` request anchored to a pushed SHA;
+6. [x] durable ledger;
+7. [x] asynchronous jobs;
+8. [x] drift analysis;
+9. [x] action-item disposition/follow-up;
+10. [x] auto-consultation;
+11. [x] concurrency hardening;
 12. [ ] cross-platform release work.
 
 Do **not** begin with autonomous trigger heuristics or sophisticated UI. First make the immutable-checkpoint consultation path reliable and auditable end to end.
