@@ -9,6 +9,13 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M6 (consultation protocol and adviser ledger)
+
+- `protocol/brief.ts` implements canonical decision brief formatting across 6 consultation request kinds (`consult`, `plan`, `review`, `audit`, `debug`, `challenge`) with validation enforcing GitHub-only context and rejecting embedded code dumps or credentials (INV-02, INV-12).
+- `protocol/response.ts` provides opportunistic parser for hybrid structured/prose adviser responses; parses header blocks, assessments, recommendations, action items (`A1`, `A2`), risks, and optional ideas while preserving verbatim raw response text and verifying reviewed commit SHA against the immutable anchor (INV-01, INV-03, INV-07).
+- `ledger/ledger.ts` implements `ConsultationLedger` managing transactional, repository-scoped JSONL consultation indexing (`repositories/<repo-id>/consultations.jsonl`) and separate markdown response files (`repositories/<repo-id>/responses/<consultation-id>.md`) under advisory locks, with multi-attribute filtering, corrupted line recovery, and action-item disposition tracking (INV-15).
+- `jobs/engine.ts` integrated with `parseAdviserResponse` and `ConsultationLedger` to automatically parse and persist audit records on turn completion.
+
 ### Added — M5 (consultation execution engine and dispatch)
 
 - `jobs/engine.ts` implements `ConsultationEngine` coordinating synchronous and asynchronous consultation jobs.

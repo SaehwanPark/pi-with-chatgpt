@@ -38,6 +38,8 @@ const VALID_ANCHOR: ConsultationAnchor = {
   remoteAvailability: { status: "available" },
 };
 
+const ADVISER_TEXT = `ADVISOR\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser answer: consider pattern X.`;
+
 describe("ConsultationEngine (M5)", () => {
   it("executes a synchronous consultation to durable completion", async () => {
     const fixture = await createEngineFixture();
@@ -63,13 +65,20 @@ describe("ConsultationEngine (M5)", () => {
       expect(outcome.record.anchor.resolvedCommit).toBe(VALID_COMMIT);
       expect(outcome.record.result?.resultStatus).toBe("complete");
       expect(outcome.record.result?.headAtReceipt).toBe(RECEIPT_COMMIT);
-      expect(outcome.response.text).toBe("Adviser answer: consider pattern X.");
+      expect(outcome.response.text).toBe(ADVISER_TEXT);
 
       // Check durable store has the exact record
       const stored = await fixture.engine.getStatus(outcome.response);
       expect(stored?.state).toBe("completed");
       const storedResponse = await fixture.engine.readResult(outcome.response);
-      expect(storedResponse?.text).toBe("Adviser answer: consider pattern X.");
+      expect(storedResponse?.text).toBe(ADVISER_TEXT);
+
+      // Check local adviser ledger recorded the consultation (M6)
+      const ledgerEntry = await fixture.engine.ledger.getById(outcome.record.consultationId, REPOSITORY);
+      expect(ledgerEntry).toBeDefined();
+      expect(ledgerEntry?.status).toBe("completed");
+      expect(ledgerEntry?.resolvedCommit).toBe(VALID_COMMIT);
+      expect(ledgerEntry?.reviewedCommit).toBe(VALID_COMMIT);
     } finally {
       await fixture.cleanup();
     }
@@ -107,7 +116,7 @@ describe("ConsultationEngine (M5)", () => {
       const notification = notifications[0]!;
       expect(notification.address.consultationId).toBe(dispatched.consultationId);
       expect(notification.state).toBe("completed");
-      expect(notification.response?.text).toBe("Adviser answer: consider pattern X.");
+      expect(notification.response?.text).toBe(ADVISER_TEXT);
 
       unsubscribe();
     } finally {
@@ -416,7 +425,7 @@ async function createEngineFixture(): Promise<{
       }
       return {
         ok: true,
-        text: "Adviser answer: consider pattern X.",
+        text: `ADVISOR\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser answer: consider pattern X.`,
         elapsedMs: 50,
       };
     },

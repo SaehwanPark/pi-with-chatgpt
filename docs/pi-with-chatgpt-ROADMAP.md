@@ -667,73 +667,77 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 ## Request Builder
 
-- [ ] Implement semantic request types:
-  - [ ] consult;
-  - [ ] plan;
-  - [ ] review;
-  - [ ] audit;
-  - [ ] debug;
-  - [ ] challenge.
-- [ ] Build concise decision briefs.
-- [ ] Include exact repository.
-- [ ] Include full checkpoint SHA.
-- [ ] Include branch and optional PR as metadata.
-- [ ] Include goal.
-- [ ] Include current approach when relevant.
-- [ ] Include concern/question.
-- [ ] Tell ChatGPT to inspect GitHub itself.
-- [ ] Tell ChatGPT not to implement or request source-file uploads.
-- [ ] Tell ChatGPT that development may advance while it reasons.
+- [x] Implement semantic request types:
+  - [x] consult;
+  - [x] plan;
+  - [x] review;
+  - [x] audit;
+  - [x] debug;
+  - [x] challenge.
+- [x] Build concise decision briefs.
+- [x] Include exact repository.
+- [x] Include full checkpoint SHA.
+- [x] Include branch and optional PR as metadata.
+- [x] Include goal.
+- [x] Include current approach when relevant.
+- [x] Include concern/question.
+- [x] Tell ChatGPT to inspect GitHub itself.
+- [x] Tell ChatGPT not to implement or request source-file uploads.
+- [x] Tell ChatGPT that development may advance while it reasons.
 
 ## Response Contract
 
-- [ ] Define hybrid structured/prose output.
-- [ ] Require consultation ID.
-- [ ] Require reviewed commit SHA.
-- [ ] Request status/assessment.
-- [ ] Request explicit recommendations.
-- [ ] Request stable action-item IDs.
-- [ ] Allow risks and optional ideas.
-- [ ] Preserve raw response.
-- [ ] Parse structured fields opportunistically rather than failing the whole job on minor format deviation.
+- [x] Define hybrid structured/prose output.
+- [x] Require consultation ID.
+- [x] Require reviewed commit SHA.
+- [x] Request status/assessment.
+- [x] Request explicit recommendations.
+- [x] Request stable action-item IDs.
+- [x] Allow risks and optional ideas.
+- [x] Preserve raw response.
+- [x] Parse structured fields opportunistically rather than failing the whole job on minor format deviation.
 
 ## Commit Verification
 
-- [ ] Verify returned/referenced reviewed SHA when possible.
-- [ ] Mark malformed or ambiguous provenance.
-- [ ] Never silently assign a different reviewed SHA.
+- [x] Verify returned/referenced reviewed SHA when possible.
+- [x] Mark malformed or ambiguous provenance.
+- [x] Never silently assign a different reviewed SHA.
 
 ## Local Adviser Ledger
 
-- [ ] Define global state root.
-- [ ] Define repository-specific ledger location.
-- [ ] Append consultation metadata transactionally.
-- [ ] Store full response separately when large.
-- [ ] Persist conversation mapping.
-- [ ] Persist parsed action items.
-- [ ] Add efficient lookup by:
-  - [ ] consultation ID;
-  - [ ] repository;
-  - [ ] task;
-  - [ ] commit;
-  - [ ] status;
-  - [ ] date.
-- [ ] Avoid putting full historical advice into Pi model context by default.
+- [x] Define global state root.
+- [x] Define repository-specific ledger location.
+- [x] Append consultation metadata transactionally.
+- [x] Store full response separately when large.
+- [x] Persist conversation mapping.
+- [x] Persist parsed action items.
+- [x] Add efficient lookup by:
+  - [x] consultation ID;
+  - [x] repository;
+  - [x] task;
+  - [x] commit;
+  - [x] status;
+  - [x] date.
+- [x] Avoid putting full historical advice into Pi model context by default.
 
 ## Tests
 
-- [ ] valid structured response;
-- [ ] partially malformed response;
-- [ ] missing action IDs;
-- [ ] mismatched SHA;
-- [ ] empty response;
-- [ ] duplicated completion;
-- [ ] interrupted write;
-- [ ] ledger migration/versioning.
+- [x] valid structured response;
+- [x] partially malformed response;
+- [x] missing action IDs;
+- [x] mismatched SHA;
+- [x] empty response;
+- [x] duplicated completion;
+- [x] interrupted write;
+- [x] ledger migration/versioning.
 
 ## Exit Criteria
 
-- [ ] Every completed consultation is auditable without relying on conversational memory.
+- [x] Every completed consultation is auditable without relying on conversational memory.
+      — Evidence: `protocol/brief.test.ts` (brief construction, kind support, detached HEAD, code dump/credential validation);
+      `protocol/response.test.ts` (hybrid structured/prose parsing, header blocks, opportunistic fallback, commit verification, action-item normalization);
+      `ledger/ledger.test.ts` (transactional JSONL append, separate markdown responses, multi-attribute indexing, interrupted write resilience, schema migration);
+      `jobs/engine.test.ts` (end-to-end engine execution automatically records completed consultation and parsed action items into ConsultationLedger).
 
 ---
 

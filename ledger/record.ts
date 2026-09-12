@@ -48,20 +48,12 @@ export interface LedgerRecord {
   readonly notes?: string;
 }
 
-/** Keys that must never appear in a ledger record, at any depth. */
-export const SENSITIVE_LEDGER_KEY_PATTERN =
-  /(cookie|authorization|token|secret|password|passwd|credential|apikey|api_key|sessionid|session_id|bearer|oauth|accesskey|privatekey|userdata|user_data|profilepath|profile_path)/iu;
+import {
+  SENSITIVE_KEY_PATTERN as SENSITIVE_LEDGER_KEY_PATTERN,
+  SENSITIVE_VALUE_PATTERNS,
+} from "../protocol/masking.js";
 
-/** Value shapes that indicate a credential leaked into prose. */
-export const SENSITIVE_VALUE_PATTERNS: readonly RegExp[] = [
-  /\bbearer\s+[A-Za-z0-9._~+/=-]{12,}/iu,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}/u,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/u,
-  /\bsk-[A-Za-z0-9_-]{16,}/u,
-  /set-cookie\s*:/iu,
-  /cookie\s*:[^\n]{8,}/iu,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
-];
+export { SENSITIVE_LEDGER_KEY_PATTERN, SENSITIVE_VALUE_PATTERNS };
 
 export class UnsafeLedgerRecordError extends Error {
   constructor(reason: string) {
@@ -81,6 +73,13 @@ export function assertLedgerRecordSafe(record: LedgerRecord): void {
  * drifting between them.
  */
 export function assertCredentialFreeValue(label: string, value: unknown): void {
+  if (typeof value === "string") {
+    const pattern = SENSITIVE_VALUE_PATTERNS.find((candidate) => candidate.test(value));
+    if (pattern !== undefined) {
+      throw new UnsafeLedgerRecordError(`${label}: field "<root>" matches the secret pattern ${pattern}`);
+    }
+    return;
+  }
   walk(value, (key, value) => {
     if (SENSITIVE_LEDGER_KEY_PATTERN.test(key)) {
       throw new UnsafeLedgerRecordError(`${label}: field "${key}" looks like credential material`);
