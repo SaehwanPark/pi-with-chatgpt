@@ -154,6 +154,16 @@ describe("checkCommitPresence", () => {
     });
   });
 
+  it("does not treat a successful payload for a different SHA as exact presence", async () => {
+    const differentSha = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+    const { api: client } = api({ "/commits/": { status: 200, body: { sha: differentSha } } });
+
+    const outcome = await client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.failure.reason).toBe("probe-inconclusive");
+  });
+
   it("reports absent only when the repository itself is visible", async () => {
     const { api: client, requests } = api({
       "/commits/": { status: 404, body: { message: "Not Found" } },

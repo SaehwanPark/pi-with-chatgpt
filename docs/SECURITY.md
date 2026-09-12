@@ -60,7 +60,10 @@ machine-readable index.
 - **A credential-bearing remote URL is refused**, not silently canonicalised:
   `parseGitHubRemote("https://user:token@github.com/o/r")` returns `credentials-in-url`, because a URL
   that contains a secret must never become a repository key or a log line (INV-12).
-- **Ledger records are scanned** before persistence (`assertLedgerRecordSafe`) for credential-shaped
+- **Adviser prose is sanitized before persistence.** Credential-shaped substrings quoted from a
+  repository fixture are replaced with `[redacted-sensitive-data]` while the rest of the answer is
+  retained; the resulting response and ledger record are then scanned before persistence
+  (`assertLedgerRecordSafe`) for credential-shaped
   keys and for these value shapes: `Bearer …`, GitHub PAT prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`,
   `ghr_`, `github_pat_`), `sk-` provider keys, `Cookie:`/`Set-Cookie:` headers, and PEM private-key
   blocks. Generic high-entropy/base64 detection is deliberately **not** used: raw adviser prose is

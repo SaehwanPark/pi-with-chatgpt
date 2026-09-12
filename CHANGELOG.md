@@ -9,6 +9,20 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Fixed
+
+- Activated the GitHub Actions verification workflow under `.github/workflows/ci.yml`, covering
+  Linux and macOS typecheck, lint, build, unit tests, and Pi installation/load smoke tests.
+- Addressed the 2026-09-12 production audit: activation now uses a lazy real service composition,
+  removes fake-success paths, preserves one consultation ID through the brief/job/response/ledger,
+  reads Pi's real session identity, routes configured sync/async modes, and reconciles live jobs.
+- Hardened provenance and transport gates: anonymous GitHub exact-SHA probes fail closed, response
+  consultation IDs are mandatory provenance, model preferences resolve against the live picker, and
+  the GitHub connector is required by the V1 capability checklist.
+- Hardened cancellation, ledger disposition writes, read-only git execution, browser health/lock timing,
+  isolated browser authentication, project trust checks, and secret redaction. Updated protocol,
+  configuration, security, and roadmap documentation with regression-test evidence.
+
 ## [1.0.0] - 2026-09-12
 
 ### Added — M10 (Cross-Platform Validation, Documentation, and V1 Release)
@@ -97,8 +111,7 @@ change invalidates (see `AGENTS.md`).
 - Toolchain and package: `package.json` for `pi-with-chatgpt` (ESM, `engines.node >= 22.19.0`,
   Pi package manifest with `pi.extensions = ./dist/extension/index.js` and the `pi-package`
   keyword), `tsconfig.json`/`tsconfig.build.json`, ESLint flat config, Vitest config, MIT `LICENSE`,
-  and CI (`ci/ci.yml`, staged outside `.github/workflows/` until a credential with the `workflow`
-  scope is available — see `ci/README.md`) on `ubuntu-latest` + `macos-latest`.
+  and CI (`.github/workflows/ci.yml`) on `ubuntu-latest` + `macos-latest`.
 - The eleven planned module trees — `extension/ git/ auth/ browser/ chatgpt/ jobs/ protocol/
   ledger/ drift/ config/ ui/` — each with a documented barrel.
 - Architecture invariants INV-01…INV-16 written down in `docs/ARCHITECTURE.md` and indexed as data

@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { maskEmail, maskOpaqueId } from "./masking.js";
+import { containsSensitiveData, maskEmail, maskOpaqueId, redactSensitiveText } from "./masking.js";
 
 describe("maskEmail", () => {
   it("keeps enough of an address for a human to recognise the account", () => {
@@ -53,5 +53,23 @@ describe("maskOpaqueId", () => {
   it("never reveals the tail of an identifier", () => {
     const id = "0192abcdef0000111122223333";
     expect(maskOpaqueId(id)).not.toContain(id.slice(-6));
+  });
+});
+
+describe("redactSensitiveText", () => {
+  it("redacts credential-shaped prose without discarding the rest of the answer", () => {
+    const result = redactSensitiveText("The test fixture uses ghp_1234567890123456; keep the retry logic.");
+
+    expect(result.redacted).toBe(true);
+    expect(result.text).toContain("keep the retry logic");
+    expect(result.text).not.toContain("ghp_1234567890123456");
+    expect(containsSensitiveData(result.text)).toBe(false);
+  });
+
+  it("leaves ordinary adviser prose untouched", () => {
+    expect(redactSensitiveText("Use a bounded retry with exponential backoff.")).toEqual({
+      text: "Use a bounded retry with exponential backoff.",
+      redacted: false,
+    });
   });
 });

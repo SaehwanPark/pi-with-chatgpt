@@ -129,6 +129,7 @@ describe("selectPrimaryGitHubRemote", () => {
     expect(selection.remote.name).toBe("origin");
     expect(selection.selectedBecause).toBe("preferred-origin");
     expect(selection.key).toBe("saehwanpark/pi-with-chatgpt");
+    expect(selection.candidates.map((candidate) => candidate.remote.name)).toEqual(["origin", "upstream"]);
   });
 
   it("falls back to upstream when origin is not a GitHub remote", () => {
@@ -157,6 +158,7 @@ describe("selectPrimaryGitHubRemote", () => {
     expect(first.remote.name).toBe("beta");
     expect(second.remote.name).toBe(first.remote.name);
     expect(first.selectedBecause).toBe("first-github-remote-by-name");
+    expect(first.candidates.map((candidate) => candidate.remote.name)).toEqual(["beta", "zeta"]);
   });
 
   it("refuses when no remote is a supported GitHub remote", () => {

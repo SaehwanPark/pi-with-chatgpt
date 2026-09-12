@@ -1,8 +1,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ToolManager } from "./tools.js";
+import { DEFAULT_CONFIG } from "../config/schema.js";
 import { fakeGit, CHECKPOINT_SHA } from "../test/fixtures.js";
 import { ConsultationLedger } from "../ledger/ledger.js";
 import { adviserStateLayout } from "../config/state-layout.js";
@@ -10,6 +11,7 @@ import { canonicalRepositoryKey } from "../protocol/repo.js";
 import { requireFullCommitSha } from "../protocol/sha.js";
 import type { ConsultationId } from "../protocol/checkpoint.js";
 import type { GitHubApi } from "../git/github-api.js";
+import type { ConsultationEngine } from "../jobs/engine.js";
 
 const REPO = canonicalRepositoryKey("acme", "repo");
 const COMMIT = requireFullCommitSha(CHECKPOINT_SHA);
@@ -65,44 +67,77 @@ describe("extension/tools (M8)", () => {
     const manager = new ToolManager({ git, github: mockGitHub });
     const preflight = manager.getTools().find((t) => t.name === "advisor_preflight")!;
 
-    const result = await preflight.execute("call-1", { cwd: dir }, undefined, undefined, { cwd: dir });
+    const result = await preflight.execute("call-1", { cwd: dir }, undefined, undefined, { cwd: dir, isProjectTrusted: () => true });
     expect(result.content[0]!.text).toContain("Preflight");
     expect(result.details).toBeDefined();
   });
 
-  it("executes advisor_submit and advisor_read tools", async () => {
+  it("refuses advisor_submit without an adviser engine and does not create a ledger record", async () => {
     const dir = makeTestDirectory("pwc-tools-submit-");
     const git = makeGit();
 
     const ledger = new ConsultationLedger({ layout: adviserStateLayout(dir) });
     const manager = new ToolManager({ git, github: mockGitHub, ledger });
     const submitTool = manager.getTools().find((t) => t.name === "advisor_submit")!;
-    const readTool = manager.getTools().find((t) => t.name === "advisor_read")!;
 
+    const piContext = {
+      cwd: dir,
+      sessionManager: { getSessionId: () => "test-tool-session" },
+      isProjectTrusted: () => true,
+    };
     const submitResult = await submitTool.execute(
       "call-2",
       { goal: "Review error handling", kind: "review", cwd: dir },
       undefined,
       undefined,
-      { cwd: dir },
+      piContext,
     );
 
-    expect(submitResult.content[0]!.text).toContain("submitted and recorded");
-    const details = submitResult.details as { consultationId: string };
+    expect(submitResult.content[0]!.text).toContain("adviser engine unavailable");
+    const details = submitResult.details as { consultationId: string; ok: boolean; failure: string };
     expect(details.consultationId).toBeDefined();
+    expect(details.ok).toBe(false);
+    expect(details.failure).toBe("engine-unavailable");
+    expect(await ledger.list({ repository: REPO })).toHaveLength(0);
+  });
 
-    const readResult = await readTool.execute(
-      "call-3",
-      { consultationId: details.consultationId, cwd: dir },
+  it("routes async advisor_submit through submitAsync and scopes it to Pi's session", async () => {
+    const dir = makeTestDirectory("pwc-tools-async-");
+    const git = makeGit();
+    const submitAsync = vi.fn((request: { consultationId?: string; taskId: string }) => ({
+      consultationId: request.consultationId!,
+      address: {
+        repository: REPO,
+        taskId: request.taskId,
+        consultationId: request.consultationId!,
+        deliveryKey: "0".repeat(64),
+      },
+      state: "queued" as const,
+    }));
+    const submitSync = vi.fn();
+    const engine = { submitAsync, submitSync } as unknown as ConsultationEngine;
+    const manager = new ToolManager({
+      config: { ...DEFAULT_CONFIG, defaultMode: "async" },
+      git,
+      github: mockGitHub,
+      ledger: new ConsultationLedger({ layout: adviserStateLayout(dir) }),
+      engine,
+    });
+    const submitTool = manager.getTools().find((t) => t.name === "advisor_submit")!;
+
+    const result = await submitTool.execute(
+      "call-async",
+      { goal: "Queue async work", kind: "consult", cwd: dir },
       undefined,
       undefined,
-      { cwd: dir },
+      { cwd: dir, sessionManager: { getSessionId: () => "tool-session-async" }, isProjectTrusted: () => true },
     );
 
-    expect(readResult.content[0]!.text).toContain("Advisory for review");
-    const readDetails = readResult.details as { consultationId: string; kind: string };
-    expect(readDetails.consultationId).toBe(details.consultationId);
-    expect(readDetails.kind).toBe("review");
+    expect(result.content[0]!.text).toContain("queued for asynchronous delivery");
+    expect(result.details).toMatchObject({ ok: true, mode: "async", state: "queued" });
+    expect(submitAsync).toHaveBeenCalledOnce();
+    expect(submitSync).not.toHaveBeenCalled();
+    expect(submitAsync.mock.calls[0]?.[0]).toMatchObject({ taskId: "tool-session-async", mode: "async" });
   });
 
   it("executes advisor_disposition tool", async () => {
@@ -146,7 +181,7 @@ describe("extension/tools (M8)", () => {
       },
       undefined,
       undefined,
-      { cwd: dir },
+      { cwd: dir, isProjectTrusted: () => true },
     );
 
     expect(result.content[0]!.text).toContain("Action item A1 updated to rejected_with_reason.");
@@ -163,7 +198,7 @@ describe("extension/tools (M8)", () => {
     const authTool = manager.getTools().find((t) => t.name === "advisor_auth")!;
 
     const cancelResult = await cancelTool.execute("call-5", { consultationId: "adv-cancel99" });
-    expect(cancelResult.content[0]!.text).toContain("cancelled");
+    expect(cancelResult.content[0]!.text).toContain("does not trust this project");
 
     const authResult = await authTool.execute("call-6", {});
     expect(authResult.content[0]!.text).toBeDefined();

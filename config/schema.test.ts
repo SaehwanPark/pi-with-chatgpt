@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { ConfigError, DEFAULT_CONFIG, parseAdviserConfig } from "./schema.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { ConfigError, DEFAULT_CONFIG, loadAdviserConfig, parseAdviserConfig } from "./schema.js";
 
 describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
   it("defaults to advisory, synchronous, enabled, with no auto-consultation", () => {
@@ -75,5 +79,44 @@ describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
     expect(() =>
       parseAdviserConfig({ browserExecutablePath: "/home/dev/.config/google-chrome/Default" }),
     ).toThrow(/must not point at the user's browser profile/u);
+  });
+
+  it("loads global and project settings without resetting omitted global values", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pwc-config-"));
+    const globalPath = join(dir, "settings.json");
+    const projectPath = join(dir, "agent.json");
+    await writeFile(
+      globalPath,
+      JSON.stringify({ "pi-with-chatgpt": { defaultMode: "async", syncTimeoutMs: 90_000, logLevel: "verbose" } }),
+    );
+    await writeFile(projectPath, JSON.stringify({ "pi-with-chatgpt": { pollIntervalMs: 10_000 } }));
+
+    try {
+      await expect(
+        loadAdviserConfig({ globalPath, projectPath, environment: {} }),
+      ).resolves.toMatchObject({
+        defaultMode: "async",
+        syncTimeoutMs: 90_000,
+        pollIntervalMs: 10_000,
+        logLevel: "verbose",
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the explicit environment log-level override", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pwc-config-env-"));
+    try {
+      await expect(
+        loadAdviserConfig({
+          globalPath: join(dir, "missing-settings.json"),
+          projectPath: join(dir, "missing-agent.json"),
+          environment: { PI_ADVISER_LOG_LEVEL: "silent" },
+        }),
+      ).resolves.toMatchObject({ logLevel: "silent" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

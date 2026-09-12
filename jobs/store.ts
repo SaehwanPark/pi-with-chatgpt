@@ -22,6 +22,7 @@ import type { GitHubRepositoryKey } from "../protocol/repo.js";
 import { canTransition, isTerminalJobState } from "./state.js";
 import {
   createQueuedJob,
+  deliveryKeyForSession,
   InvalidJobRecordError,
   parseJobFile,
   transitionJob,
@@ -38,6 +39,15 @@ export interface JobAddress {
   readonly repository: GitHubRepositoryKey;
   readonly taskId: string;
   readonly deliveryKey: string;
+}
+
+/** Optional scope used when resolving an ID supplied by a user-facing command. */
+export interface JobLookupScope {
+  readonly repository?: GitHubRepositoryKey;
+  readonly taskId?: string;
+  readonly deliveryKey?: string;
+  /** Raw Pi session identity; it is hashed before comparison with durable state. */
+  readonly sessionId?: string;
 }
 
 export interface JobResponse extends JobAddress {
@@ -110,6 +120,70 @@ export class ConsultationJobStore {
       if (record !== undefined) assertAddress(record, expected);
       return record;
     });
+  }
+
+  /**
+   * Resolve a consultation ID to its persisted record. IDs are globally unique, but callers that
+   * received an ID from a Pi session can provide a repository/session scope as an additional
+   * cross-delivery guard.
+   */
+  async getByConsultationId(
+    consultationId: ConsultationId,
+    scope: JobLookupScope = {},
+  ): Promise<JobRecord | undefined> {
+    const id = consultationId;
+    return safeStorageOperation(async () => {
+      const record = await this.#read(id);
+      if (record !== undefined) assertJobScope(record, scope);
+      return record;
+    });
+  }
+
+  /** Return durable jobs, with optional state filtering, for status and startup reconciliation. */
+  async list(options: { readonly states?: readonly JobRecord["state"][] } = {}): Promise<readonly JobRecord[]> {
+    return safeStorageOperation(async () => {
+      await this.#assertDirectories([this.layout.stateRoot, this.layout.jobsDir]);
+      await ensurePrivateDirectory(this.layout.stateRoot, this.fileSystem);
+      await ensurePrivateDirectory(this.layout.jobsDir, this.fileSystem);
+      const names = await this.fileSystem.readDirectory(this.layout.jobsDir);
+      const allowedStates = options.states === undefined ? undefined : new Set(options.states);
+      const records: JobRecord[] = [];
+      for (const name of names) {
+        if (!name.endsWith(".json")) continue;
+        const id = name.slice(0, -".json".length) as ConsultationId;
+        if (!isConsultationId(id)) throw new JobStoreError("state-corrupt");
+        const record = await this.#read(id);
+        if (record !== undefined && (allowedStates === undefined || allowedStates.has(record.state))) {
+          records.push(record);
+        }
+      }
+      records.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+      return records;
+    });
+  }
+
+  /**
+   * Jobs left in `running` state at process startup have an ambiguous browser outcome. They are
+   * never replayed; mark them interrupted so status and the ledger expose the recovery decision.
+   */
+  async reconcileRunningJobs(): Promise<readonly JobRecord[]> {
+    const running = await this.list({ states: ["running"] });
+    const reconciled: JobRecord[] = [];
+    for (const snapshot of running) {
+      const address = jobAddress(snapshot);
+      const record = await this.#transaction(snapshot.consultationId, async () => {
+        const current = await this.#require(address);
+        if (current.state !== "running") return current;
+        const interrupted = transitionJob(current, "failed", {
+          failure: "interrupted",
+          at: this.#timestamp(current),
+        });
+        await this.#write(interrupted);
+        return interrupted;
+      });
+      reconciled.push(record);
+    }
+    return reconciled;
   }
 
   /** Exactly one caller receives claimed:true, including callers in separate Pi processes. */
@@ -275,6 +349,21 @@ function assertAddress(record: JobRecord, expected: JobAddress): void {
   const actual = jobAddress(record);
   if (actual.consultationId !== expected.consultationId || actual.repository !== expected.repository ||
       actual.taskId !== expected.taskId || actual.deliveryKey !== expected.deliveryKey) {
+    throw new JobStoreError("job-scope-mismatch");
+  }
+}
+
+function assertJobScope(record: JobRecord, scope: JobLookupScope): void {
+  if (scope.repository !== undefined && record.anchor.repository !== scope.repository) {
+    throw new JobStoreError("job-scope-mismatch");
+  }
+  if (scope.taskId !== undefined && record.taskId !== scope.taskId) {
+    throw new JobStoreError("job-scope-mismatch");
+  }
+  if (scope.deliveryKey !== undefined && record.deliveryKey !== scope.deliveryKey) {
+    throw new JobStoreError("job-scope-mismatch");
+  }
+  if (scope.sessionId !== undefined && record.deliveryKey !== deliveryKeyForSession(scope.sessionId)) {
     throw new JobStoreError("job-scope-mismatch");
   }
 }

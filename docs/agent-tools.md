@@ -206,9 +206,11 @@ Inspects OpenAI authentication and Playwright browser profile health without exp
 - **Returns**:
   ```json
   {
-    "content": [{ "type": "text", "text": "Adviser authentication: authenticated=true" }],
+    "content": [{ "type": "text", "text": "Adviser authentication: authenticated=unknown" }],
     "details": {
-      "authenticated": true,
+      "authenticated": "unknown",
+      "browserSession": { "state": "unverified", "reason": "probe-required" },
+      "piOpenAiSignInPresent": true,
       "plan": "ChatGPT Plus",
       "emailMasked": "d***@example.com",
       "accountIdPrefix": "org-9f8",

@@ -18,6 +18,12 @@ provider (which would disable it for exactly the users it exists for) and reusin
 as an assumed ChatGPT account (an API key carries no account, so it resolves to *no* identity — see
 `auth/pi-credential.ts`).
 
+Pi's OpenAI credential is an identity hint, not proof that the extension-owned ChatGPT web session is
+currently authenticated. The `/advisor-auth` command and `advisor_auth` tool report a separate browser
+session state: `signed-in`, `signed-out`, `human-verification`, `unreachable`, or `unverified` when no
+fresh browser probe was available. A historical `SESSION-ESTABLISHED` marker only records that a human
+completed sign-in once; it is never treated as current readiness.
+
 ## Credential discovery
 
 1. **Preferred** — Pi's own `AuthStorage.getAuth("openai-codex")`, resolved through the installed
@@ -156,9 +162,10 @@ age alone:
 
 1. ChatGPT access 2. adviser model available 3. GitHub connector 4. target repository visible
 
-Only the first two plus the repository checkpoint block a consultation. An **unverified** check is
-distinct from a failed one: "we have not looked" must not be reported as "it is broken", and it never
-dispatches a consultation. See `browser/capability-checks.ts`.
+All four checks block a consultation. GitHub is the sole repository-context channel in V1, so a missing
+or unverified connector cannot produce a repository-grounded answer. An **unverified** check is distinct
+from a failed one: "we have not looked" must not be reported as "it is broken", and it never dispatches
+a consultation. See `browser/capability-checks.ts`.
 
 ## Platform support
 

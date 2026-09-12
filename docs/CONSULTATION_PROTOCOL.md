@@ -1,8 +1,8 @@
 # Consultation protocol
 
-Status: M5 durable job model and storage. Browser dispatch, synchronous/asynchronous execution,
-Pi delivery, and commands remain unfinished. M6 will add semantic briefs, response parsing,
-provenance assessment, and the append-oriented adviser ledger.
+Status: durable job model, storage, terminal reconciliation, append-oriented ledger, browser dispatch,
+synchronous/asynchronous execution, Pi delivery, and command/tool wiring are implemented behind the
+lazy production composition root. Live ChatGPT/browser round trips remain manual verification work.
 
 ## Immutable job identity
 
@@ -44,8 +44,10 @@ the offending text, consistent with the existing credential containment rule.
 
 ## Transactions and recovery
 
-`ConsultationJobStore` exposes `create`, `get`, `claim`, `complete`, `fail`, `cancel`, and
-`readPersistedResponse`. Each mutation holds a same-host advisory lock for that consultation ID.
+`ConsultationJobStore` exposes `create`, `get`, `getByConsultationId`, `list`, `claim`, `complete`,
+`fail`, `cancel`, `reconcileRunningJobs`, and `readPersistedResponse`. Each mutation holds a
+same-host advisory lock for that consultation ID. Engine callers can resolve and cancel by ID only
+after the store supplies the immutable address; callers must not synthesize delivery fields.
 There is no general record-update API that can rewrite the original anchor or delivery address.
 
 - Creation refuses an existing or corrupted job; it never overwrites it on retry.
@@ -58,11 +60,15 @@ There is no general record-update API that can rewrite the original anchor or de
 - A crash between response and terminal writes leaves a running job with a readable response.
   `readPersistedResponse` exposes that artifact for explicit reconciliation. Retrying the same
   completion can commit it; attempting to substitute a different response is refused.
-- A restarted process cannot claim a running job again. Whether its browser submission happened
-  is ambiguous, so this store never requeues or resubmits it automatically.
+- A restarted process cannot claim a running job again. `reconcileRunningJobs` transitions each
+  stale `running` record to terminal `failed` with the closed `interrupted` reason. Whether its
+  browser submission happened is ambiguous, so this store never requeues or resubmits it
+  automatically.
 
 Atomic rename protects against interrupted process writes; this is not a power-loss or distributed
-filesystem durability claim. The store does not yet reconcile browser state after Pi exits.
+filesystem durability claim. `ConsultationLedger.recordTerminalJob` projects failed, cancelled,
+and interrupted terminal jobs into history exactly once, while the JobStore remains live status
+authority. Action-item disposition rewrites use the same sibling-temp-file + rename primitive.
 
 ## Delivery identity
 
@@ -71,17 +77,18 @@ SHA-256 digest derived from the Pi session identifier, not a raw Pi identifier o
 credential. Changing any address component refuses the read or mutation. These internal records
 must be projected into a compact worker-facing result, never serialized wholesale into model context.
 
-Actual wake-up remains M5 execution work. It must persist the result first and verify a live endpoint
-for the matching Pi session/task; an absent or ambiguous endpoint must leave the result for explicit
-reading. A UI notification on whichever session is focused is not targeted delivery.
+The execution engine persists a result before notifying a listener registered for the matching session
+delivery digest. The extension binds and removes that listener through Pi's session lifecycle; an absent
+or ambiguous endpoint leaves the result available for explicit status/read queries. A UI notification on
+whichever session is focused is not targeted delivery.
 
-## Remaining execution integration
+## Execution boundary
 
-The browser currently has one tracked tab. Conversation selection and prompt submission must be
-protected as one operation: calling mapping setup and `runtime.consult()` independently leaves a gap
-where another task can navigate the tab. The dispatcher must also preserve serialization until a
-cancelled browser turn has actually settled. These are prerequisites to claiming the M5 two-task
-consultation exit criterion, not guarantees supplied by the job store.
+The browser currently has one tracked tab. Conversation selection, model selection, prompt submission,
+and response reading are serialized by the engine's V1 global browser slot and the runtime's turn queue;
+the dispatcher waits for cancellation cleanup before returning. A future conversation-scoped page can
+relax that limit, but no parallel browser turns are advertised today.
 
-Evidence for this storage slice: `jobs/record.test.ts`, `jobs/store.test.ts`, and `jobs/state.test.ts`.
-No live adviser consultation or async Pi wake-up is claimed by these tests.
+Evidence: `jobs/record.test.ts`, `jobs/store.test.ts`, `jobs/state.test.ts`, `jobs/engine.test.ts`,
+`extension/index.test.ts`, and `test/m9-concurrency-recovery.test.ts`. Live ChatGPT round trips remain
+manual verification work.

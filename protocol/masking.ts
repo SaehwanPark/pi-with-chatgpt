@@ -70,3 +70,23 @@ export function containsSensitiveData(value: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Remove credential-shaped substrings from adviser prose while preserving the surrounding answer.
+ *
+ * Adviser output can quote a fake token from a repository test or security document. Rejecting the
+ * entire response loses useful, otherwise valid advice; persisting the token-shaped text is unsafe.
+ * This helper is intentionally string-only and uses the same patterns as `containsSensitiveData`, so
+ * callers can redact the response before parsing or writing it and then assert that the result is safe.
+ */
+export function redactSensitiveText(value: string): { readonly text: string; readonly redacted: boolean } {
+  let text = value;
+  let redacted = false;
+  for (const pattern of SENSITIVE_VALUE_PATTERNS) {
+    text = text.replace(pattern, () => {
+      redacted = true;
+      return "[redacted-sensitive-data]";
+    });
+  }
+  return { text, redacted };
+}

@@ -197,7 +197,9 @@ Cancels an in-flight consultation without blocking local Pi execution.
 
 ## 11. `/advisor-auth`
 
-Inspects credential status and launches interactive authentication if needed.
+Inspects Pi credential status separately from the current isolated ChatGPT browser session and launches
+interactive authentication if needed. A Pi OAuth credential alone is not reported as an authenticated
+ChatGPT session; without a fresh browser probe, readiness is `unverified`.
 
 - **Syntax**: `/advisor-auth`
 - **When to use**:

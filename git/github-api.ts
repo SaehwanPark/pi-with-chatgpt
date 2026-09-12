@@ -236,7 +236,16 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
     if (!response.ok) return response;
 
     const status = httpStatusOf(response.value);
-    if (status === undefined) return { ok: true, value: "present" };
+    if (status === undefined) {
+      // The request path names the object, but an exact-SHA gate also validates the response body. This
+      // keeps a proxy or unexpected API payload from turning any successful HTTP response into proof.
+      const returnedSha = commitShaFromPayload(response.value);
+      if (returnedSha === commit.toLowerCase()) return { ok: true, value: "present" };
+      return {
+        ok: false,
+        failure: failure("probe-inconclusive", "GitHub returned a commit payload without the requested exact SHA."),
+      };
+    }
     if (status === 404) return await disambiguateNotFound(repository);
     return {
       ok: false,
@@ -296,6 +305,12 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
   }
 
   return { checkCommitPresence, listOpenPullRequestsForHead };
+}
+
+function commitShaFromPayload(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+  const sha = (payload as Record<string, unknown>).sha;
+  return typeof sha === "string" && isFullCommitSha(sha) ? sha.toLowerCase() : undefined;
 }
 
 /**

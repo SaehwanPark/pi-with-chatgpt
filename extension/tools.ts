@@ -12,8 +12,7 @@
  * - advisor_disposition
  */
 
-import { randomUUID } from "node:crypto";
-import type { AdviserToolDefinition } from "./pi-api.js";
+import { getPiSessionId, isPiProjectTrusted, type AdviserExtensionContext, type AdviserToolDefinition } from "./pi-api.js";
 import { type AdviserConfig, DEFAULT_CONFIG } from "../config/schema.js";
 import type { ConsultationKind } from "../protocol/brief.js";
 import { buildConsultationBrief, CONSULTATION_KINDS } from "../protocol/brief.js";
@@ -30,6 +29,7 @@ import {
   adviceCurrencyFor,
 } from "../drift/index.js";
 import { adviserStatus } from "../auth/status.js";
+import type { AdviserLoginPort } from "../auth/login-flow.js";
 import { resolveCheckpoint } from "../git/checkpoint-resolution.js";
 import { createGitExecutor, createNodeCommandRunner, type GitExecutor } from "../git/exec.js";
 import type { GitHubApi } from "../git/github-api.js";
@@ -37,51 +37,68 @@ import { createGitHubApi } from "../git/github-api.js";
 import { adviserStateLayout } from "../config/state-layout.js";
 import { adviserProfileFor, stateStoragePaths } from "../browser/state-storage.js";
 import type { ConsultationEngine } from "../jobs/engine.js";
+import { generateConsultationId } from "../jobs/record.js";
+import { DEFAULT_MODEL_PREFERENCE } from "../browser/model-selection.js";
 
 export interface ToolServiceOptions {
   readonly config?: AdviserConfig;
+  /** Lazy loader for global/project configuration; activation remains side-effect free. */
+  readonly configFactory?: (cwd: string) => Promise<AdviserConfig>;
   readonly git?: GitExecutor;
   readonly github?: GitHubApi;
   readonly ledger?: ConsultationLedger;
   readonly engine?: ConsultationEngine;
-}
-
-function generateConsultationId(): ConsultationId {
-  const hex = randomUUID().replace(/[^0-9a-z]/gu, "").slice(0, 10);
-  return `adv-${hex}` as ConsultationId;
+  /** Lazy production composition; test fixtures may inject an engine directly instead. */
+  readonly engineFactory?: (cwd: string) => Promise<ConsultationEngine>;
+  /** Optional browser observer used to distinguish Pi OAuth from current ChatGPT web readiness. */
+  readonly loginPort?: AdviserLoginPort;
+  /** Lazy production login adapter over the extension-owned browser profile. */
+  readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
+  /** Ranked adviser model preferences; resolved against the live ChatGPT model picker by the engine. */
+  readonly modelPreference?: readonly string[];
 }
 
 function defaultGitHubApi(): GitHubApi {
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
-  if (token) {
-    try {
-      return createGitHubApi({
-        fetchImpl: globalThis.fetch as unknown as Parameters<typeof createGitHubApi>[0]["fetchImpl"],
-        token,
-      });
-    } catch {
-      // ignore
-    }
+  try {
+    return createGitHubApi({
+      fetchImpl: globalThis.fetch as unknown as Parameters<typeof createGitHubApi>[0]["fetchImpl"],
+      ...(token.trim().length === 0 ? {} : { token }),
+    });
+  } catch {
+    // A missing fetch implementation is an honest unavailable probe, never proof that a commit exists.
   }
   return {
     checkCommitPresence() {
-      return Promise.resolve({ ok: true, value: "present" as const });
+      return Promise.resolve({
+        ok: false,
+        failure: { reason: "network-unreachable" as const, detail: "GitHub API client unavailable." },
+      });
     },
     listOpenPullRequestsForHead() {
-      return Promise.resolve({ ok: true, value: [] });
+      return Promise.resolve({
+        ok: false,
+        failure: { reason: "network-unreachable" as const, detail: "GitHub API client unavailable." },
+      });
     },
   };
 }
 
 export class ToolManager {
   private readonly config: AdviserConfig;
+  private readonly configFactory?: (cwd: string) => Promise<AdviserConfig>;
   private readonly git: GitExecutor;
   private readonly github: GitHubApi;
   private readonly ledger: ConsultationLedger;
   private readonly engine?: ConsultationEngine;
+  private readonly engineFactory?: (cwd: string) => Promise<ConsultationEngine>;
+  private readonly loginPort?: AdviserLoginPort;
+  private readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
+  private readonly modelPreference: readonly string[];
 
   constructor(options: ToolServiceOptions = {}) {
     this.config = options.config ?? DEFAULT_CONFIG;
+    this.configFactory = options.configFactory;
     this.git = options.git ?? createGitExecutor(createNodeCommandRunner());
     this.github = options.github ?? defaultGitHubApi();
     if (options.ledger) {
@@ -92,6 +109,31 @@ export class ToolManager {
       this.ledger = new ConsultationLedger({ layout });
     }
     this.engine = options.engine;
+    this.engineFactory = options.engineFactory;
+    this.loginPort = options.loginPort;
+    this.loginPortFactory = options.loginPortFactory;
+    this.modelPreference = options.modelPreference ?? DEFAULT_MODEL_PREFERENCE;
+  }
+
+  private async resolveEngine(cwd: string): Promise<ConsultationEngine | undefined> {
+    if (this.engine) return this.engine;
+    if (this.engineFactory) return await this.engineFactory(cwd);
+    return undefined;
+  }
+
+  private async resolveLoginPort(cwd: string): Promise<AdviserLoginPort | undefined> {
+    if (this.loginPort) return this.loginPort;
+    if (this.loginPortFactory) return await this.loginPortFactory(cwd);
+    return undefined;
+  }
+
+  private async resolveConfig(cwd: string): Promise<AdviserConfig> {
+    if (!this.configFactory) return this.config;
+    try {
+      return await this.configFactory(cwd);
+    } catch {
+      return this.config;
+    }
   }
 
   getTools(): readonly AdviserToolDefinition[] {
@@ -118,7 +160,20 @@ export class ToolManager {
         },
       },
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
-        const cwd = (params as Record<string, unknown>)?.cwd as string | undefined ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
+        const cwd = (params as Record<string, unknown>)?.cwd as string | undefined ?? ctx?.cwd ?? process.cwd();
+        const config = await this.resolveConfig(cwd);
+        if (!config.enabled) {
+          return {
+            content: [{ type: "text", text: "Adviser consultations are disabled by configuration." }],
+            details: { ready: false, reason: "disabled" },
+          };
+        }
+        if (!isPiProjectTrusted(ctx)) {
+          return {
+            content: [{ type: "text", text: "Preflight refused: Pi does not trust this project." }],
+            details: { ready: false, reason: "project-untrusted" },
+          };
+        }
         const checkpointRes = await resolveCheckpoint({
           git: this.git,
           github: this.github,
@@ -181,8 +236,50 @@ export class ToolManager {
         const rawParams = params as Record<string, unknown>;
         const kind = (rawParams?.kind as ConsultationKind) || "consult";
         const goal = (rawParams?.goal as string) || "";
-        const cwd = (rawParams?.cwd as string | undefined) ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
-        const taskId = (rawParams?.taskId as string | undefined) ?? (ctx as Record<string, unknown>)?.sessionId as string | undefined ?? "session-default";
+        const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
+        const requestedTaskId = rawParams?.taskId as string | undefined;
+        const config = await this.resolveConfig(cwd);
+        if (!config.enabled) {
+          return {
+            content: [{ type: "text", text: "Consultation submission refused: adviser consultations are disabled by configuration." }],
+            details: { ok: false, failure: "disabled" },
+          };
+        }
+        if (!isPiProjectTrusted(ctx)) {
+          return {
+            content: [{ type: "text", text: "Consultation submission refused: Pi does not trust this project." }],
+            details: { ok: false, failure: "project-untrusted" },
+          };
+        }
+        let taskId: string;
+        let sessionId: string | undefined;
+        try {
+          sessionId = getPiSessionId(ctx as AdviserExtensionContext);
+          taskId = requestedTaskId ?? sessionId;
+        } catch (err) {
+          if (requestedTaskId !== undefined) {
+            taskId = requestedTaskId;
+          } else {
+            return {
+              content: [{ type: "text", text: `Consultation submission refused: ${err instanceof Error ? err.message : String(err)}` }],
+              details: {
+                ok: false,
+                failure: "session-unavailable",
+                explanation: "A real Pi session identity is required when taskId is not supplied.",
+              },
+            };
+          }
+        }
+        if (taskId === undefined) {
+          return {
+            content: [{ type: "text", text: "Consultation submission refused: taskId is required." }],
+            details: {
+              ok: false,
+              failure: "task-unavailable",
+              explanation: "A task identifier could not be resolved.",
+            },
+          };
+        }
 
         const checkpointRes = await resolveCheckpoint({
           git: this.git,
@@ -219,16 +316,48 @@ export class ToolManager {
           question: `Provide actionable guidance and recommendations for this ${kind} consultation.`,
         });
 
-        if (this.engine) {
+        const engine = await this.resolveEngine(cwd).catch(() => undefined);
+        if (engine) {
           try {
-            const turnResult = await this.engine.submitSync({
+            if (config.defaultMode === "async") {
+              const dispatched = await engine.submitAsync({
+                anchor,
+                branch: workingState.branch ?? null,
+                taskId,
+                ...(sessionId === undefined ? {} : { sessionId }),
+                kind,
+                dependency: config.dependencyDefault,
+                mode: "async",
+                prompt: brief,
+                consultationId,
+                modelPreference: this.modelPreference,
+              });
+              return {
+                content: [{
+                  type: "text",
+                  text: `Consultation ${dispatched.consultationId} queued for asynchronous delivery.`,
+                }],
+                details: {
+                  ok: true,
+                  consultationId: dispatched.consultationId,
+                  state: dispatched.state,
+                  mode: "async",
+                },
+              };
+            }
+
+            const turnResult = await engine.submitSync({
               anchor,
-              branch: workingState.branch ?? "main",
+              branch: workingState.branch ?? null,
               taskId,
+              ...(sessionId === undefined ? {} : { sessionId }),
               kind,
-              dependency: this.config.dependencyDefault,
+              dependency: config.dependencyDefault,
+              mode: "sync",
               prompt: brief,
-              modelId: "chatgpt-default",
+              consultationId,
+              modelPreference: this.modelPreference,
+              timeoutMs: config.syncTimeoutMs,
             });
 
             if (turnResult.ok) {
@@ -243,7 +372,7 @@ export class ToolManager {
                   consultationId: turnResult.record.consultationId,
                   kind,
                   state: "completed",
-                  dependency: this.config.dependencyDefault,
+                  dependency: config.dependencyDefault,
                   checkpoint: {
                     requestedRef: anchor.requestedRef,
                     resolvedCommit: anchor.resolvedCommit,
@@ -295,58 +424,16 @@ export class ToolManager {
           }
         }
 
-        // Offline stub
-        await this.ledger.recordConsultation(
-          {
-            schemaVersion: 1,
-            consultationId,
-            taskId,
-            repository: anchor.repository,
-            branch: workingState.branch ?? null,
-            requestedRef: anchor.requestedRef,
-            resolvedCommit: anchor.resolvedCommit,
-            headAtDispatch: anchor.resolvedCommit,
-            kind,
-            dependency: this.config.dependencyDefault,
-            projectId: "project-default",
-            conversationId: "conv-default",
-            status: "completed",
-            createdAt: new Date().toISOString(),
-            actionItems: [
-              { id: "A1", summary: `Address guidance for ${goal}`, disposition: "pending" },
-            ],
-          },
-          `Advisory response for ${kind}: ${goal}\n\n[A1] Address guidance for ${goal}`,
-        );
-
-        const stubRecords = await this.ledger.list({ repository: anchor.repository });
-        const stubRecord = stubRecords[0];
-        if (!stubRecord) {
-          return {
-            content: [{
-              type: "text",
-              text: `Consultation ${consultationId} (${kind}) submitted at ${anchor.resolvedCommit.slice(0, 7)}.`,
-            }],
-            details: {
-              ok: true,
-              consultationId,
-            },
-          };
-        }
-
-        const advisory = toWorkerFacingAdvisory(stubRecord);
         return {
           content: [{
             type: "text",
-            text: `Consultation ${consultationId} (${kind}) submitted and recorded at ${anchor.resolvedCommit.slice(0, 7)}.`,
+            text: `Consultation ${consultationId} could not start: adviser engine unavailable.`,
           }],
           details: {
-            ok: true,
+            ok: false,
             consultationId,
-            advisory: {
-              ...advisory,
-              advice: `Advisory response for ${kind}: ${goal}\n\n[A1] Address guidance for ${goal}`,
-            },
+            failure: "engine-unavailable",
+            explanation: "The production adviser service is not configured or could not be initialized.",
           },
         };
       },
@@ -368,7 +455,7 @@ export class ToolManager {
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         const rawParams = params as Record<string, unknown>;
         const consultationId = rawParams?.consultationId as ConsultationId;
-        const cwd = (rawParams?.cwd as string | undefined) ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
+        const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
 
         const checkpointRes = await resolveCheckpoint({
           git: this.git,
@@ -429,7 +516,7 @@ export class ToolManager {
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
         const rawParams = params as Record<string, unknown>;
         const consultationId = rawParams?.consultationId as string | undefined;
-        const cwd = (rawParams?.cwd as string | undefined) ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
+        const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
 
         const checkpointRes = await resolveCheckpoint({
           git: this.git,
@@ -447,9 +534,41 @@ export class ToolManager {
         const { anchor } = checkpointRes.resolved;
 
         if (consultationId) {
+          // JobStore is the live authority; consult it before terminal ledger history so a
+          // queued/running job survives a Pi crash in the status surface.
+          const engine = await this.resolveEngine(cwd).catch(() => undefined);
+          const live = engine && typeof engine.getStatusByConsultationId === "function"
+            ? await engine.getStatusByConsultationId(consultationId as ConsultationId, {
+                repository: anchor.repository,
+              }).catch(() => undefined)
+            : undefined;
+          if (live && live.state !== "completed" && live.state !== "failed" && live.state !== "cancelled") {
+            return {
+              content: [{ type: "text", text: `Consultation ${live.consultationId}: kind=${live.kind} status=${live.state}` }],
+              details: {
+                ok: true,
+                consultationId: live.consultationId,
+                kind: live.kind,
+                status: live.state,
+                checkpointCommit: live.anchor.resolvedCommit,
+              },
+            };
+          }
           const entries = await this.ledger.list({ repository: anchor.repository });
           const record = entries.find((e) => e.consultationId === consultationId);
           if (!record) {
+            if (live) {
+              return {
+                content: [{ type: "text", text: `Consultation ${live.consultationId}: kind=${live.kind} status=${live.state}` }],
+                details: {
+                  ok: true,
+                  consultationId: live.consultationId,
+                  kind: live.kind,
+                  status: live.state,
+                  checkpointCommit: live.anchor.resolvedCommit,
+                },
+              };
+            }
             return {
               content: [{ type: "text", text: `Consultation ${consultationId} not found.` }],
               details: { ok: false, error: `Consultation ${consultationId} not found.` },
@@ -504,21 +623,35 @@ export class ToolManager {
         }
 
         const recent = await this.ledger.list({ repository: anchor.repository, limit: 10 });
+        const engine = await this.resolveEngine(cwd).catch(() => undefined);
+        const live = engine && typeof engine.listStatus === "function"
+          ? (await engine.listStatus()).filter((job) => job.anchor.repository === anchor.repository)
+          : [];
+        const liveIds = new Set(live.map((job) => job.consultationId));
         return {
           content: [{
             type: "text",
-            text: `Recent consultations for ${anchor.repository}: ${recent.length} records.`,
+            text: `Recent consultations for ${anchor.repository}: ${live.length + recent.filter((c) => !liveIds.has(c.consultationId)).length} records.`,
           }],
           details: {
             ok: true,
             repository: anchor.repository,
-            recentConsultations: recent.map((c) => ({
+            recentConsultations: [
+              ...live.map((job) => ({
+                consultationId: job.consultationId,
+                kind: job.kind,
+                status: job.state,
+                checkpoint: job.anchor.resolvedCommit,
+                createdAt: job.createdAt,
+              })),
+              ...recent.filter((c) => !liveIds.has(c.consultationId)).map((c) => ({
               consultationId: c.consultationId,
               kind: c.kind,
               status: c.status,
               checkpoint: c.resolvedCommit,
               createdAt: c.createdAt,
-            })),
+              })),
+            ],
           },
         };
       },
@@ -542,7 +675,20 @@ export class ToolManager {
         const rawParams = params as Record<string, unknown>;
         const priorId = rawParams?.consultationId as ConsultationId;
         const request = (rawParams?.request as string) || "";
-        const cwd = (rawParams?.cwd as string | undefined) ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
+        const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
+        const config = await this.resolveConfig(cwd);
+        if (!config.enabled) {
+          return {
+            content: [{ type: "text", text: "Follow-up refused: adviser consultations are disabled by configuration." }],
+            details: { ok: false, failure: "disabled" },
+          };
+        }
+        if (!isPiProjectTrusted(ctx)) {
+          return {
+            content: [{ type: "text", text: "Follow-up refused: Pi does not trust this project." }],
+            details: { ok: false, failure: "project-untrusted" },
+          };
+        }
 
         const checkpointRes = await resolveCheckpoint({
           git: this.git,
@@ -567,6 +713,14 @@ export class ToolManager {
           };
         }
 
+        let sessionId: string | undefined;
+        try {
+          sessionId = getPiSessionId(ctx as AdviserExtensionContext);
+        } catch {
+          // Read-only/test callers may not have a Pi session. The persisted task remains the
+          // conversation scope; live Pi calls include the session digest for delivery routing.
+        }
+
         const followUpId = generateConsultationId();
         const priorActionItems = prior.actionItems.map((item) => ({
           id: item.id,
@@ -589,16 +743,48 @@ export class ToolManager {
           question: `What adjustments are recommended based on progress since ${prior.consultationId}?`,
         });
 
-        if (this.engine) {
+        const engine = await this.resolveEngine(cwd).catch(() => undefined);
+        if (engine) {
           try {
-            const turnResult = await this.engine.submitSync({
+            if (config.defaultMode === "async") {
+              const dispatched = await engine.submitAsync({
+                anchor,
+                branch: workingState.branch ?? null,
+                taskId: prior.taskId,
+                ...(sessionId === undefined ? {} : { sessionId }),
+                kind: prior.kind,
+                dependency: config.dependencyDefault,
+                mode: "async",
+                prompt: brief,
+                consultationId: followUpId,
+                modelPreference: this.modelPreference,
+              });
+              return {
+                content: [{
+                  type: "text",
+                  text: `Follow-up ${dispatched.consultationId} queued for asynchronous delivery.`,
+                }],
+                details: {
+                  ok: true,
+                  consultationId: dispatched.consultationId,
+                  state: dispatched.state,
+                  mode: "async",
+                },
+              };
+            }
+
+            const turnResult = await engine.submitSync({
               anchor,
-              branch: workingState.branch ?? "main",
+              branch: workingState.branch ?? null,
               taskId: prior.taskId,
+              ...(sessionId === undefined ? {} : { sessionId }),
               kind: prior.kind,
-              dependency: this.config.dependencyDefault,
+              dependency: config.dependencyDefault,
+              mode: "sync",
               prompt: brief,
-              modelId: "chatgpt-default",
+              consultationId: followUpId,
+              modelPreference: this.modelPreference,
+              timeoutMs: config.syncTimeoutMs,
             });
 
             if (turnResult.ok) {
@@ -641,36 +827,13 @@ export class ToolManager {
           }
         }
 
-        await this.ledger.recordConsultation(
-          {
-            schemaVersion: 1,
-            consultationId: followUpId,
-            taskId: prior.taskId,
-            repository: anchor.repository,
-            branch: workingState.branch ?? null,
-            requestedRef: anchor.requestedRef,
-            resolvedCommit: anchor.resolvedCommit,
-            headAtDispatch: anchor.resolvedCommit,
-            kind: prior.kind,
-            dependency: this.config.dependencyDefault,
-            projectId: prior.projectId,
-            conversationId: prior.conversationId,
-            status: "completed",
-            createdAt: new Date().toISOString(),
-            actionItems: [{ id: "A1", summary: `Apply follow-up: ${request}`, disposition: "pending" }],
-          },
-          `Follow-up advice: ${request}`,
-        );
-
         return {
-          content: [{
-            type: "text",
-            text: `Follow-up ${followUpId} submitted and recorded for ${priorId}.`,
-          }],
+          content: [{ type: "text", text: `Follow-up ${followUpId} could not start: adviser engine unavailable.` }],
           details: {
-            ok: true,
+            ok: false,
             consultationId: followUpId,
-            advice: `Follow-up advice: ${request}`,
+            failure: "engine-unavailable",
+            explanation: "The production adviser service is not configured or could not be initialized.",
           },
         };
       },
@@ -699,22 +862,59 @@ export class ToolManager {
           };
         }
 
-        const cwd = (rawParams?.cwd as string | undefined) ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
+        const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
+        if (!isPiProjectTrusted(ctx)) {
+          return {
+            content: [{ type: "text", text: "Cancellation refused: Pi does not trust this project." }],
+            details: { ok: false, consultationId, failure: "project-untrusted" },
+          };
+        }
         const checkpointRes = await resolveCheckpoint({
           git: this.git,
           github: this.github,
           cwd,
           requestedRef: "HEAD",
         });
-        if (checkpointRes.ok && this.engine) {
-          const { anchor } = checkpointRes.resolved;
-          const address = {
-            repository: anchor.repository,
-            taskId: "session-default",
-            consultationId,
-            deliveryKey: "0".repeat(64),
+        if (!checkpointRes.ok) {
+          return {
+            content: [{ type: "text", text: `Consultation ${consultationId} could not be cancelled: ${checkpointRes.refusal.explanation}` }],
+            details: { ok: false, consultationId, failure: "checkpoint-refusal" },
           };
-          await this.engine.cancel(address);
+        }
+        const engine = await this.resolveEngine(cwd).catch(() => undefined);
+        if (engine) {
+          const { anchor } = checkpointRes.resolved;
+          try {
+            if (typeof engine.cancelByConsultationId !== "function") {
+              return {
+                content: [{ type: "text", text: `Consultation ${consultationId} could not be cancelled: engine does not support ID-scoped cancellation.` }],
+                details: { ok: false, consultationId, failure: "cancel-unsupported" },
+              };
+            }
+            const sessionId = getPiSessionId(ctx as AdviserExtensionContext);
+            const record = await engine.cancelByConsultationId(consultationId, {
+              repository: anchor.repository,
+              sessionId,
+            });
+            if (record.state !== "cancelled") {
+              return {
+                content: [{ type: "text", text: `Consultation ${consultationId} is already ${record.state}.` }],
+                details: { ok: true, consultationId, state: record.state },
+              };
+            }
+          } catch (err) {
+            return {
+              content: [{ type: "text", text: `Consultation ${consultationId} could not be cancelled: ${err instanceof Error ? err.message : String(err)}` }],
+              details: { ok: false, consultationId, failure: "cancel-failed" },
+            };
+          }
+        }
+
+        if (!engine) {
+          return {
+            content: [{ type: "text", text: `Consultation ${consultationId} could not be cancelled: adviser engine unavailable.` }],
+            details: { ok: false, consultationId, failure: "engine-unavailable" },
+          };
         }
 
         return {
@@ -733,18 +933,42 @@ export class ToolManager {
         type: "object",
         properties: {},
       },
-      execute: async () => {
+      execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
         const paths = stateStoragePaths();
         const profile = adviserProfileFor(paths);
-        const status = await adviserStatus(profile);
+        let status = await adviserStatus(profile);
+        // Pi OAuth is the first auth layer. Avoid creating/launching the adviser browser when it is
+        // absent; an API key or missing credential cannot establish ChatGPT web readiness.
+        const loginPort = status.openAiSignIn.present
+          ? await this.resolveLoginPort(ctx?.cwd ?? process.cwd()).catch(() => undefined)
+          : undefined;
+        if (status.profile.exists && loginPort) {
+          const browserSession = await loginPort.observeSession(profile).catch(() => ({
+            kind: "unreachable",
+            reason: "browser-failed",
+          } as const));
+          status = await adviserStatus(profile, { browserSession });
+        }
+        const authenticated: boolean | "unknown" =
+          status.browserSession.state === "signed-in"
+            ? true
+            : status.browserSession.state === "signed-out" ||
+                status.browserSession.state === "human-verification" ||
+                status.browserSession.state === "unreachable"
+              ? false
+              : "unknown";
 
         return {
           content: [{
             type: "text",
-            text: `Adviser authentication: authenticated=${status.openAiSignIn.present}`,
+            text: `Adviser authentication: authenticated=${String(authenticated)}`,
           }],
           details: {
-            authenticated: status.openAiSignIn.present,
+            // This is intentionally based on a fresh isolated-browser observation, never Pi OAuth.
+            // Unknown is a first-class state when no browser observer was supplied.
+            authenticated,
+            browserSession: status.browserSession,
+            piOpenAiSignInPresent: status.openAiSignIn.present,
             plan: status.openAiSignIn.present ? status.openAiSignIn.planHint : undefined,
             emailMasked: status.openAiSignIn.present ? status.openAiSignIn.emailMasked : undefined,
             accountIdPrefix: status.openAiSignIn.present ? status.openAiSignIn.accountIdPrefix : undefined,
@@ -790,7 +1014,14 @@ export class ToolManager {
         const actionItemId = rawParams?.actionItemId as string;
         const disposition = rawParams?.disposition as ActionItemDisposition;
         const reason = rawParams?.reason as string | undefined;
-        const cwd = (rawParams?.cwd as string | undefined) ?? (ctx as Record<string, unknown>)?.cwd as string | undefined ?? process.cwd();
+        const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
+
+        if (!isPiProjectTrusted(ctx)) {
+          return {
+            content: [{ type: "text", text: "Disposition refused: Pi does not trust this project." }],
+            details: { ok: false, consultationId, failure: "project-untrusted" },
+          };
+        }
 
         const checkpointRes = await resolveCheckpoint({
           git: this.git,

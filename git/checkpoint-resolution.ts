@@ -165,12 +165,39 @@ export async function resolveCheckpoint(
 
   const branchName = inspection.head.kind === "branch" ? inspection.head.name : undefined;
 
-  const presence = await github.checkCommitPresence(selection.key, checkpoint);
+  // A deterministic default (origin/upstream/name) keeps normal runs stable, but a fork can be the
+  // only remote that actually contains a local checkpoint. Probe the remaining GitHub candidates when
+  // the first candidate did not prove presence; this follows publication topology without trusting a
+  // remote name as authority and preserves the exact-SHA gate (INV-04).
+  let activeSelection = selection;
+  const probeResults: Array<{
+    readonly candidate: (typeof selection.candidates)[number];
+    readonly result: Awaited<ReturnType<GitHubApi["checkCommitPresence"]>>;
+  }> = [{ candidate: selection.candidates.find((candidate) => candidate.remote.name === selection.remote.name) ?? selection.candidates[0]!, result: await github.checkCommitPresence(selection.key, checkpoint) }];
+  if (!probeResults[0]!.result.ok || probeResults[0]!.result.value !== "present") {
+    for (const candidate of selection.candidates) {
+      if (candidate.remote.name === selection.remote.name) continue;
+      const candidatePresence = await github.checkCommitPresence(candidate.key, checkpoint);
+      probeResults.push({ candidate, result: candidatePresence });
+      if (candidatePresence.ok && candidatePresence.value === "present") {
+        activeSelection = {
+          ...selection,
+          remote: candidate.remote,
+          key: candidate.key,
+          selectedBecause: "remote-containing-checkpoint",
+        };
+        break;
+      }
+    }
+  }
+  const present = probeResults.find((probe) => probe.result.ok && probe.result.value === "present");
+  const failedProbe = probeResults.find((probe) => !probe.result.ok);
+  const presence = present?.result ?? failedProbe?.result ?? probeResults[0]!.result;
   const { remoteCommit, probeFailure } = commitPresenceToObservation(presence);
 
   let remoteBranch: RemoteBranchObservation | undefined;
   if (branchName !== undefined) {
-    const tip = await readRemoteBranchTip(git, inspection.repoRoot, selection.remote.name, branchName);
+    const tip = await readRemoteBranchTip(git, inspection.repoRoot, activeSelection.remote.name, branchName);
     if (tip !== undefined) {
       const relation = await compareCommits(git, inspection.repoRoot, tip, checkpoint);
       remoteBranch = { sha: tip, relation: relation ?? "unknown" };
@@ -188,8 +215,8 @@ export async function resolveCheckpoint(
   const assessment = assessCheckpointAvailability(observations);
 
   const anchor: ConsultationAnchor = {
-    repository: selection.key,
-    remoteUrl: selection.remote.url,
+    repository: activeSelection.key,
+    remoteUrl: activeSelection.remote.url,
     requestedRef: resolution.resolution.requestedRef,
     resolvedCommit: checkpoint,
     remoteAvailability: assessment.availability,
@@ -199,7 +226,7 @@ export async function resolveCheckpoint(
   // spend API quota, and the PR is useless without a dispatch.
   const pullRequest =
     branchName !== undefined && assessment.availability.status === "available"
-      ? await detectOpenPullRequest(github, selection.key, branchName)
+      ? await detectOpenPullRequest(github, activeSelection.key, branchName)
       : undefined;
 
   const anchored: ConsultationAnchor =
@@ -241,8 +268,8 @@ export async function resolveCheckpoint(
         worktreeCount: inspection.worktrees.length,
         hasUncommittedChanges: inspection.hasUncommittedChanges,
         dirtyPathsSample: inspection.dirtyPathsSample,
-        remoteName: selection.remote.name,
-        selectionReason: selection.selectedBecause,
+        remoteName: activeSelection.remote.name,
+        selectionReason: activeSelection.selectedBecause,
         skippedRemotes: selection.rejected.map((rejected) => ({
           name: rejected.name,
           reason: rejected.reason,

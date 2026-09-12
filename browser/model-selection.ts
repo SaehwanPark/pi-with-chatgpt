@@ -13,6 +13,9 @@
  */
 import type { ModelOption } from "./runtime-types.js";
 
+/** The default asks for the strongest selectable model reported by the live picker. */
+export const DEFAULT_MODEL_PREFERENCE = ["auto-best"] as const;
+
 export type ModelSelection =
   | { readonly ok: true; readonly model: ModelOption; readonly degraded: boolean; readonly reason?: string }
   | { readonly ok: false; readonly reason: "no-models" | "none-available" | "preference-empty"; readonly tried: readonly string[] };

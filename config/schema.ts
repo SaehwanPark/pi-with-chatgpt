@@ -11,6 +11,10 @@
  *   cloned repository must not be able to redirect where adviser cookies are written.
  */
 
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { DEFAULT_DEPENDENCY_MODE, type DependencyMode } from "../protocol/dependency.js";
 import { DEFAULT_ADVISER_PROVIDER, type AdviserProvider } from "../protocol/provider.js";
 import { isLikelyUserBrowserProfile } from "../browser/profile.js";
@@ -52,6 +56,99 @@ export class ConfigError extends Error {
     super(`Invalid pi-with-chatgpt configuration: ${reason}`);
     this.name = "ConfigError";
   }
+}
+
+export interface AdviserConfigLoadOptions {
+  /** Override the normal Pi global settings path (primarily for tests and embedded hosts). */
+  readonly globalPath?: string;
+  /** Override the project config path; omitted means `<cwd>/.pi/agent.json`. */
+  readonly projectPath?: string;
+  readonly cwd?: string;
+  /** Environment source, injectable so tests never depend on the host process. */
+  readonly environment?: Readonly<Record<string, string | undefined>>;
+}
+
+/**
+ * Load the documented global and project settings and merge them by explicitly supplied key.
+ *
+ * `parseAdviserConfig` returns a complete defaulted object, which is convenient for callers but
+ * means a naïve `{ ...global, ...project }` merge would let every omitted project key reset a global
+ * preference. This loader validates each scope first, then applies only the keys actually present in
+ * the project file. Project config remains behavior-only under the same scope restrictions.
+ */
+export async function loadAdviserConfig(options: AdviserConfigLoadOptions = {}): Promise<AdviserConfig> {
+  const environment = options.environment ?? process.env;
+  const agentDir = environment.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  const globalPath = options.globalPath ?? join(agentDir, "settings.json");
+  const projectPath = options.projectPath ?? join(options.cwd ?? process.cwd(), ".pi", "agent.json");
+
+  const globalRaw = await readConfigSection(globalPath, "global");
+  const projectRaw = await readConfigSection(projectPath, "project");
+  const global = parseAdviserConfig(globalRaw, "global");
+  const project = parseAdviserConfig(projectRaw, "project");
+  let config = applyConfigOverrides(global, project, projectRaw);
+
+  const environmentLogLevel = environment.PI_ADVISER_LOG_LEVEL;
+  if (environmentLogLevel !== undefined) {
+    const envConfig = parseAdviserConfig({ logLevel: environmentLogLevel }, "global");
+    config = { ...config, logLevel: envConfig.logLevel };
+  }
+  return config;
+}
+
+async function readConfigSection(path: string, scope: ConfigScope): Promise<Record<string, unknown>> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return {};
+    throw new ConfigError(`could not read ${scope} settings`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ConfigError(`${scope} settings are not valid JSON`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ConfigError(`${scope} settings must be a JSON object`);
+  }
+  const section = (parsed as Record<string, unknown>)["pi-with-chatgpt"];
+  if (section === undefined) return {};
+  if (typeof section !== "object" || section === null || Array.isArray(section)) {
+    throw new ConfigError(`"pi-with-chatgpt" in ${scope} settings must be an object`);
+  }
+  return section as Record<string, unknown>;
+}
+
+function applyConfigOverrides(
+  global: AdviserConfig,
+  project: AdviserConfig,
+  projectRaw: Record<string, unknown>,
+): AdviserConfig {
+  const merged = { ...global, autoConsult: { ...global.autoConsult } };
+  for (const key of Object.keys(projectRaw)) {
+    if (key === "autoConsult") {
+      const rawAutoConsult = projectRaw.autoConsult;
+      const parsedAutoConsult = project.autoConsult;
+      if (typeof rawAutoConsult === "object" && rawAutoConsult !== null && !Array.isArray(rawAutoConsult)) {
+        const override = { ...merged.autoConsult };
+        if (Object.hasOwn(rawAutoConsult, "enabled")) override.enabled = parsedAutoConsult.enabled;
+        if (Object.hasOwn(rawAutoConsult, "confirmBeforeDispatch")) {
+          override.confirmBeforeDispatch = parsedAutoConsult.confirmBeforeDispatch;
+        }
+        merged.autoConsult = override;
+      }
+      continue;
+    }
+    (merged as unknown as Record<string, unknown>)[key] = (project as unknown as Record<string, unknown>)[key];
+  }
+  return merged;
+}
+
+function isMissingFile(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
 }
 
 /** Rejected outright: authentication belongs to the isolated browser profile, never to config. */

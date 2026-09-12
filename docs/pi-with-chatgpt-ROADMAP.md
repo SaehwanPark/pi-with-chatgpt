@@ -31,9 +31,9 @@
 - **Pi floor:** `MIN_PI_VERSION = 0.85.1` (`extension/pi-api.ts`), asserted against the installed Pi
   by `npm run smoke:pi`.
 - **Toolchain:** `npm run typecheck | lint | build | test | smoke:pi` (all green locally;
-  `npm run verify` runs the whole set). CI is defined in `ci/ci.yml` for `ubuntu-latest` and
-  `macos-latest`; it is staged outside `.github/workflows/` only because the available GitHub
-  credential lacks the `workflow` scope (see `ci/README.md` for the one-command maintainer fix).
+  `npm run verify` runs the whole set). Active GitHub Actions CI is defined in
+  `.github/workflows/ci.yml` for `ubuntu-latest` and `macos-latest`; `ci/README.md` documents the
+  workflow's checks and supported triggers.
 - **Modules:** `extension/ git/ auth/ browser/ chatgpt/ jobs/ protocol/ ledger/ drift/ config/ ui/`,
   each with a documented barrel; `test/module-boundaries.test.ts` forbids sibling trees.
 - **Invariants:** `docs/ARCHITECTURE.md` (INV-01…INV-16 prose) + `protocol/invariants.ts` index;
@@ -366,8 +366,10 @@ while advice is still being applied (INV-03).
       — `selectAdviserModel` returns the requested model, a marked-degraded equivalent, or `undefined`;
       it never invents a model. Tests: "never invents a model the provider does not offer".
 - [x] Verify GitHub connector availability.
-      — `github-connector` is checked but deliberately non-blocking: its absence degrades the adviser's
-      visibility, not the run. Test: "does not block a consultation on an unverified GitHub connector".
+      — V1 treats `github-connector` as a required capability because it is the only repository-context
+      channel. `evaluateConsultationPrerequisites` blocks both `unverified` and `unavailable` results and
+      maps them to the explicit `connect-github` recovery action. Tests: "blocks a consultation on an
+      unverified GitHub connector", "maps a missing GitHub connector to an explicit connector action".
 - [x] Verify target repository visibility before first consultation.
       — `target-repository` is required; an unavailable checkpoint maps to `publish-checkpoint`, never to
       an implicit push. Test: "maps a missing checkpoint to publishing it, never to pushing silently".
@@ -409,8 +411,8 @@ while advice is still being applied (INV-03).
       — "keeps a rate limit automatic", "stops on an unsupported plan", and
       `selectAdviserModel` returning `undefined` when no equivalent exists.
 - [x] GitHub connector unavailable.
-      — "does not block a consultation on an unverified GitHub connector"; the connector state is reported
-      without disabling the consultation.
+      — `evaluateConsultationPrerequisites` blocks an unverified or unavailable connector and returns the
+      `connect-github` recovery action; covered by `browser/capability-checks.test.ts`.
 
 ## Exit Criteria
 
@@ -563,7 +565,10 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 - [x] Reuse same conversation for follow-ups.
 - [x] Start a new conversation for unrelated tasks.
 - [x] Prevent concurrent writes to the same conversation.
-- [x] Permit concurrent consultations in different task conversations.
+- [x] Keep different task conversations isolated under the single-tab V1 browser policy.
+      — Mapping records may coexist, but the execution engine serializes all adviser turns while one
+      tracked browser tab is shared; this prevents navigation/send cross-talk until conversation-scoped
+      pages are available.
 
 ## Recovery
 
@@ -643,13 +648,17 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 - [x] Detect completion.
 - [x] Best-effort wake-up matching the correct Pi session/task.
 - [x] Preserve result even if wake-up is missed.
-- [ ] Add `/advisor-status` and `/advisor-read`. (Commands registered in M8; engine backing exists.)
+- [x] Add `/advisor-status` and `/advisor-read`.
+      — Commands and tools query the live JobStore first, then terminal ledger history; covered by
+      `extension/commands.test.ts`, `extension/tools.test.ts`, and `test/m10-release-validation.test.ts`.
 
 ## Concurrency
 
 - [x] Configure a conservative default maximum number of concurrent ChatGPT jobs.
 - [x] Serialize operations within the same ChatGPT conversation.
-- [x] Permit parallel conversations when safe.
+- [x] Serialize browser turns across conversations while V1 owns one tracked tab.
+      — `ConsultationEngine` clamps injected concurrency limits to one; independent tasks remain isolated
+      and queue safely until a conversation-scoped browser operation exists.
 - [x] Prevent Project-creation races.
 - [x] Prevent auth-maintenance races.
 - [x] Prevent duplicate job dispatch after retries/restarts.
@@ -657,7 +666,7 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 ## Exit Criteria
 
 - [x] At least two independent task consultations can run safely without cross-delivery or conversation contamination.
-      — Evidence: `jobs/engine.test.ts` ("allows parallel consultations across independent task conversations (M5 exit criterion)",
+      — Evidence: `jobs/engine.test.ts` ("serializes independent consultations while the adviser owns one tracked browser tab",
       "prevents cross-delivery to unrelated Pi session wake-up listeners (INV-09)", "serializes consultations within the same task conversation (INV-09)");
       `jobs/store.test.ts` (27 storage tests covering claims, terminal races, recovery).
 
@@ -941,9 +950,12 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 - [x] CAPTCHA/2FA path.
       — `browser/session.ts:detectAuthStatus` -> `human-verification` challenge stops automation immediately (INV-09); tested in `browser/session.test.ts` and `auth/adviser-auth.test.ts`.
 - [x] GitHub connector unavailable.
-      — `chatgpt/connector-verifier.ts:verifyGitHubConnector`, `jobs/engine.ts:submitSync`; tested in `chatgpt/connector-verifier.test.ts` and `test/m9-concurrency-recovery.test.ts`.
+      — The capability checklist treats `github-connector` as a required pre-consultation item and reports
+      `connect-github` rather than dispatching a generic, repository-free answer; tested in
+      `browser/capability-checks.test.ts`.
 - [x] Repository permission missing.
-      — `git/remote-availability.ts` reports unreachable/permission errors, `chatgpt/connector-verifier.ts`; tested in `git/remote-availability.test.ts`.
+      — `git/remote-availability.ts` reports unreachable/permission errors and the checkpoint gate refuses
+      dispatch; tested in `git/remote-availability.test.ts` and `git/github-api.test.ts`.
 - [x] ChatGPT Project missing.
       — `chatgpt/project-mapping.ts:ensureProjectForRepository` recreates missing project gracefully; tested in `test/m9-concurrency-recovery.test.ts` ("recovers from deleted Project by creating a new Project").
 - [x] Conversation deleted.
@@ -1019,7 +1031,7 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 ## Concurrency/Race Testing
 
 - [x] simultaneous consultations in one repo;
-      — Tested in `test/m9-concurrency-recovery.test.ts` ("concurrency: parallel execution across independent task conversations").
+      — Tested in `test/m9-concurrency-recovery.test.ts` ("serializes independent tasks while V1 owns one tracked adviser tab").
 - [x] simultaneous Project initialization;
       — Tested in `test/m9-concurrency-recovery.test.ts` ("concurrency: simultaneous Project initialization adopts winner without collision").
 - [x] simultaneous auth repair;

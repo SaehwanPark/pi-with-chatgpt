@@ -62,6 +62,19 @@ describe("createGitExecutor", () => {
     expect(calls[0]?.env.GIT_CONFIG_NOSYSTEM).toBe("1");
   });
 
+  it("neutralizes repo-local fsmonitor and external diff executables", async () => {
+    const { runner, calls } = fakeRunner({ stdout: "x" });
+    const git = createGitExecutor(runner);
+
+    await git.run(["status", "--porcelain"], "/repo");
+
+    expect(calls[0]?.env.GIT_CONFIG_COUNT).toBe("2");
+    expect(calls[0]?.env.GIT_CONFIG_KEY_0).toBe("core.fsmonitor");
+    expect(calls[0]?.env.GIT_CONFIG_VALUE_0).toBe("false");
+    expect(calls[0]?.env.GIT_CONFIG_KEY_1).toBe("diff.external");
+    expect(calls[0]?.env.GIT_CONFIG_VALUE_1).toBe("");
+  });
+
   it("reports a non-zero exit as exited-non-zero with a redacted summary", async () => {
     const { runner } = fakeRunner({
       code: 128,

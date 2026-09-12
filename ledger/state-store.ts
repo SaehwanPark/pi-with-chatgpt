@@ -17,7 +17,7 @@
  * probe because inspection plus create/adopt is one read-modify-write decision.
  */
 
-import { constants, lstat, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { constants, lstat, mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 
 import { assertPrivateDirectory, PRIVATE_DIR_MODE, writePrivateFileNoFollow } from "../browser/state-storage.js";
 
@@ -39,6 +39,8 @@ export class StateStoreError extends Error {
 export interface StateStoreFileSystem {
   readonly mkdirPrivate: (path: string) => Promise<void>;
   readonly readFile: (path: string) => Promise<string | undefined>;
+  /** List direct children of a managed directory. */
+  readonly readDirectory: (path: string) => Promise<readonly string[]>;
   readonly writeFilePrivate: (path: string, data: string) => Promise<void>;
   /** Create a private file only when no file already exists; used for lock acquisition. */
   readonly createFilePrivate: (path: string, data: string) => Promise<void>;
@@ -72,6 +74,14 @@ export const nodeStateStore: StateStoreFileSystem = {
       return await readFile(path, "utf8");
     } catch (error) {
       if (isNotFound(error)) return undefined;
+      throw error;
+    }
+  },
+  readDirectory: async (path) => {
+    try {
+      return await readdir(path);
+    } catch (error) {
+      if (isNotFound(error)) return [];
       throw error;
     }
   },
@@ -169,7 +179,19 @@ export async function writeJsonFileAtomically(
   value: unknown,
   fileSystem: StateStoreFileSystem = nodeStateStore,
 ): Promise<void> {
-  const text = `${JSON.stringify(value, null, 2)}\n`;
+  await writeFileAtomically(path, `${JSON.stringify(value, null, 2)}\n`, fileSystem);
+}
+
+/**
+ * Replace a private text file atomically: write a private sibling and then rename it over the
+ * destination. This is the JSONL counterpart to `writeJsonFileAtomically`; keeping the primitive
+ * here prevents callers from accidentally using a truncating write for a state rewrite.
+ */
+export async function writeFileAtomically(
+  path: string,
+  text: string,
+  fileSystem: StateStoreFileSystem = nodeStateStore,
+): Promise<void> {
   if (await fileSystem.isSymlink(path)) {
     throw new StateStoreError("state-corrupt", path, `Refusing to write state through the symlink "${path}".`);
   }
@@ -207,7 +229,9 @@ export interface StateLockOptions {
 }
 
 export const DEFAULT_LOCK_STALE_AFTER_MS = 60_000;
-export const DEFAULT_LOCK_TIMEOUT_MS = 15_000;
+// Project reconciliation holds this lock while it performs bounded browser navigation (up to 45s).
+// A 15s wait let a healthy concurrent initializer report state-busy before that operation could finish.
+export const DEFAULT_LOCK_TIMEOUT_MS = 90_000;
 export const DEFAULT_LOCK_POLL_MS = 50;
 
 /**

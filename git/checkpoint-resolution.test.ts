@@ -78,6 +78,50 @@ async function resolve(options: {
 }
 
 describe("resolveCheckpoint", () => {
+  it("uses a GitHub fork when the preferred remote does not contain the checkpoint", async () => {
+    const remotes =
+      "origin\thttps://github.com/upstream/pi-with-chatgpt.git (fetch)\n" +
+      "origin\thttps://github.com/upstream/pi-with-chatgpt.git (push)\n" +
+      "fork\tgit@github.com:fork-owner/pi-with-chatgpt.git (fetch)\n" +
+      "fork\tgit@github.com:fork-owner/pi-with-chatgpt.git (push)\n";
+    const { executor } = fakeGit(
+      gitHandlers({
+        "remote -v": remotes,
+        "rev-parse --verify --quiet refs/remotes/origin/main": { code: 1, stdout: "" },
+        "rev-parse --verify --quiet refs/remotes/fork/main": { code: 1, stdout: "" },
+      }),
+    );
+    const checked: string[] = [];
+    const github: GitHubApi = {
+      checkCommitPresence(repository, commit) {
+        checked.push(`${repository}:${commit}`);
+        return Promise.resolve(
+          repository === "fork-owner/pi-with-chatgpt"
+            ? ({ ok: true, value: "present" } as const)
+            : ({ ok: true, value: "absent" } as const),
+        );
+      },
+      listOpenPullRequestsForHead: () => Promise.resolve({ ok: true, value: [] }),
+    };
+
+    const result = await resolveCheckpoint({
+      git: executor,
+      github,
+      cwd: "/repo",
+      requestedRef: "HEAD",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.resolved.anchor.repository).toBe("fork-owner/pi-with-chatgpt");
+    expect(result.resolved.workingState.remoteName).toBe("fork");
+    expect(result.resolved.workingState.selectionReason).toBe("remote-containing-checkpoint");
+    expect(checked.map((entry) => entry.split(":")[0])).toEqual([
+      "upstream/pi-with-chatgpt",
+      "fork-owner/pi-with-chatgpt",
+    ]);
+  });
+
   it("produces a dispatch-ready anchor for a pushed checkpoint", async () => {
     const { result, githubCalls } = await resolve({
       pullRequests: { ok: true, value: [{ number: 7, headSha: CHECKPOINT_SHA, baseRefName: "main" }] },

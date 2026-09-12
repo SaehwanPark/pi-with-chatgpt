@@ -19,8 +19,9 @@
 import { chromium, type BrowserContext } from "playwright-core";
 
 import type { AdviserLoginPort, SessionObservation } from "../auth/login-flow.js";
+import type { AdviserConfig } from "../config/schema.js";
 import { adviserProfileFor, prepareStateStorage, type StateStoragePaths } from "./state-storage.js";
-import { createPlaywrightDriverFactory, type PlaywrightLauncher } from "./playwright-driver.js";
+import { PlaywrightAdviserDriver, type PlaywrightLauncher } from "./playwright-driver.js";
 import { AdviserRuntime } from "./runtime.js";
 import type { AdviserBrowserRuntime, AdviserProjectSurface, SurfaceState } from "./runtime-types.js";
 import type { AdviserProfile } from "./profile.js";
@@ -29,9 +30,9 @@ import type { AdviserProfile } from "./profile.js";
  * The real launcher. Isolation comes entirely from `userDataDir`, which the caller obtained from
  * `adviserProfileFor` and which `createAdviserProfile` already refused to point at a user browser profile.
  */
-const launchChrome: PlaywrightLauncher = async ({ userDataDir, headless, channel, timeoutMs }) => {
+const launchChrome: PlaywrightLauncher = async ({ userDataDir, headless, channel, executablePath, timeoutMs }) => {
   const context: BrowserContext = await chromium.launchPersistentContext(userDataDir, {
-    channel,
+    ...(executablePath === undefined ? { channel } : { executablePath }),
     headless,
     timeout: timeoutMs,
     // A clean viewport with no automation markers: ChatGPT behaves the same as for a real window, and we
@@ -44,8 +45,6 @@ const launchChrome: PlaywrightLauncher = async ({ userDataDir, headless, channel
 
 /** Structural alias so the eager import does not leak Playwright's exact context type across the seam. */
 type PlaywrightLaunchContext = Awaited<ReturnType<PlaywrightLauncher>>["context"];
-
-const driverFor = createPlaywrightDriverFactory(launchChrome);
 
 export interface AdviserBrowserBundle {
   readonly runtime: AdviserBrowserRuntime;
@@ -61,11 +60,20 @@ export interface AdviserBrowserBundle {
  * `prepareStateStorage` is called here rather than at import time so the filesystem is only touched when a
  * consultation or status command actually needs the browser.
  */
-export async function createAdviserBrowser(paths: StateStoragePaths): Promise<AdviserBrowserBundle> {
+export async function createAdviserBrowser(paths: StateStoragePaths, config?: AdviserConfig): Promise<AdviserBrowserBundle> {
   await prepareStateStorage(paths);
   const profile = adviserProfileFor(paths);
-  const driver = driverFor(profile);
-  const runtime = new AdviserRuntime({ driver, profileDir: profile.userDataDir });
+  const driver = new PlaywrightAdviserDriver({
+    profile,
+    launch: launchChrome,
+    executablePath: config?.browserExecutablePath,
+    pollIntervalMs: config?.pollIntervalMs,
+  });
+  const runtime = new AdviserRuntime({
+    driver,
+    profileDir: profile.userDataDir,
+    defaultTurnTimeoutMs: config?.syncTimeoutMs,
+  });
   return { runtime, loginPort: loginPortFor(profile, runtime), projectSurface: driver.projectSurface(), profile };
 }
 
