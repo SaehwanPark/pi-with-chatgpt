@@ -81,6 +81,11 @@ else). The local remote-tracking ref is used only as secondary evidence for tell
 "diverged", and it is explicitly the last-fetched state: this subsystem never runs `git fetch`,
 because fetching writes refs and the read-only allowlist says so.
 
+The exact-object request may be anonymous when no GitHub credential is configured; that preserves
+verification for public repositories without inventing an authentication result. A public 404 is
+disambiguated with a repository visibility request, while a repository that cannot be verified stays
+`unknown`. The production adapter never synthesizes `present` when the probe was not performed.
+
 An uncommitted working tree never changes this table: the checkpoint is committed history, and a dirty tree says nothing about whether that history is published.
 
 Two rules make this list worth having:

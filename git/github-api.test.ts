@@ -46,6 +46,32 @@ function api(replies: Record<string, Reply>, options: { readonly timeoutMs?: num
 }
 
 describe("createGitHubApi authentication", () => {
+  it("probes public repositories anonymously when no credential is configured", async () => {
+    const { fetchImpl, requests } = fakeFetch({
+      "/commits/": { status: 200, body: { sha: CHECKPOINT_SHA } },
+    });
+    const client = createGitHubApi({ fetchImpl });
+
+    await expect(client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA)).resolves.toEqual({
+      ok: true,
+      value: "present",
+    });
+    expect(requests[0]?.headers.authorization).toBeUndefined();
+  });
+
+  it("does not turn a blank credential into an invalid bearer header", async () => {
+    const { fetchImpl, requests } = fakeFetch({
+      "/commits/": { status: 200, body: { sha: CHECKPOINT_SHA } },
+    });
+    const client = createGitHubApi({ fetchImpl, token: "   " });
+
+    await expect(client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA)).resolves.toEqual({
+      ok: true,
+      value: "present",
+    });
+    expect(requests[0]?.headers.authorization).toBeUndefined();
+  });
+
   it("sends a bearer token over https with a read-only verb", async () => {
     const { api: client, requests } = api({ "/commits/": { status: 200, body: { sha: CHECKPOINT_SHA } } });
 
