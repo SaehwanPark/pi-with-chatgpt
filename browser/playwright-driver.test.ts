@@ -50,7 +50,7 @@ function node(text: string): FakeNode {
   return { text, visible: true };
 }
 
-function fakePage(thread: FakeThread, startUrl: string) {
+function fakePage(thread: FakeThread, startUrl: string, title: () => Promise<string> = () => Promise.resolve("ChatGPT")) {
   const navigations: string[] = [];
   const typed: string[] = [];
   const clicked: string[] = [];
@@ -59,7 +59,7 @@ function fakePage(thread: FakeThread, startUrl: string) {
     closed: false,
     isClosed: (): boolean => page.closed,
     url: () => currentUrl,
-    title: () => Promise.resolve("ChatGPT"),
+    title,
     goto: (url: string) => {
       // A real page lands where it was told to, which is what lets a test assert the target.
       navigations.push(url);
@@ -125,8 +125,13 @@ async function startedDriver(options: {
   readonly url?: string;
   readonly pollIntervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly title?: () => Promise<string>;
 }) {
-  const { clicked, navigations, page, typed } = fakePage(options.thread, options.url ?? "https://chatgpt.com/");
+  const { clicked, navigations, page, typed } = fakePage(
+    options.thread,
+    options.url ?? "https://chatgpt.com/",
+    options.title,
+  );
   const driver = new PlaywrightAdviserDriver({
     profile: PROFILE,
     launch: launcherFor(page),
@@ -136,6 +141,15 @@ async function startedDriver(options: {
   await driver.start({ purpose: "consultation" });
   return { clicked, driver, navigations, typed };
 }
+
+describe("PlaywrightAdviserDriver.isHealthy", () => {
+  it("reports a renderer that does not answer before the health deadline as unhealthy", async () => {
+    const never = () => new Promise<string>(() => undefined);
+    const { driver } = await startedDriver({ thread: {}, title: never, sleep: () => Promise.resolve() });
+
+    await expect(driver.isHealthy()).resolves.toBe(false);
+  });
+});
 
 /** Drives scripted thread changes from the polling delay: `step` runs once per poll that slept. */
 function scriptedSleep(step: (tick: number) => void): (ms: number) => Promise<void> {

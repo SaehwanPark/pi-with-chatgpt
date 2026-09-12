@@ -174,6 +174,33 @@ describe("durable consultation transactions (M5)", () => {
     expect((await store.get(address))?.state).toBe("queued");
   });
 
+  it("resolves an ID to its real immutable address and enforces lookup scope", async () => {
+    const { store } = await fixture();
+    const queued = await store.create(input());
+    expect(await store.getByConsultationId(queued.consultationId)).toEqual(queued);
+    expect(await store.getByConsultationId(queued.consultationId, {
+      repository,
+      taskId: queued.taskId,
+      deliveryKey: queued.deliveryKey,
+    })).toEqual(queued);
+    await expect(store.getByConsultationId(queued.consultationId, { taskId: "other-task" }))
+      .rejects.toMatchObject({ code: "job-scope-mismatch" });
+    expect(await store.getByConsultationId("adv-missing-id" as ConsultationId)).toBeUndefined();
+  });
+
+  it("reconciles running jobs as interrupted failures without replaying them", async () => {
+    const { store, layout } = await fixture();
+    const running = await store.create(input());
+    await store.claim(jobAddress(running), binding);
+
+    const reconciled = await new ConsultationJobStore(layout).reconcileRunningJobs();
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]).toMatchObject({ state: "failed", failure: "interrupted", revision: 3 });
+    expect(await store.list({ states: ["running"] })).toHaveLength(0);
+    expect(await store.get(jobAddress(running))).toMatchObject({ state: "failed", failure: "interrupted" });
+    expect(await new ConsultationJobStore(layout).reconcileRunningJobs()).toEqual([]);
+  });
+
   it("stores the full response before exposing completion and retains it after restart", async () => {
     let responseWasWritten = false;
     const fs: StateStoreFileSystem = {

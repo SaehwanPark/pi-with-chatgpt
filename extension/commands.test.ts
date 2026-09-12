@@ -1,8 +1,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CommandManager } from "./commands.js";
+import { DEFAULT_CONFIG } from "../config/schema.js";
 import { fakeGit, CHECKPOINT_SHA } from "../test/fixtures.js";
 import { ConsultationLedger } from "../ledger/ledger.js";
 import { adviserStateLayout } from "../config/state-layout.js";
@@ -11,6 +12,7 @@ import { requireFullCommitSha } from "../protocol/sha.js";
 import type { ConsultationId } from "../protocol/checkpoint.js";
 import type { AdviserCommandContext, AdviserUi } from "./pi-api.js";
 import type { GitHubApi } from "../git/github-api.js";
+import type { ConsultationEngine } from "../jobs/engine.js";
 
 const REPO = canonicalRepositoryKey("acme", "repo");
 const COMMIT = requireFullCommitSha(CHECKPOINT_SHA);
@@ -50,7 +52,12 @@ function createMockContext(cwd: string): { ctx: AdviserCommandContext; notificat
     },
   };
   return {
-    ctx: { ui, cwd, sessionId: "test-session-123" },
+    ctx: {
+      ui,
+      cwd,
+      sessionManager: { getSessionId: () => "test-session-123" },
+      isProjectTrusted: () => true,
+    },
     notifications,
   };
 }
@@ -85,7 +92,7 @@ describe("extension/commands (M8)", () => {
     expect(notifications[0]!.message).toContain("Usage: /advisor <request>");
   });
 
-  it("handles /advisor consultation with git and ledger", async () => {
+  it("refuses /advisor consultation when no adviser engine is configured", async () => {
     const dir = makeTestDirectory("pwc-cmd-test-");
     const git = makeGit();
 
@@ -97,12 +104,46 @@ describe("extension/commands (M8)", () => {
 
     expect(notifications.length).toBeGreaterThanOrEqual(2);
     expect(notifications[0]!.message).toContain("[advisor:consult] dispatching");
-    expect(notifications[1]!.message).toContain("[advisor:consult] Consultation");
+    expect(notifications[1]!.message).toContain("adviser engine unavailable");
 
     const records = await ledger.list({ repository: REPO });
-    expect(records.length).toBe(1);
-    expect(records[0]!.kind).toBe("consult");
-    expect(records[0]!.resolvedCommit).toBe(COMMIT);
+    expect(records.length).toBe(0);
+  });
+
+  it("routes async consultations through submitAsync with the Pi session identity", async () => {
+    const dir = makeTestDirectory("pwc-cmd-async-");
+    const git = makeGit();
+    const ledger = new ConsultationLedger({ layout: adviserStateLayout(dir) });
+    const submitAsync = vi.fn((request: { consultationId?: string; taskId: string; mode?: string }) => ({
+      consultationId: request.consultationId!,
+      address: {
+        repository: REPO,
+        taskId: request.taskId,
+        consultationId: request.consultationId!,
+        deliveryKey: "0".repeat(64),
+      },
+      state: "queued" as const,
+    }));
+    const submitSync = vi.fn();
+    const engine = { submitAsync, submitSync } as unknown as ConsultationEngine;
+    const manager = new CommandManager({
+      config: { ...DEFAULT_CONFIG, defaultMode: "async" },
+      git,
+      github: mockGitHub,
+      ledger,
+      engine,
+    });
+    const { ctx, notifications } = createMockContext(dir);
+
+    await manager.getCommands()["advisor"]!.handler("Queue this request", ctx);
+
+    expect(submitAsync).toHaveBeenCalledOnce();
+    expect(submitSync).not.toHaveBeenCalled();
+    expect(submitAsync.mock.calls[0]?.[0]).toMatchObject({
+      taskId: "test-session-123",
+      mode: "async",
+    });
+    expect(notifications.some((n) => n.message.includes("queued for asynchronous delivery"))).toBe(true);
   });
 
   it("handles /advisor-review with default request when empty", async () => {
@@ -116,8 +157,9 @@ describe("extension/commands (M8)", () => {
     await manager.getCommands()["advisor-review"]!.handler("", ctx);
 
     expect(notifications[0]!.message).toContain("[advisor:review] dispatching");
+    expect(notifications[1]!.message).toContain("adviser engine unavailable");
     const records = await ledger.list({ repository: REPO });
-    expect(records[0]!.kind).toBe("review");
+    expect(records.length).toBe(0);
   });
 
   it("handles /advisor-status and /advisor-read", async () => {
@@ -189,9 +231,10 @@ describe("extension/commands (M8)", () => {
 
     await manager.getCommands()["advisor-followup"]!.handler(`${origId} Implement next step`, ctx);
     expect(notifications.some((n) => n.message.includes("dispatching"))).toBe(true);
+    expect(notifications.some((n) => n.message.includes("adviser engine unavailable"))).toBe(true);
 
     const all = await ledger.list({ repository: REPO });
-    expect(all.length).toBe(2);
+    expect(all.length).toBe(1);
   });
 
   it("handles /advisor-cancel", async () => {
@@ -199,6 +242,6 @@ describe("extension/commands (M8)", () => {
     const { ctx, notifications } = createMockContext("/tmp");
     await manager.getCommands()["advisor-cancel"]!.handler("adv-cancel12", ctx);
 
-    expect(notifications[0]!.message).toBe("Consultation adv-cancel12 cancelled.");
+    expect(notifications[0]!.message).toContain("could not be cancelled");
   });
 });

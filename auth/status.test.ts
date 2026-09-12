@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AdviserProfile } from "../browser/profile.js";
 import { PI_OPENAI_PROVIDER_ID } from "./pi-credential.js";
-import { adviserStatus, assertStatusIsRedacted } from "./status.js";
+import { adviserStatus, assertStatusIsRedacted, browserSessionStatus } from "./status.js";
 
 function profileFor(userDataDir: string): AdviserProfile {
   return { kind: "extension-owned", profileId: "chatgpt-adviser", userDataDir, stateRoot: userDataDir } as const;
@@ -98,11 +98,56 @@ describe("adviserStatus", () => {
     expect(after.profile.everSignedInHere).toBe(true);
   });
 
+  it("does not infer current ChatGPT browser authentication from Pi OAuth or a history marker", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
+    const authFile = await writeAuthFile(dir, "account-1");
+    const profile = profileFor(join(dir, "profile"));
+    await mkdir(profile.userDataDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(profile.userDataDir, "SESSION-ESTABLISHED"), "signed in once", { mode: 0o600 });
+
+    const status = await adviserStatus(profile, { piAuthPath: authFile });
+    expect(status.openAiSignIn.present).toBe(true);
+    expect(status.profile.everSignedInHere).toBe(true);
+    expect(status.browserSession).toEqual({ state: "unverified", reason: "probe-required" });
+  });
+
+  it("reports a fresh adviser-browser observation without copying identity details", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
+    const authFile = await writeAuthFile(dir, "account-1");
+    const profile = profileFor(join(dir, "profile"));
+    const status = await adviserStatus(profile, {
+      piAuthPath: authFile,
+      browserSession: {
+        kind: "signed-in",
+        identity: { source: "chatgpt-browser", accountIdHint: "browser-account-secret" },
+      },
+    });
+    expect(status.browserSession).toEqual({ state: "signed-in" });
+    expect(JSON.stringify(status)).not.toContain("browser-account-secret");
+  });
+
   it("states isolation as a constant rather than as observed data", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
     const status = await adviserStatus(profileFor(join(dir, "profile")), { piAuthPath: join(dir, "absent.json") });
     // If this ever became data-dependent, the profile could stop being ours — that is INV-11, not a detail.
     expect(status.isolation).toEqual({ extensionOwned: true, sharesDefaultChromeProfile: false });
+  });
+});
+
+describe("browserSessionStatus", () => {
+  it("uses an explicit unverified state when no browser probe was supplied", () => {
+    expect(browserSessionStatus(undefined)).toEqual({ state: "unverified", reason: "probe-required" });
+  });
+
+  it("preserves only safe terminal state and reason values", () => {
+    expect(browserSessionStatus({ kind: "human-verification", challenge: "captcha" })).toEqual({
+      state: "human-verification",
+      challenge: "captcha",
+    });
+    expect(browserSessionStatus({ kind: "unreachable", reason: "profile-locked" })).toEqual({
+      state: "unreachable",
+      reason: "profile-locked",
+    });
   });
 });
 

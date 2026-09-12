@@ -177,13 +177,16 @@ export type RemoteRejection = {
 export type RemoteSelectionReason =
   | "preferred-origin"
   | "preferred-upstream"
-  | "first-github-remote-by-name";
+  | "first-github-remote-by-name"
+  | "remote-containing-checkpoint";
 
 export type RemoteSelection =
   | {
       readonly kind: "selected";
       readonly remote: GitRemoteInfo;
       readonly key: GitHubRepositoryKey;
+      /** Every supported candidate, in deterministic preference order, for exact-SHA probing. */
+      readonly candidates: readonly GitHubCandidate[];
       /** Why this remote was chosen; fork/upstream setups must be explainable to the user. */
       readonly selectedBecause: RemoteSelectionReason;
       readonly considered: readonly string[];
@@ -233,6 +236,17 @@ export function selectPrimaryGitHubRemote(
     kind: "selected",
     remote: selected.candidate.remote,
     key: selected.candidate.key,
+    candidates: [
+      ...candidates.filter((candidate) => candidate.remote.name === "origin"),
+      ...candidates.filter(
+        (candidate) => candidate.remote.name === "upstream",
+      ),
+      ...candidates
+        .filter((candidate) => candidate.remote.name !== "origin" && candidate.remote.name !== "upstream")
+        .sort((left, right) =>
+          left.remote.name < right.remote.name ? -1 : left.remote.name > right.remote.name ? 1 : 0,
+        ),
+    ],
     selectedBecause: selected.because,
     considered,
     rejected,

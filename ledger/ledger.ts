@@ -29,6 +29,7 @@ import type { GitHubRepositoryKey } from "../protocol/repo.js";
 import type { ConsultationKind } from "../chatgpt/scope.js";
 import type { DependencyMode } from "../protocol/dependency.js";
 import type { DurableJobState, JobResultStatus } from "../jobs/record.js";
+import type { JobRecord } from "../jobs/record.js";
 import {
   type AdviserStateLayout,
   repositoryStateLayout,
@@ -39,6 +40,7 @@ import {
   nodeStateStore,
   acquireStateLock,
   ensurePrivateDirectory,
+  writeFileAtomically,
 } from "./state-store.js";
 import { assertCredentialFreeValue } from "./record.js";
 
@@ -88,6 +90,8 @@ export interface LedgerEntry {
   readonly resultStatus?: JobResultStatus;
   readonly responsePath?: string;
   readonly responseSha256?: string;
+  /** Sanitized response text retained for worker-facing projections; the response file remains canonical. */
+  readonly adviserAnswer?: string;
   readonly actionItems: readonly LedgerActionItemEntry[];
   readonly createdAt: string;
   readonly completedAt?: string;
@@ -117,6 +121,14 @@ export interface ConsultationLedgerDependencies {
   readonly layout: AdviserStateLayout;
   readonly fileSystem?: StateStoreFileSystem;
   readonly now?: () => number;
+}
+
+/** The terminal job projection needed to make failures and cancellations visible in the ledger. */
+export interface TerminalJobLedgerInput {
+  readonly record: JobRecord;
+  readonly reviewedCommit?: FullCommitSha;
+  readonly provenanceNotes?: readonly string[];
+  readonly fullResponseMarkdown?: string;
 }
 
 export class ConsultationLedger {
@@ -150,12 +162,13 @@ export class ConsultationLedger {
       const responseFilePath = join(repoLayout.responsesDir, fileName);
       const responseSha256 = createHash("sha256").update(fullResponseMarkdown, "utf8").digest("hex");
 
-      await this.#fileSystem.writeFilePrivate(responseFilePath, fullResponseMarkdown);
+      await writeFileAtomically(responseFilePath, fullResponseMarkdown, this.#fileSystem);
 
       updatedEntry = {
         ...entry,
         responsePath: join("responses", fileName),
         responseSha256,
+        adviserAnswer: fullResponseMarkdown,
       };
     }
 
@@ -172,6 +185,49 @@ export class ConsultationLedger {
     } finally {
       await lock.release();
     }
+  }
+
+  /**
+   * Record a terminal job exactly once. The job store is operational truth; this projection gives
+   * status/history callers a durable terminal event after a failed, cancelled, or interrupted job.
+   * Repeated reconciliation or late callbacks return the existing entry rather than appending a
+   * second record for the same consultation.
+   */
+  async recordTerminalJob(input: TerminalJobLedgerInput): Promise<LedgerEntry> {
+    const { record, fullResponseMarkdown } = input;
+    if (record.state !== "completed" && record.state !== "failed" && record.state !== "cancelled") {
+      throw new LedgerError("Only terminal jobs can be recorded in the ledger.");
+    }
+    const entry: LedgerEntry = {
+      schemaVersion: LEDGER_ENTRY_SCHEMA_VERSION,
+      consultationId: record.consultationId,
+      taskId: record.taskId,
+      repository: record.anchor.repository,
+      branch: record.branch,
+      requestedRef: record.anchor.requestedRef,
+      resolvedCommit: record.anchor.resolvedCommit,
+      ...(input.reviewedCommit === undefined ? {} : { reviewedCommit: input.reviewedCommit }),
+      headAtDispatch: record.binding?.headAtDispatch ?? record.anchor.resolvedCommit,
+      ...(record.result?.headAtReceipt === undefined ? {} : { headAtReceipt: record.result.headAtReceipt }),
+      ...(record.anchor.pullRequest?.number === undefined ? {} : { prNumber: record.anchor.pullRequest.number }),
+      kind: record.kind,
+      dependency: record.dependency,
+      projectId: record.binding?.projectId ?? "unbound",
+      conversationId: record.binding?.conversationId ?? "unbound",
+      status: record.state,
+      ...(record.result?.resultStatus === undefined ? {} : { resultStatus: record.result.resultStatus }),
+      actionItems: (record.result?.actionItems ?? []).map((item) => ({
+        id: item.id,
+        summary: item.summary,
+        disposition: "pending" as const,
+      })),
+      createdAt: record.createdAt,
+      ...(record.finishedAt === undefined ? {} : { completedAt: record.finishedAt }),
+      ...(record.failure === undefined ? {} : { failureReason: record.failure }),
+      ...(input.provenanceNotes === undefined ? {} : { provenanceNotes: input.provenanceNotes }),
+    };
+    assertCredentialFreeValue("terminal ledger entry", entry);
+    return await this.#appendIdempotent(entry, fullResponseMarkdown);
   }
 
   /**
@@ -303,10 +359,50 @@ export class ConsultationLedger {
       const updatedEntries = [...entries];
       updatedEntries[targetIndex] = updatedEntry;
 
-      // Atomically rewrite JSONL
+      // Atomically rewrite JSONL. A normal writeFilePrivate truncates an existing ledger before
+      // writing; the temp-file + rename primitive preserves the previous audit history if the
+      // process is interrupted halfway through the rewrite.
       const newContent = updatedEntries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-      await this.#fileSystem.writeFilePrivate(repoLayout.ledgerFile, newContent);
+      await writeFileAtomically(repoLayout.ledgerFile, newContent, this.#fileSystem);
 
+      return updatedEntry;
+    } finally {
+      await lock.release();
+    }
+  }
+
+  async #appendIdempotent(entry: LedgerEntry, fullResponseMarkdown?: string): Promise<LedgerEntry> {
+    const repoLayout = repositoryStateLayout(this.#layout, entry.repository);
+    await ensurePrivateDirectory(repoLayout.dir, this.#fileSystem);
+    await ensurePrivateDirectory(repoLayout.responsesDir, this.#fileSystem);
+
+    if (fullResponseMarkdown !== undefined && fullResponseMarkdown.trim().length > 0) {
+      assertCredentialFreeValue("adviser response text", fullResponseMarkdown);
+    }
+
+    const lockPath = `${repoLayout.ledgerFile}.lock`;
+    const lock = await acquireStateLock({ path: lockPath, fileSystem: this.#fileSystem });
+    try {
+      const existing = (await this.#readRepoLedger(entry.repository)).find(
+        (candidate) => candidate.consultationId === entry.consultationId,
+      );
+      if (existing !== undefined) return existing;
+
+      let updatedEntry = entry;
+      if (fullResponseMarkdown !== undefined && fullResponseMarkdown.trim().length > 0) {
+        const fileName = responseFileName(entry.consultationId);
+        const responseFilePath = join(repoLayout.responsesDir, fileName);
+        const responseSha256 = createHash("sha256").update(fullResponseMarkdown, "utf8").digest("hex");
+        await writeFileAtomically(responseFilePath, fullResponseMarkdown, this.#fileSystem);
+        updatedEntry = {
+          ...entry,
+          responsePath: join("responses", fileName),
+          responseSha256,
+          adviserAnswer: fullResponseMarkdown,
+        };
+      }
+
+      await this.#fileSystem.appendFile(repoLayout.ledgerFile, `${JSON.stringify(updatedEntry)}\n`);
       return updatedEntry;
     } finally {
       await lock.release();
@@ -321,13 +417,31 @@ export class ConsultationLedger {
     return this.#parseJsonlLines(content);
   }
 
-  #readAllRepositoriesLedgers(): Promise<LedgerEntry[]> {
-    return Promise.resolve([]);
+  async #readAllRepositoriesLedgers(): Promise<LedgerEntry[]> {
+    await ensurePrivateDirectory(this.#layout.stateRoot, this.#fileSystem);
+    await ensurePrivateDirectory(this.#layout.repositoriesDir, this.#fileSystem);
+    const entries: LedgerEntry[] = [];
+    for (const name of await this.#fileSystem.readDirectory(this.#layout.repositoriesDir)) {
+      const repositoryDir = join(this.#layout.repositoriesDir, name);
+      if (await this.#fileSystem.isSymlink(repositoryDir)) {
+        throw new LedgerError("Refusing to read a repository ledger through a symbolic link.");
+      }
+      const content = await this.#fileSystem.readFile(join(repositoryDir, "consultations.jsonl"));
+      if (content) entries.push(...this.#parseJsonlLines(content));
+    }
+    return entries;
   }
 
   #parseJsonlLines(content: string): readonly LedgerEntry[] {
     const lines = content.split("\n");
     const entries: LedgerEntry[] = [];
+    let lastNonEmptyLine = -1;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i]?.trim().length) {
+        lastNonEmptyLine = i;
+        break;
+      }
+    }
 
     for (let i = 0; i < lines.length; i++) {
       const rawLine = lines[i];
@@ -340,11 +454,14 @@ export class ConsultationLedger {
         const parsed = normalizeLedgerEntry(raw);
         if (parsed) {
           entries.push(parsed);
+        } else if (i !== lastNonEmptyLine) {
+          throw new LedgerError("Ledger contains a malformed non-trailing record.");
         }
       } catch {
-        // Tolerates interrupted writes or corrupt trailing lines (INV-15)
-        // If it is the last line, it is likely an interrupted append.
-        continue;
+        // Tolerate only a malformed final non-empty line: an interrupted append can leave a
+        // truncated tail, but silently dropping a middle record would destroy audit history.
+        if (i === lastNonEmptyLine) continue;
+        throw new LedgerError("Ledger contains a malformed non-trailing record.");
       }
     }
 
@@ -402,6 +519,7 @@ function normalizeLedgerEntry(raw: unknown): LedgerEntry | undefined {
     resultStatus: typeof obj.resultStatus === "string" ? (obj.resultStatus as JobResultStatus) : undefined,
     responsePath: typeof obj.responsePath === "string" ? obj.responsePath : undefined,
     responseSha256: typeof obj.responseSha256 === "string" ? obj.responseSha256 : undefined,
+    adviserAnswer: typeof obj.adviserAnswer === "string" ? obj.adviserAnswer : undefined,
     actionItems,
     createdAt: typeof obj.createdAt === "string" ? obj.createdAt : new Date(0).toISOString(),
     completedAt: typeof obj.completedAt === "string" ? obj.completedAt : undefined,

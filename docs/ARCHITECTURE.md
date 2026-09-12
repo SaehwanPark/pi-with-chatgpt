@@ -147,11 +147,13 @@ id across renames, and recreates only after positive deletion evidence (`chatgpt
 
 `conversationKeyForTask` requires a task identity (a repository-wide shared thread throws), and
 `ensureConversationForTask` stores one conversation record per task/kind. The process-wide `KeyedMutex`
-and the cross-process digest lock serialise one conversation while leaving different task keys concurrent;
-deleted or stale records are replaced inside the same Project. The driver-owned exclusive browser
-operation lock also serialises Project/conversation navigation with consultation, login, and model
-operations on the single tracked tab (`chatgpt/scope.ts`, `chatgpt/conversation-mapping.ts`,
-`chatgpt/conversation-recovery.ts`, `browser/runtime.ts`, `browser/playwright-driver.ts`).
+and the cross-process digest lock serialise one conversation; the engine additionally clamps all browser
+turns to one at a time while V1 owns a single tracked tab, so different task keys remain isolated but
+queue safely rather than racing navigation and send. Deleted or stale records are replaced inside the
+same Project. The driver-owned exclusive browser operation lock also serialises Project/conversation
+navigation with consultation, login, and model operations (`chatgpt/scope.ts`,
+`chatgpt/conversation-mapping.ts`, `chatgpt/conversation-recovery.ts`, `browser/runtime.ts`,
+`browser/playwright-driver.ts`, `jobs/engine.ts`).
 
 ### INV-10
 
@@ -193,23 +195,28 @@ action items — built by allowlist, never by serialising internal state (`ui/wo
 
 ### INV-14
 
-**Trust order.** (standing-instruction guard implemented; full request protocol planned:M6)
+**Trust order.**
 
 Code at the requested commit > consultation brief > task conversation > Project instructions >
 Project memory. M4's `buildProjectInstructions` states the order and
 `assertProjectInstructionsAreEphemeralFree` rejects branch, SHA, PR, and task values before a Project is
 ensured (`chatgpt/project-instructions.ts`, `chatgpt/project-mapping.ts`). The request builder and response
-parser that enforce the complete order land in M6.
+parser enforce the complete order, and the engine carries the immutable tuple
+`(repository, consultationId, reviewedCommit)` through completion (`protocol/brief.ts`,
+`protocol/response.ts`, `jobs/engine.ts`).
 
 ### INV-15
 
 **Durable provenance outside model context.**
 
-`writeJsonFileAtomically` and the keyed state locks provide atomic mapping and job persistence.
+`writeJsonFileAtomically`/`writeFileAtomically` and the keyed state locks provide atomic mapping,
+job, and JSONL disposition persistence.
 `ConsultationJobStore.claim` persists a running job before returning a successful claim;
 `complete` writes an identity-bound response before the terminal record. Interrupted completion keeps
 the response readable, and a running job cannot be automatically reclaimed after restart
-(`jobs/store.ts`). The forthcoming dispatcher must submit only after claiming and notify only after
+(`jobs/store.ts`). `reconcileRunningJobs` marks ambiguous dead-process jobs as terminal
+`interrupted` failures without replaying them, and `recordTerminalJob` makes all terminal states
+visible in the ledger. The dispatcher must submit only after claiming and notify only after
 completion; `assertPersistenceOrder` encodes that ordering contract. `LEDGER_PUBLICATION_TARGETS ===
 ["none"]` keeps advice from auto-publishing to a repository file, issue, or PR (`ledger/record.ts`).
 See [consultation storage and recovery](CONSULTATION_PROTOCOL.md) for the versioned record and failure rules.

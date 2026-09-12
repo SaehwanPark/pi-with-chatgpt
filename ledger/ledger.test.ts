@@ -5,10 +5,12 @@ import { describe, expect, it } from "vitest";
 
 import { adviserStateLayout, repositoryStateLayout } from "../config/state-layout.js";
 import { ConsultationLedger, type LedgerEntry } from "./ledger.js";
+import { nodeStateStore } from "./state-store.js";
 import type { ConsultationId } from "../protocol/checkpoint.js";
 import { canonicalRepositoryKey } from "../protocol/repo.js";
 import { requireFullCommitSha } from "../protocol/sha.js";
 import { UnsafeLedgerRecordError } from "./record.js";
+import { createQueuedJob, transitionJob } from "../jobs/record.js";
 
 const CHECKPOINT = requireFullCommitSha("8f731e2890123456789012345678901234567890");
 const OTHER_COMMIT = requireFullCommitSha("da5c991890123456789012345678901234567890");
@@ -153,6 +155,37 @@ describe("ConsultationLedger (M6)", () => {
     expect(reloaded?.actionItems[0]?.dispositionNote).toBe("Applied in commit 12345");
   });
 
+  it("rewrites dispositions through a sibling temp file and preserves history on interruption", async () => {
+    const { ledger, layout } = await createFixture();
+    const entry = createTestEntry();
+    await ledger.recordConsultation(entry);
+
+    const repoLayout = repositoryStateLayout(layout, REPO);
+    const interruptedFs = {
+      ...nodeStateStore,
+      rename: async (from: string, to: string): Promise<void> => {
+        if (to === repoLayout.ledgerFile) throw new Error("simulated interruption");
+        await nodeStateStore.rename(from, to);
+      },
+    };
+    const interruptedLedger = new ConsultationLedger({ layout, fileSystem: interruptedFs });
+    await expect(interruptedLedger.updateActionItemDisposition({
+      consultationId: CONSULTATION_ID,
+      repository: REPO,
+      actionItemId: "A1",
+      disposition: "implemented",
+    })).rejects.toThrow("simulated interruption");
+
+    const persisted = await ledger.getById(CONSULTATION_ID, REPO);
+    expect(persisted?.actionItems[0]?.disposition).toBe("pending");
+  });
+
+  it("discovers repository ledgers for ID lookup without a repository hint", async () => {
+    const { ledger } = await createFixture();
+    await ledger.recordConsultation(createTestEntry());
+    expect(await ledger.getById(CONSULTATION_ID)).toMatchObject({ repository: REPO, consultationId: CONSULTATION_ID });
+  });
+
   it("tolerates interrupted write with a corrupt/truncated trailing line", async () => {
     const { ledger, layout } = await createFixture();
     const entry = createTestEntry();
@@ -168,6 +201,60 @@ describe("ConsultationLedger (M6)", () => {
     const entries = await ledger.list({ repository: REPO });
     expect(entries).toHaveLength(1);
     expect(entries[0]?.consultationId).toBe(CONSULTATION_ID);
+  });
+
+  it("does not silently drop a malformed middle record", async () => {
+    const { ledger, layout } = await createFixture();
+    const entry = createTestEntry();
+    await ledger.recordConsultation(entry);
+    const repoLayout = repositoryStateLayout(layout, REPO);
+    const second = createTestEntry({ consultationId: "adv-0015" as ConsultationId });
+    await writeFile(repoLayout.ledgerFile, `${JSON.stringify(entry)}\n{broken middle\n${JSON.stringify(second)}\n`, "utf8");
+    await expect(ledger.list({ repository: REPO })).rejects.toThrow("malformed non-trailing record");
+  });
+
+  it("keeps the first terminal response when duplicate projections race", async () => {
+    const { ledger } = await createFixture();
+    const queued = createQueuedJob({
+      anchor: {
+        repository: REPO,
+        remoteUrl: "https://github.com/owner/my-repo.git",
+        requestedRef: "HEAD",
+        resolvedCommit: CHECKPOINT,
+        remoteAvailability: { status: "available" },
+      },
+      branch: "main",
+      taskId: "task-terminal-idempotency",
+      sessionId: "session-terminal-idempotency",
+      kind: "consult",
+      mode: "sync",
+      createdAt: "2026-02-01T10:00:00.000Z",
+      updatedAt: "2026-02-01T10:00:00.000Z",
+    });
+    const running = transitionJob(queued, "running", {
+      binding: {
+        projectId: "project-terminal",
+        conversationId: "conversation-terminal",
+        headAtDispatch: CHECKPOINT,
+      },
+      at: "2026-02-01T10:00:01.000Z",
+    });
+    const completed = transitionJob(running, "completed", {
+      result: {
+        responsePath: `responses/${queued.consultationId}.json`,
+        responseSha256: "0".repeat(64),
+        resultStatus: "complete",
+        actionItems: [],
+      },
+      at: "2026-02-01T10:00:02.000Z",
+    });
+
+    const first = await ledger.recordTerminalJob({ record: completed, fullResponseMarkdown: "first canonical answer" });
+    const duplicate = await ledger.recordTerminalJob({ record: completed, fullResponseMarkdown: "late conflicting answer" });
+
+    expect(duplicate).toEqual(first);
+    expect(await ledger.readResponse(completed.consultationId, REPO)).toBe("first canonical answer");
+    expect(await ledger.list({ repository: REPO })).toHaveLength(1);
   });
 
   it("rejects records containing credentials (INV-12)", async () => {

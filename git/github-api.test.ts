@@ -46,6 +46,32 @@ function api(replies: Record<string, Reply>, options: { readonly timeoutMs?: num
 }
 
 describe("createGitHubApi authentication", () => {
+  it("probes public repositories anonymously when no credential is configured", async () => {
+    const { fetchImpl, requests } = fakeFetch({
+      "/commits/": { status: 200, body: { sha: CHECKPOINT_SHA } },
+    });
+    const client = createGitHubApi({ fetchImpl });
+
+    await expect(client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA)).resolves.toEqual({
+      ok: true,
+      value: "present",
+    });
+    expect(requests[0]?.headers.authorization).toBeUndefined();
+  });
+
+  it("does not turn a blank credential into an invalid bearer header", async () => {
+    const { fetchImpl, requests } = fakeFetch({
+      "/commits/": { status: 200, body: { sha: CHECKPOINT_SHA } },
+    });
+    const client = createGitHubApi({ fetchImpl, token: "   " });
+
+    await expect(client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA)).resolves.toEqual({
+      ok: true,
+      value: "present",
+    });
+    expect(requests[0]?.headers.authorization).toBeUndefined();
+  });
+
   it("sends a bearer token over https with a read-only verb", async () => {
     const { api: client, requests } = api({ "/commits/": { status: 200, body: { sha: CHECKPOINT_SHA } } });
 
@@ -126,6 +152,16 @@ describe("checkCommitPresence", () => {
       ok: true,
       value: "present",
     });
+  });
+
+  it("does not treat a successful payload for a different SHA as exact presence", async () => {
+    const differentSha = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+    const { api: client } = api({ "/commits/": { status: 200, body: { sha: differentSha } } });
+
+    const outcome = await client.checkCommitPresence(REPO_KEY, CHECKPOINT_SHA);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.failure.reason).toBe("probe-inconclusive");
   });
 
   it("reports absent only when the repository itself is visible", async () => {

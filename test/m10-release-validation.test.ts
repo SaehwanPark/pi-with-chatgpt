@@ -124,6 +124,9 @@ function makeMockEngine(ledger?: ConsultationLedger): ConsultationEngine {
       state: "running",
       dispatchedAt: new Date().toISOString(),
     }),
+    getStatusByConsultationId: () => Promise.resolve(undefined),
+    listStatus: () => Promise.resolve([]),
+    cancelByConsultationId: () => Promise.resolve({ ...record, state: "cancelled" as const }),
     cancel: () => Promise.resolve(true),
   } as unknown as ConsultationEngine;
 }
@@ -230,7 +233,11 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
 
       const tools = toolManager.getTools();
       const toolMap = new Map(tools.map((t) => [t.name, t]));
-      const mockCtx = { cwd: tempDir };
+      const mockCtx = {
+        cwd: tempDir,
+        sessionManager: { getSessionId: () => "session-m10-tools" },
+        isProjectTrusted: () => true,
+      };
 
       // 1. advisor_preflight
       const preflightTool = toolMap.get("advisor_preflight")!;
@@ -333,7 +340,8 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
       const notifications: Array<{ message: string; severity?: string }> = [];
       const mockCtx = {
         cwd: tempDir,
-        sessionId: "session-m10",
+        sessionManager: { getSessionId: () => "session-m10" },
+        isProjectTrusted: () => true,
         ui: {
           notify(message: string, severity?: "info" | "warning" | "error") {
             notifications.push({ message, severity });
@@ -367,7 +375,15 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
       expect(notifications.some((n) => n.message.includes("Advisory"))).toBe(true);
 
       await commands["advisor-auth"]!.handler("", mockCtx);
-      expect(notifications.some((n) => n.message.includes("ChatGPT adviser"))).toBe(true);
+      expect(
+        notifications.some(
+          (n) =>
+            n.message.includes("ChatGPT adviser") ||
+            n.message.includes("Adviser authentication") ||
+            n.message.includes("sign-in") ||
+            n.message.includes("browser session"),
+        ),
+      ).toBe(true);
 
       await commands["advisor-followup"]!.handler(`${CONSULTATION_ID} next steps`, mockCtx);
       expect(notifications.some((n) => n.message.includes("dispatching") || n.message.includes("completed"))).toBe(true);

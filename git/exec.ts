@@ -108,6 +108,17 @@ const GIT_ENV: Readonly<Record<string, string>> = {
   GIT_PAGER: "cat",
   GIT_OPTIONAL_LOCKS: "0",
   GIT_CONFIG_NOSYSTEM: "1",
+  // Repository-local config is normally part of git's trust boundary, but this extension may be
+  // invoked from a checkout whose trust has not been established by Pi yet.  These high-precedence
+  // config entries neutralize the two read-only operations that can execute a program named by
+  // `.git/config`: `core.fsmonitor` (status) and `diff.external` (diff/log/show).  The values are
+  // supplied by the executor rather than caller-controlled `-c` arguments, so the authority gate
+  // remains the single allowlist for every invocation.
+  GIT_CONFIG_COUNT: "2",
+  GIT_CONFIG_KEY_0: "core.fsmonitor",
+  GIT_CONFIG_VALUE_0: "false",
+  GIT_CONFIG_KEY_1: "diff.external",
+  GIT_CONFIG_VALUE_1: "",
 };
 
 const DEFAULT_TIMEOUT_MS = 15_000;

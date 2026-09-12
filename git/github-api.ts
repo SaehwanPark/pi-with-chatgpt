@@ -126,9 +126,11 @@ export interface GitHubApiOptions {
   readonly fetchImpl: GitHubFetch;
   /**
    * Injected by the caller that owns the credential (M2). This module never reads environment
-   * variables or files, so it cannot become an accidental credential reader.
+   * variables or files, so it cannot become an accidental credential reader. When omitted (or
+   * blank), requests are anonymous; a public repository can still be verified, while private or
+   * otherwise unverifiable results remain inconclusive.
    */
-  readonly token: string;
+  readonly token?: string;
   readonly baseUrl?: string;
   /**
    * Hosts permitted to receive the token. Only meaningful for a reviewed GitHub Enterprise
@@ -148,9 +150,9 @@ function failure(reason: RemoteProbeFailureReason, detail: string): GitHubProbeF
  * Server-side input is untrusted: an error body that echoes the request can carry the token back
  * into a UI string or a ledger record.
  */
-export function redactGitHubSecrets(text: string, token: string): string {
+export function redactGitHubSecrets(text: string, token?: string): string {
   let redacted = text;
-  if (token.length >= 4) redacted = redacted.split(token).join("[redacted]");
+  if (token !== undefined && token.length >= 4) redacted = redacted.split(token).join("[redacted]");
   return redacted
     .replace(/authorization\s*:\s*bearer\s+\S+/giu, "authorization: Bearer [redacted]")
     .replace(/\b(?:ghp|gho|ghu|ghs|ghr|github_pat)[A-Za-z0-9_-]{6,}/gu, "[redacted]")
@@ -172,20 +174,23 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
     options.allowedHosts ?? ALLOWED_GITHUB_API_HOSTS,
   );
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const token = options.token;
+  // An empty environment value is equivalent to no credential. Sending `Bearer ` would turn a
+  // public-repository probe into an avoidable authentication failure and is not anonymous access.
+  const token = options.token?.trim() === "" ? undefined : options.token;
 
   async function get(path: string): Promise<GitHubOutcome<unknown>> {
-
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      const headers: Record<string, string> = {
+        accept: "application/vnd.github+json",
+        "user-agent": "pi-with-chatgpt",
+        "x-github-api-version": "2022-11-28",
+      };
+      if (token !== undefined) headers.authorization = `Bearer ${token}`;
+
       const response = await options.fetchImpl(`${baseUrl}${path}`, {
-        headers: {
-          authorization: `Bearer ${token}`,
-          accept: "application/vnd.github+json",
-          "user-agent": "pi-with-chatgpt",
-          "x-github-api-version": "2022-11-28",
-        },
+        headers,
         signal: controller.signal,
         // Manual redirects: `Authorization` is a bearer credential, and following a redirect would
         // replay it to whatever host GitHub points at. A 3xx is therefore not an answer about the
@@ -231,8 +236,17 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
     if (!response.ok) return response;
 
     const status = httpStatusOf(response.value);
-    if (status === undefined) return { ok: true, value: "present" };
-    if (status === 404) return await disambiguateNotFound(repository, token);
+    if (status === undefined) {
+      // The request path names the object, but an exact-SHA gate also validates the response body. This
+      // keeps a proxy or unexpected API payload from turning any successful HTTP response into proof.
+      const returnedSha = commitShaFromPayload(response.value);
+      if (returnedSha === commit.toLowerCase()) return { ok: true, value: "present" };
+      return {
+        ok: false,
+        failure: failure("probe-inconclusive", "GitHub returned a commit payload without the requested exact SHA."),
+      };
+    }
+    if (status === 404) return await disambiguateNotFound(repository);
     return {
       ok: false,
       failure: failure("probe-inconclusive", `GitHub returned HTTP ${status} for the commit probe.`),
@@ -245,12 +259,10 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
    */
   async function disambiguateNotFound(
     repository: GitHubRepositoryKey,
-    secret: string,
   ): Promise<GitHubOutcome<ObjectPresence>> {
     const repositoryResponse = await get(`/repos/${encoded(repository)}`);
     if (!repositoryResponse.ok) {
       // Propagate the underlying auth/network cause, which is more actionable than "inconclusive".
-      void secret;
       return repositoryResponse;
     }
     const status = httpStatusOf(repositoryResponse.value);
@@ -260,7 +272,7 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
         ok: false,
         failure: failure(
           "probe-inconclusive",
-          "The repository itself is not visible with the configured token, so a missing commit cannot be distinguished from a private repository.",
+          "The repository itself is not visible to the GitHub request, so a missing commit cannot be distinguished from a private repository.",
         ),
       };
     }
@@ -293,6 +305,12 @@ export function createGitHubApi(options: GitHubApiOptions): GitHubApi {
   }
 
   return { checkCommitPresence, listOpenPullRequestsForHead };
+}
+
+function commitShaFromPayload(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+  const sha = (payload as Record<string, unknown>).sha;
+  return typeof sha === "string" && isFullCommitSha(sha) ? sha.toLowerCase() : undefined;
 }
 
 /**

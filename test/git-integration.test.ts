@@ -8,7 +8,7 @@
  *
  * It stays offline: the GitHub remote is added as a URL only, never contacted.
  */
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -123,6 +123,33 @@ describe("real git inspection", () => {
     await expect(inspectRepository(git, emptyDir)).rejects.toMatchObject({
       reason: "not-a-git-repository",
     });
+  });
+
+  it("does not execute repo-local fsmonitor or external diff commands", async () => {
+    const marker = join(workspace, "repo-local-command-ran");
+    const executable = join(workspace, "repo-local-command.sh");
+    await writeFile(
+      executable,
+      `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\n`,
+      { encoding: "utf8", mode: 0o700 },
+    );
+    await chmod(executable, 0o700);
+
+    try {
+      await gitRaw(repoDir, ["config", "core.fsmonitor", executable]);
+      await inspectRepository(git, repoDir);
+
+      await gitRaw(repoDir, ["config", "diff.external", executable]);
+      await writeFile(join(repoDir, "README.md"), "changed\n");
+      await git.run(["diff", "--name-only"], repoDir);
+
+      await expect(readFile(marker, "utf8")).rejects.toThrow();
+    } finally {
+      await gitRaw(repoDir, ["config", "--unset", "core.fsmonitor"]).catch(() => undefined);
+      await gitRaw(repoDir, ["config", "--unset", "diff.external"]).catch(() => undefined);
+      await writeFile(join(repoDir, "README.md"), "seed\n");
+      await rm(marker, { force: true });
+    }
   });
 });
 

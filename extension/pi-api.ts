@@ -15,11 +15,46 @@ export interface AdviserUi {
   notify(message: string, severity?: "info" | "warning" | "error"): void;
 }
 
+/**
+ * The part of Pi's read-only session manager used for consultation scoping.
+ *
+ * Pi does not expose a `sessionId` convenience property on command contexts. The stable
+ * identity is obtained from `ctx.sessionManager.getSessionId()` and must remain the source of
+ * task/conversation and async delivery isolation.
+ */
+export interface AdviserSessionManager {
+  getSessionId(): string;
+}
+
+/** Minimal context shared by Pi lifecycle handlers and agent tools. */
+export interface AdviserExtensionContext {
+  readonly cwd: string;
+  readonly sessionManager: AdviserSessionManager;
+  readonly ui: AdviserUi;
+  /** Pi's trust gate; untrusted workspaces cannot trigger adviser automation. */
+  readonly isProjectTrusted?: () => boolean;
+}
+
+/**
+ * Tool calls in unit fixtures may omit Pi's context argument; live Pi always supplies the full
+ * `ExtensionContext`. Keeping these fields optional at this boundary lets read-only tools remain
+ * directly callable while submission tools reject missing session identity instead of inventing one.
+ */
+export interface AdviserToolContext {
+  readonly cwd?: string;
+  readonly sessionManager?: AdviserSessionManager;
+  readonly ui?: AdviserUi;
+  readonly isProjectTrusted?: () => boolean;
+}
+
 export interface AdviserCommandContext {
   readonly ui: AdviserUi;
   /** Absolute path of the workspace Pi was started in, when there is one. */
-  readonly cwd?: string;
-  readonly sessionId?: string;
+  readonly cwd: string;
+  /** Stable Pi session identity used for adviser task and wake-up routing. */
+  readonly sessionManager: AdviserSessionManager;
+  /** Pi's trust gate; untrusted workspaces cannot trigger adviser automation. */
+  readonly isProjectTrusted?: () => boolean;
 }
 
 export interface AdviserCommandDefinition {
@@ -39,7 +74,7 @@ export interface AdviserToolDefinition<TParams = unknown, TDetails = unknown> {
     params: TParams,
     signal?: AbortSignal,
     onUpdate?: (update: unknown) => void,
-    ctx?: unknown,
+    ctx?: AdviserToolContext,
   ): Promise<{ content: Array<{ type: "text"; text: string }>; details?: TDetails }>;
 }
 
@@ -50,7 +85,31 @@ export interface AdviserToolDefinition<TParams = unknown, TDetails = unknown> {
 export interface AdviserExtensionApi {
   registerCommand(name: string, definition: AdviserCommandDefinition): void;
   registerTool?(tool: AdviserToolDefinition<unknown, unknown>): void;
-  on(event: string, handler: (payload: unknown, ctx: AdviserCommandContext) => void | Promise<void>): void;
+  on(event: string, handler: (payload: unknown, ctx: AdviserExtensionContext) => void | Promise<void>): void;
+}
+
+/**
+ * Read the real Pi session identity from an extension context.
+ *
+ * Throwing when the context is malformed is intentional: silently substituting a shared
+ * `session-default` would collapse unrelated Pi tasks onto one adviser conversation.
+ */
+export function getPiSessionId(ctx: Pick<AdviserExtensionContext, "sessionManager">): string {
+  const sessionId = ctx.sessionManager.getSessionId();
+  if (typeof sessionId !== "string" || sessionId.trim().length === 0) {
+    throw new Error("Pi session manager returned an empty session ID");
+  }
+  return sessionId;
+}
+
+/** A missing trust capability is not proof of trust; adviser automation must fail closed. */
+export function isPiProjectTrusted(ctx: Pick<AdviserExtensionContext, "isProjectTrusted"> | undefined): boolean {
+  if (ctx?.isProjectTrusted === undefined) return false;
+  try {
+    return ctx.isProjectTrusted();
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -6,8 +6,10 @@
  * - Opportunistic: extracts headers, sections, and action items when present, but NEVER
  *   fails a consultation due to minor markdown/formatting deviations.
  * - Always preserves the raw response text verbatim.
- * - Anchoring verification: compares the reviewed commit against the expected anchor SHA.
- *   If mismatched or missing, marks provenance ambiguous rather than rewriting the anchor SHA.
+ * - Anchoring verification: compares the reviewed commit against the expected anchor SHA and,
+ *   when supplied, the response consultation ID against the job's expected ID. If either
+ *   identity component is mismatched or missing, marks provenance ambiguous rather than
+ *   rewriting the request identity.
  */
 
 import { isConsultationId, type ConsultationId } from "./checkpoint.js";
@@ -59,25 +61,56 @@ export function parseAdviserResponse(
   const parsingNotes: string[] = [];
 
   if (trimmed.length === 0) {
+    const hasExpectedConsultationId = options.expectedConsultationId !== undefined;
     return {
       raw,
       status: "unknown",
       actionItems: [],
       provenance: "missing",
-      resultStatus: "degraded",
-      parsingNotes: ["Response was empty"],
+      resultStatus: hasExpectedConsultationId ? "provenance-ambiguous" : "degraded",
+      parsingNotes: [
+        "Response was empty",
+        ...(hasExpectedConsultationId ? ["Missing consultation ID in adviser response."] : []),
+      ],
     };
   }
 
-  // 1. Extract metadata header block
-  const consultationId = extractConsultationId(trimmed);
-  if (options.expectedConsultationId && consultationId && consultationId !== options.expectedConsultationId) {
-    parsingNotes.push(
-      `Response consultation ID "${consultationId}" does not match expected "${options.expectedConsultationId}".`,
-    );
+  // 1. Extract metadata header block. A response from a different conversation can still quote the
+  // same commit, so the consultation ID is part of provenance whenever the caller has an expected ID.
+  const consultation = extractConsultationId(trimmed);
+  const consultationId = consultation.status === "verified" ? consultation.value : undefined;
+  const consultationProvenance: ProvenanceStatus = options.expectedConsultationId === undefined
+    ? "verified"
+    : consultation.status !== "verified"
+      ? consultation.status
+      : consultationId === options.expectedConsultationId
+        ? "verified"
+        : "mismatched";
+  if (options.expectedConsultationId !== undefined) {
+    if (consultation.status === "missing") {
+      parsingNotes.push("Missing consultation ID in adviser response.");
+    } else if (consultation.status === "malformed") {
+      parsingNotes.push(`Malformed consultation ID in adviser response: "${consultation.raw}".`);
+    } else if (consultationId !== options.expectedConsultationId) {
+      // `verified` means only that the returned value has the right shape; equality is checked here.
+      parsingNotes.push(
+        `Response consultation ID "${consultationId}" does not match expected "${options.expectedConsultationId}".`,
+      );
+    }
   }
 
-  const { reviewedCommit, provenance } = extractAndVerifyCommit(trimmed, options.expectedCommitSha, parsingNotes);
+  const { reviewedCommit, provenance: commitProvenance } = extractAndVerifyCommit(
+    trimmed,
+    options.expectedCommitSha,
+    parsingNotes,
+  );
+
+  // Preserve the existing closed provenance vocabulary while making it cover the full identity tuple.
+  // Commit validation remains first so an existing SHA-specific diagnosis is not hidden when both
+  // fields are bad; consultation-ID validation is decisive whenever the commit itself is verified.
+  const provenance = commitProvenance === "verified" && consultationProvenance !== "verified"
+    ? consultationProvenance
+    : commitProvenance;
 
   const status = extractStatus(trimmed, parsingNotes);
 
@@ -114,11 +147,18 @@ export function parseAdviserResponse(
   };
 }
 
-function extractConsultationId(text: string): ConsultationId | undefined {
+type ConsultationIdExtraction =
+  | { readonly status: "missing" }
+  | { readonly status: "malformed"; readonly raw: string }
+  | { readonly status: "verified"; readonly value: ConsultationId };
+
+function extractConsultationId(text: string): ConsultationIdExtraction {
   const match = /^\s*consultation:\s*([^\s\r\n]+)/im.exec(text);
-  if (!match || !match[1]) return undefined;
+  if (!match || !match[1]) return { status: "missing" };
   const candidate = match[1].trim();
-  return isConsultationId(candidate) ? candidate : undefined;
+  return isConsultationId(candidate)
+    ? { status: "verified", value: candidate }
+    : { status: "malformed", raw: candidate };
 }
 
 function extractAndVerifyCommit(

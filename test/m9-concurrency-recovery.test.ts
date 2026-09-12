@@ -139,7 +139,7 @@ async function createHarness(maxConcurrentJobs = 2): Promise<TestHarness> {
       }
       return {
         ok: true,
-        text: `ADVISOR\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser guidance for ${request.consultationId}.`,
+        text: `ADVISOR\nconsultation: ${request.consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser guidance for ${request.consultationId}.`,
         elapsedMs: 25,
       };
     },
@@ -456,7 +456,7 @@ describe("Milestone 9: Concurrency, Recovery, and Hardening", () => {
       }
     });
 
-    it("allows independent tasks in the same repository to run concurrently up to max limit", async () => {
+    it("serializes independent tasks while V1 owns one tracked adviser tab", async () => {
       const harness = await createHarness(2);
       try {
         let activeTurnCount = 0;
@@ -503,7 +503,9 @@ describe("Milestone 9: Concurrency, Recovery, and Hardening", () => {
 
         expect(turnA.ok).toBe(true);
         expect(turnB.ok).toBe(true);
-        expect(peakConcurrentTurns).toBe(2); // Ran in parallel
+        // The runtime and Project surface share one tracked tab. The engine clamps injected limits to one
+        // until a conversation-scoped browser operation exists, so independent tasks cannot cross-send.
+        expect(peakConcurrentTurns).toBe(1);
       } finally {
         await harness.cleanup();
       }

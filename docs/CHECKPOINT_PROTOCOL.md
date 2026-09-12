@@ -53,9 +53,11 @@ like a flag is exactly how a "read-only" inspection becomes something else.
 - A remote whose URL embeds credentials (`https://<token>@github.com/...`) is **refused**, not
   silently cleaned: the URL is a credential container and quietly discarding part of it is how
   secrets end up in a derived field (INV-12).
-- Selection among several GitHub remotes is deterministic and reported: `origin` wins, then
-  `upstream`, then the lexicographically first GitHub remote; the chosen reason is part of the result
-  so "why did it ask ChatGPT about the fork?" has an answer in the UI.
+- Selection among several GitHub remotes starts deterministically (`origin`, then `upstream`, then
+  the lexicographically first GitHub remote) and is reported. If that candidate does not prove the
+  exact checkpoint is present, the remaining GitHub candidates are probed in deterministic order;
+  the first candidate containing the checkpoint becomes authoritative. This covers fork/upstream
+  publication layouts without treating a remote name as push authority.
 - Non-GitHub and unsupported hosts are rejected with the parse reason attached. V1 is GitHub-only
   (INV-16): a GitLab or GHE host must fail loudly rather than become a second transport.
 - No GitHub remote at all is a structured `repository-not-pushed`-class result, not an exception with
@@ -80,6 +82,11 @@ The decisive question — "can GitHub show me *this exact object*?" — is answe
 else). The local remote-tracking ref is used only as secondary evidence for telling "ahead" from
 "diverged", and it is explicitly the last-fetched state: this subsystem never runs `git fetch`,
 because fetching writes refs and the read-only allowlist says so.
+
+The exact-object request may be anonymous when no GitHub credential is configured; that preserves
+verification for public repositories without inventing an authentication result. A public 404 is
+disambiguated with a repository visibility request, while a repository that cannot be verified stays
+`unknown`. The production adapter never synthesizes `present` when the probe was not performed.
 
 An uncommitted working tree never changes this table: the checkpoint is committed history, and a dirty tree says nothing about whether that history is published.
 
@@ -129,14 +136,15 @@ invocations plus a forbidden-argument list, enforced in `git/exec.ts` before a p
 - git runs with `GIT_TERMINAL_PROMPT=0` (no interactive credential prompts), `GIT_PAGER=cat`,
   `GIT_OPTIONAL_LOCKS=0` (a read-only probe does not take a lock a human is waiting on), and
   `GIT_CONFIG_NOSYSTEM=1` (a system-wide `url.<base>.insteadOf` may not silently retarget a remote);
+- the executor supplies high-precedence config disabling `core.fsmonitor` and `diff.external`, so
+  repository-local read-only inspection cannot execute configured helper programs;
 - process output is redacted of credential-shaped material before it becomes an error message, an
   interface string, or adviser context (INV-12). That covers URL userinfo with **or without** a colon
   (`https://<token>@github.com/o/r`, which git echoes back verbatim) and GitHub token shapes
   (`ghp_…`, `github_pat_…`) wherever they appear;
-- a repository's own `.git/config` is inside git's trust boundary, not this extension's: running git
-  against a repository the user does not trust is out of scope, and the flags that would opt a single
-  invocation into config-declared programs (`--ext-diff`, `--textconv`, `-p`/`--paginate`,
-  `--upload-pack`, `-c`) are refused outright.
+- flags that would opt a single invocation into config-declared programs (`--ext-diff`, `--textconv`,
+  `-p`/`--paginate`, `--upload-pack`, `-c`) are refused outright; the executor also neutralizes the
+  repo-local `core.fsmonitor` and `diff.external` settings for the remaining read-only commands.
 
 The GitHub half of the probe has its own envelope, because it decides dispatch and holds a bearer
 token: the API **hostname is pinned** (`ALLOWED_GITHUB_API_HOSTS`, default `api.github.com`; a

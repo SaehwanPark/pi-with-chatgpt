@@ -44,12 +44,13 @@ describe("evaluateConsultationPrerequisites", () => {
     expect(!result.ok && result.blocking[0]?.outcome).toBe("unavailable");
   });
 
-  it("does not block a consultation on an unverified GitHub connector", () => {
-    // The connector only widens what the adviser can see; its absence degrades the answer, not the run.
+  it("blocks a consultation on an unverified GitHub connector", () => {
+    // GitHub is the sole repository-context channel in V1; an adviser without it cannot inspect the
+    // anchored commit, even when ChatGPT and the model are otherwise available.
     const result = evaluateConsultationPrerequisites(
       checklist(ALL_GOOD.map((entry) => (entry.item === "github-connector" ? { ...entry, outcome: "unverified" } : entry))),
     );
-    expect(result.ok).toBe(true);
+    expect(!result.ok && result.blocking).toEqual([{ item: "github-connector", outcome: "unverified" }]);
   });
 
   it("lists every blocker at once so a human fixes them in one pass", () => {
@@ -57,18 +58,25 @@ describe("evaluateConsultationPrerequisites", () => {
       checklist([
         { item: "chatgpt-access", outcome: "unverified" },
         { item: "adviser-model", outcome: "unavailable" },
+        { item: "github-connector", outcome: "unverified" },
         { item: "target-repository", outcome: "unverified" },
       ]),
     );
     expect(!result.ok && result.blocking.map((entry) => entry.item)).toEqual([
       "chatgpt-access",
       "adviser-model",
+      "github-connector",
       "target-repository",
     ]);
   });
 
   it("requires exactly the documented set", () => {
-    expect(REQUIRED_BEFORE_FIRST_CONSULTATION).toEqual(["chatgpt-access", "adviser-model", "target-repository"]);
+    expect(REQUIRED_BEFORE_FIRST_CONSULTATION).toEqual([
+      "chatgpt-access",
+      "adviser-model",
+      "github-connector",
+      "target-repository",
+    ]);
   });
 });
 
@@ -165,6 +173,16 @@ describe("checklistToCapabilityRecord", () => {
     expect(checklistToCapabilityRecord(list, evaluateConsultationPrerequisites(list)).nextAction).toBe(
       "choose-adviser-model",
     );
+  });
+
+  it("maps a missing GitHub connector to an explicit connector action", () => {
+    const list = checklist(
+      ALL_GOOD.map((entry) => (entry.item === "github-connector" ? { ...entry, outcome: "unverified" } : entry)),
+    );
+    const record = checklistToCapabilityRecord(list, evaluateConsultationPrerequisites(list));
+    expect(record.status).toBe("sign-in-required");
+    expect(record.nextAction).toBe("connect-github");
+    expect(record.reason).toBe("github-connector:unverified");
   });
 
   it("keeps an unverified access check a sign-in question, not an environment failure", () => {

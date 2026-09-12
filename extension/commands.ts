@@ -15,8 +15,7 @@
  * - /advisor-auth
  */
 
-import { randomUUID } from "node:crypto";
-import type { AdviserCommandContext, AdviserCommandDefinition } from "./pi-api.js";
+import { getPiSessionId, isPiProjectTrusted, type AdviserCommandContext, type AdviserCommandDefinition } from "./pi-api.js";
 import { type AdviserConfig, DEFAULT_CONFIG } from "../config/schema.js";
 import type { ConsultationKind } from "../protocol/brief.js";
 import { buildConsultationBrief } from "../protocol/brief.js";
@@ -39,54 +38,68 @@ import { createGitHubApi } from "../git/github-api.js";
 import { adviserStateLayout } from "../config/state-layout.js";
 import { adviserProfileFor, stateStoragePaths } from "../browser/state-storage.js";
 import type { ConsultationEngine } from "../jobs/engine.js";
+import { generateConsultationId } from "../jobs/record.js";
+import { DEFAULT_MODEL_PREFERENCE } from "../browser/model-selection.js";
 import { parseAdviserResponse } from "../protocol/response.js";
 
 export interface CommandServiceOptions {
   readonly config?: AdviserConfig;
+  /** Lazy loader for global/project configuration; activation remains side-effect free. */
+  readonly configFactory?: (cwd: string) => Promise<AdviserConfig>;
   readonly git?: GitExecutor;
   readonly github?: GitHubApi;
   readonly ledger?: ConsultationLedger;
   readonly engine?: ConsultationEngine;
+  /** Lazy production composition; test fixtures may inject an engine directly instead. */
+  readonly engineFactory?: (cwd: string) => Promise<ConsultationEngine>;
   readonly loginPort?: AdviserLoginPort;
-}
-
-function generateConsultationId(): ConsultationId {
-  const hex = randomUUID().replace(/[^0-9a-z]/gu, "").slice(0, 10);
-  return `adv-${hex}` as ConsultationId;
+  /** Lazy production login adapter over the extension-owned browser profile. */
+  readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
+  /** Ranked adviser model preferences; resolved against the live ChatGPT model picker by the engine. */
+  readonly modelPreference?: readonly string[];
 }
 
 function defaultGitHubApi(): GitHubApi {
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
-  if (token) {
-    try {
-      return createGitHubApi({
-        fetchImpl: globalThis.fetch as unknown as Parameters<typeof createGitHubApi>[0]["fetchImpl"],
-        token,
-      });
-    } catch {
-      // ignore
-    }
+  try {
+    return createGitHubApi({
+      fetchImpl: globalThis.fetch as unknown as Parameters<typeof createGitHubApi>[0]["fetchImpl"],
+      ...(token.trim().length === 0 ? {} : { token }),
+    });
+  } catch {
+    // A missing fetch implementation is an honest unavailable probe, never proof that a commit exists.
   }
   return {
     checkCommitPresence() {
-      return Promise.resolve({ ok: true, value: "present" as const });
+      return Promise.resolve({
+        ok: false,
+        failure: { reason: "network-unreachable" as const, detail: "GitHub API client unavailable." },
+      });
     },
     listOpenPullRequestsForHead() {
-      return Promise.resolve({ ok: true, value: [] });
+      return Promise.resolve({
+        ok: false,
+        failure: { reason: "network-unreachable" as const, detail: "GitHub API client unavailable." },
+      });
     },
   };
 }
 
 export class CommandManager {
   private readonly config: AdviserConfig;
+  private readonly configFactory?: (cwd: string) => Promise<AdviserConfig>;
   private readonly git: GitExecutor;
   private readonly github: GitHubApi;
   private readonly ledger: ConsultationLedger;
   private readonly engine?: ConsultationEngine;
+  private readonly engineFactory?: (cwd: string) => Promise<ConsultationEngine>;
   private readonly loginPort?: AdviserLoginPort;
+  private readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
+  private readonly modelPreference: readonly string[];
 
   constructor(options: CommandServiceOptions = {}) {
     this.config = options.config ?? DEFAULT_CONFIG;
+    this.configFactory = options.configFactory;
     this.git = options.git ?? createGitExecutor(createNodeCommandRunner());
     this.github = options.github ?? defaultGitHubApi();
     if (options.ledger) {
@@ -97,7 +110,33 @@ export class CommandManager {
       this.ledger = new ConsultationLedger({ layout });
     }
     this.engine = options.engine;
+    this.engineFactory = options.engineFactory;
     this.loginPort = options.loginPort;
+    this.loginPortFactory = options.loginPortFactory;
+    this.modelPreference = options.modelPreference ?? DEFAULT_MODEL_PREFERENCE;
+  }
+
+  private async resolveEngine(cwd: string): Promise<ConsultationEngine | undefined> {
+    if (this.engine) return this.engine;
+    if (this.engineFactory) return await this.engineFactory(cwd);
+    return undefined;
+  }
+
+  private async resolveLoginPort(cwd: string): Promise<AdviserLoginPort | undefined> {
+    if (this.loginPort) return this.loginPort;
+    if (this.loginPortFactory) return await this.loginPortFactory(cwd);
+    return undefined;
+  }
+
+  private async resolveConfig(cwd: string): Promise<AdviserConfig> {
+    if (!this.configFactory) return this.config;
+    try {
+      return await this.configFactory(cwd);
+    } catch {
+      // A malformed optional settings file must not become an unhandled Pi command rejection. The
+      // caller keeps the safe defaults and reports the adviser as unavailable when it needs services.
+      return this.config;
+    }
   }
 
   getCommands(): Record<string, AdviserCommandDefinition> {
@@ -162,6 +201,15 @@ export class CommandManager {
 
     const effectiveGoal = goal || "Review current changes and commit against the GitHub repository";
     const cwd = ctx.cwd ?? process.cwd();
+    const config = await this.resolveConfig(cwd);
+    if (!config.enabled) {
+      ctx.ui.notify("Adviser consultations are disabled by configuration.", "warning");
+      return;
+    }
+    if (!isPiProjectTrusted(ctx)) {
+      ctx.ui.notify("Consultation refused: Pi does not trust this project.", "error");
+      return;
+    }
 
     const checkpointRes = await resolveCheckpoint({
       git: this.git,
@@ -179,7 +227,7 @@ export class CommandManager {
 
     const { anchor, workingState } = checkpointRes.resolved;
     const consultationId = generateConsultationId();
-    const taskId = ctx.sessionId ?? "session-default";
+    const taskId = getPiSessionId(ctx);
 
     ctx.ui.notify(
       formatDispatchStatus({
@@ -187,7 +235,7 @@ export class CommandManager {
         kind,
         remoteRepo: anchor.repository,
         commitSha: anchor.resolvedCommit,
-        mode: this.config.defaultMode,
+        mode: config.defaultMode,
         prNumber: anchor.pullRequest?.number,
       }),
       "info",
@@ -204,16 +252,41 @@ export class CommandManager {
       question: `Provide actionable guidance and recommendations for this ${kind} consultation.`,
     });
 
-    if (this.engine) {
+    const engine = await this.resolveEngine(cwd).catch(() => undefined);
+    if (engine) {
       try {
-        const turnResult = await this.engine.submitSync({
+        if (config.defaultMode === "async") {
+          const dispatched = await engine.submitAsync({
+            anchor,
+            branch: workingState.branch ?? null,
+            taskId,
+            sessionId: taskId,
+            kind,
+            dependency: config.dependencyDefault,
+            mode: "async",
+            prompt: brief,
+            consultationId,
+            modelPreference: this.modelPreference,
+          });
+          ctx.ui.notify(
+            `Consultation ${dispatched.consultationId} queued for asynchronous delivery. Run /advisor-status ${dispatched.consultationId} to check it.`,
+            "info",
+          );
+          return;
+        }
+
+        const turnResult = await engine.submitSync({
           anchor,
-          branch: workingState.branch ?? "main",
+          branch: workingState.branch ?? null,
           taskId,
+          sessionId: taskId,
           kind,
-          dependency: this.config.dependencyDefault,
+          dependency: config.dependencyDefault,
+          mode: "sync",
           prompt: brief,
-          modelId: "chatgpt-default",
+          consultationId,
+          modelPreference: this.modelPreference,
+          timeoutMs: config.syncTimeoutMs,
         });
 
         if (turnResult.ok) {
@@ -249,37 +322,9 @@ export class CommandManager {
         ctx.ui.notify(`Consultation failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }
     } else {
-      // Record stub consultation in ledger for offline / un-injected mode
-      await this.ledger.recordConsultation(
-        {
-          schemaVersion: 1,
-          consultationId,
-          taskId,
-          repository: anchor.repository,
-          branch: workingState.branch ?? null,
-          requestedRef: anchor.requestedRef,
-          resolvedCommit: anchor.resolvedCommit,
-          headAtDispatch: anchor.resolvedCommit,
-          kind,
-          dependency: this.config.dependencyDefault,
-          projectId: "project-default",
-          conversationId: "conv-default",
-          status: "completed",
-          createdAt: new Date().toISOString(),
-          actionItems: [
-            { id: "A1", summary: `Verify implementation against ${anchor.resolvedCommit.slice(0, 7)}`, disposition: "pending" },
-          ],
-        },
-        `Advisory for ${kind}: ${effectiveGoal}\n\n[A1] Verify implementation against ${anchor.resolvedCommit.slice(0, 7)}`,
-      );
-
       ctx.ui.notify(
-        formatCompletionNotification({
-          consultationId,
-          kind,
-          actionItems: [{ ordinal: 1, summary: `Verify implementation against ${anchor.resolvedCommit.slice(0, 7)}` }],
-        }),
-        "info",
+        `Consultation ${consultationId} could not start: adviser engine unavailable.`,
+        "error",
       );
     }
   }
@@ -295,6 +340,15 @@ export class CommandManager {
     }
 
     const cwd = ctx.cwd ?? process.cwd();
+    const config = await this.resolveConfig(cwd);
+    if (!config.enabled) {
+      ctx.ui.notify("Adviser consultations are disabled by configuration.", "warning");
+      return;
+    }
+    if (!isPiProjectTrusted(ctx)) {
+      ctx.ui.notify("Follow-up refused: Pi does not trust this project.", "error");
+      return;
+    }
     const checkpointRes = await resolveCheckpoint({
       git: this.git,
       github: this.github,
@@ -346,22 +400,47 @@ export class CommandManager {
         kind: prior.kind,
         remoteRepo: anchor.repository,
         commitSha: anchor.resolvedCommit,
-        mode: this.config.defaultMode,
+        mode: config.defaultMode,
         prNumber: anchor.pullRequest?.number,
       }),
       "info",
     );
 
-    if (this.engine) {
+    const engine = await this.resolveEngine(cwd).catch(() => undefined);
+    if (engine) {
       try {
-        const turnResult = await this.engine.submitSync({
+        if (config.defaultMode === "async") {
+          const dispatched = await engine.submitAsync({
+            anchor,
+            branch: workingState.branch ?? null,
+            taskId: prior.taskId,
+            sessionId: getPiSessionId(ctx),
+            kind: prior.kind,
+            dependency: config.dependencyDefault,
+            mode: "async",
+            prompt: brief,
+            consultationId: followUpId,
+            modelPreference: this.modelPreference,
+          });
+          ctx.ui.notify(
+            `Follow-up ${dispatched.consultationId} queued for asynchronous delivery. Run /advisor-status ${dispatched.consultationId} to check it.`,
+            "info",
+          );
+          return;
+        }
+
+        const turnResult = await engine.submitSync({
           anchor,
-          branch: workingState.branch ?? "main",
+          branch: workingState.branch ?? null,
           taskId: prior.taskId,
+          sessionId: getPiSessionId(ctx),
           kind: prior.kind,
-          dependency: this.config.dependencyDefault,
+          dependency: config.dependencyDefault,
+          mode: "sync",
           prompt: brief,
-          modelId: "chatgpt-default",
+          consultationId: followUpId,
+          modelPreference: this.modelPreference,
+          timeoutMs: config.syncTimeoutMs,
         });
 
         if (turnResult.ok) {
@@ -379,34 +458,9 @@ export class CommandManager {
         ctx.ui.notify(`Follow-up failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }
     } else {
-      await this.ledger.recordConsultation(
-        {
-          schemaVersion: 1,
-          consultationId: followUpId,
-          taskId: prior.taskId,
-          repository: anchor.repository,
-          branch: workingState.branch ?? null,
-          requestedRef: anchor.requestedRef,
-          resolvedCommit: anchor.resolvedCommit,
-          headAtDispatch: anchor.resolvedCommit,
-          kind: prior.kind,
-          dependency: this.config.dependencyDefault,
-          projectId: prior.projectId,
-          conversationId: prior.conversationId,
-          status: "completed",
-          createdAt: new Date().toISOString(),
-          actionItems: [{ id: "A1", summary: `Apply follow-up changes for ${followUpGoal}`, disposition: "pending" }],
-        },
-        `Follow-up advisory for ${prior.kind}: ${followUpGoal}`,
-      );
-
       ctx.ui.notify(
-        formatCompletionNotification({
-          consultationId: followUpId,
-          kind: prior.kind,
-          actionItems: [{ ordinal: 1, summary: `Apply follow-up changes for ${followUpGoal}` }],
-        }),
-        "info",
+        `Follow-up ${followUpId} could not start: adviser engine unavailable.`,
+        "error",
       );
     }
   }
@@ -431,9 +485,32 @@ export class CommandManager {
     const { anchor } = checkpointRes.resolved;
 
     if (consultationId) {
+      // JobStore is the live authority. Consult it before the terminal ledger so queued/running
+      // work remains visible even when Pi was interrupted before a ledger event was written.
+      const engine = await this.resolveEngine(cwd).catch(() => undefined);
+      const live = engine && typeof engine.getStatusByConsultationId === "function"
+        ? await engine.getStatusByConsultationId(consultationId as ConsultationId, {
+            repository: anchor.repository,
+            sessionId: getPiSessionId(ctx),
+          }).catch(() => undefined)
+        : undefined;
+      if (live && live.state !== "completed" && live.state !== "failed" && live.state !== "cancelled") {
+        ctx.ui.notify(
+          `[advisor] ${live.consultationId}: kind=${live.kind} status=${live.state} checkpoint=${live.anchor.resolvedCommit.slice(0, 7)}`,
+          "info",
+        );
+        return;
+      }
       const entries = await this.ledger.list({ repository: anchor.repository });
       const record = entries.find((e) => e.consultationId === consultationId);
       if (!record) {
+        if (live) {
+          ctx.ui.notify(
+            `[advisor] ${live.consultationId}: kind=${live.kind} status=${live.state} checkpoint=${live.anchor.resolvedCommit.slice(0, 7)}`,
+            "info",
+          );
+          return;
+        }
         ctx.ui.notify(`Consultation ${consultationId} not found in repository ${anchor.repository}.`, "warning");
         return;
       }
@@ -469,14 +546,21 @@ export class CommandManager {
       );
     } else {
       const recent = await this.ledger.list({ repository: anchor.repository, limit: 5 });
-      if (recent.length === 0) {
+      const engine = await this.resolveEngine(cwd).catch(() => undefined);
+      const live = engine && typeof engine.listStatus === "function" ? await engine.listStatus().catch(() => []) : [];
+      const visibleLive = live.filter((job) => job.anchor.repository === anchor.repository);
+      if (recent.length === 0 && visibleLive.length === 0) {
         ctx.ui.notify(`No consultations recorded for repository ${anchor.repository}.`, "info");
         return;
       }
 
-      const summaryLines = recent.map(
-        (c) => `  - ${c.consultationId} [${c.kind}]: ${c.status} (@${c.resolvedCommit.slice(0, 7)})`,
+      const summaryLines = visibleLive.map(
+        (job) => `  - ${job.consultationId} [${job.kind}]: ${job.state} (@${job.anchor.resolvedCommit.slice(0, 7)})`,
       );
+      const liveIds = new Set(visibleLive.map((job) => job.consultationId));
+      summaryLines.push(...recent.filter((entry) => !liveIds.has(entry.consultationId)).map(
+        (c) => `  - ${c.consultationId} [${c.kind}]: ${c.status} (@${c.resolvedCommit.slice(0, 7)})`,
+      ));
       ctx.ui.notify(`Recent consultations for ${anchor.repository}:\n${summaryLines.join("\n")}`, "info");
     }
   }
@@ -532,6 +616,15 @@ export class CommandManager {
     }
 
     const cwd = ctx.cwd ?? process.cwd();
+    const config = await this.resolveConfig(cwd);
+    if (!config.enabled) {
+      ctx.ui.notify("Cancellation refused: adviser consultations are disabled by configuration.", "warning");
+      return;
+    }
+    if (!isPiProjectTrusted(ctx)) {
+      ctx.ui.notify("Cancellation refused: Pi does not trust this project.", "error");
+      return;
+    }
     const checkpointRes = await resolveCheckpoint({
       git: this.git,
       github: this.github,
@@ -539,20 +632,43 @@ export class CommandManager {
       requestedRef: "HEAD",
     });
     if (!checkpointRes.ok) {
-      ctx.ui.notify(`Consultation ${consultationId} cancelled.`, "info");
+      ctx.ui.notify(
+        `Consultation ${consultationId} could not be cancelled: ${checkpointRes.refusal.explanation}`,
+        "error",
+      );
       return;
     }
 
     const { anchor } = checkpointRes.resolved;
+    const engine = await this.resolveEngine(cwd).catch(() => undefined);
+    if (!engine) {
+      ctx.ui.notify(
+        `Consultation ${consultationId} could not be cancelled: adviser engine unavailable.`,
+        "error",
+      );
+      return;
+    }
 
-    if (this.engine) {
-      const address = {
+    try {
+      const sessionId = getPiSessionId(ctx);
+      if (typeof engine.cancelByConsultationId !== "function") {
+        ctx.ui.notify(`Consultation ${consultationId} could not be cancelled: engine does not support ID-scoped cancellation.`, "error");
+        return;
+      }
+      const record = await engine.cancelByConsultationId(consultationId, {
         repository: anchor.repository,
-        taskId: ctx.sessionId ?? "session-default",
-        consultationId,
-        deliveryKey: "0".repeat(64),
-      };
-      await this.engine.cancel(address);
+        sessionId,
+      });
+      if (record.state !== "cancelled") {
+        ctx.ui.notify(`Consultation ${consultationId} is already ${record.state}.`, "info");
+        return;
+      }
+    } catch (err) {
+      ctx.ui.notify(
+        `Consultation ${consultationId} could not be cancelled: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
+      return;
     }
 
     ctx.ui.notify(`Consultation ${consultationId} cancelled.`, "info");
@@ -561,33 +677,79 @@ export class CommandManager {
   private async handleAuth(ctx: AdviserCommandContext): Promise<void> {
     const paths = stateStoragePaths();
     const profile = adviserProfileFor(paths);
-    const status = await adviserStatus(profile);
+    let status = await adviserStatus(profile);
+    // Preserve the auth precedence: do not initialize the adviser browser until Pi's OpenAI OAuth
+    // credential exists. `resolveLoginPort` can prepare state and launch-dependent services.
+    const loginPort = status.openAiSignIn.present
+      ? await this.resolveLoginPort(ctx.cwd ?? process.cwd()).catch(() => undefined)
+      : undefined;
 
-    if (status.openAiSignIn.present) {
+    // Pi's OAuth credential identifies the account that should advise; it is not a live ChatGPT web
+    // session. When the production login port is available, perform the browser-side observation and
+    // feed that fact into the redacted status snapshot. Without it, keep the state explicitly unknown
+    // rather than claiming that the isolated profile is authenticated from the Pi credential alone.
+    if (status.profile.exists && loginPort) {
+      const browserSession = await loginPort.observeSession(profile).catch(() => ({
+        kind: "unreachable",
+        reason: "browser-failed",
+      } as const));
+      status = await adviserStatus(profile, { browserSession });
+    }
+
+    if (!status.openAiSignIn.present) {
+      ctx.ui.notify(
+        `ChatGPT adviser sign-in required (${status.openAiSignIn.reason}). Profile: ${status.profile.userDataDir}`,
+        "warning",
+      );
+      if (loginPort) {
+        ctx.ui.notify("Run Pi OpenAI login before signing in to the adviser browser.", "info");
+      } else {
+        ctx.ui.notify("Run Pi OpenAI login to authenticate adviser.", "info");
+      }
+      return;
+    }
+
+    if (status.browserSession.state === "signed-in") {
       const plan = status.openAiSignIn.planHint ? ` (${status.openAiSignIn.planHint})` : "";
       const email = status.openAiSignIn.emailMasked ? ` [${status.openAiSignIn.emailMasked}]` : "";
       ctx.ui.notify(
-        `ChatGPT adviser is authenticated${plan}${email}. Ready for consultations.`,
+        `Pi OpenAI sign-in and the isolated ChatGPT browser session are authenticated${plan}${email}. Run adviser preflight to verify model, GitHub connector, and checkpoint access.`,
         "info",
       );
       return;
     }
 
+    if (status.browserSession.state === "human-verification") {
+      ctx.ui.notify(
+        `ChatGPT adviser needs human verification (${status.browserSession.challenge}) in the isolated browser window.`,
+        "warning",
+      );
+      return;
+    }
+
+    if (status.browserSession.state === "unreachable") {
+      ctx.ui.notify(
+        `ChatGPT adviser browser session could not be checked (${status.browserSession.reason}). Pi OpenAI sign-in is present, but readiness is unverified.`,
+        "warning",
+      );
+      return;
+    }
+
     ctx.ui.notify(
-      `ChatGPT adviser sign-in required (${status.openAiSignIn.reason}). Profile: ${status.profile.userDataDir}`,
+      "Pi OpenAI sign-in is present, but the isolated ChatGPT browser session is not signed in.",
       "warning",
     );
 
-    if (this.loginPort) {
+    if (loginPort) {
       ctx.ui.notify("Launching manual login flow in isolated browser window...", "info");
-      const outcome = await runManualLogin(profile, this.loginPort, { timeoutMs: 30_000 });
+      const outcome = await runManualLogin(profile, loginPort, { timeoutMs: 30_000 });
       if (outcome.ok) {
         ctx.ui.notify("ChatGPT login successful. Adviser is ready.", "info");
       } else {
         ctx.ui.notify(`ChatGPT login did not complete: ${outcome.failure} - ${outcome.detail}`, "error");
       }
     } else {
-      ctx.ui.notify("Run Pi OpenAI login to authenticate adviser.", "info");
+      ctx.ui.notify("The adviser browser runtime is not available to verify or repair this session.", "info");
     }
   }
 }

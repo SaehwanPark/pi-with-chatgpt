@@ -39,6 +39,7 @@ export const JOB_FAILURE_CODES = [
   "timeout",
   "account",
   "cancelled",
+  "interrupted",
 ] as const;
 export type JobFailureCode = (typeof JOB_FAILURE_CODES)[number];
 

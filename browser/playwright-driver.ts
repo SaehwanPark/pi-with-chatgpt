@@ -86,6 +86,8 @@ export type PlaywrightLauncher = (options: {
   readonly userDataDir: string;
   readonly headless: boolean;
   readonly channel: string;
+  /** Optional explicit Chromium executable selected by global config. */
+  readonly executablePath?: string;
   readonly timeoutMs: number;
 }) => Promise<PlaywrightLaunchResult>;
 
@@ -94,6 +96,7 @@ export interface PlaywrightDriverOptions {
   readonly launch: PlaywrightLauncher;
   /** Playwright channel for the system Chrome; `"chrome"` selects the installed Google Chrome. */
   readonly channel?: string;
+  readonly executablePath?: string;
   readonly navigationTimeoutMs?: number;
   readonly pollIntervalMs?: number;
   /** Injection point for tests; real runs use wall-clock timers. */
@@ -104,6 +107,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   readonly #profile: AdviserProfile;
   readonly #launch: PlaywrightLauncher;
   readonly #channel: string;
+  readonly #executablePath: string | undefined;
   readonly #navigationTimeoutMs: number;
   readonly #pollIntervalMs: number;
   readonly #sleep: (ms: number) => Promise<void>;
@@ -118,6 +122,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     this.#profile = options.profile;
     this.#launch = options.launch;
     this.#channel = options.channel ?? "chrome";
+    this.#executablePath = options.executablePath;
     this.#navigationTimeoutMs = options.navigationTimeoutMs ?? 45_000;
     this.#pollIntervalMs = options.pollIntervalMs ?? 750;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -152,6 +157,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
       userDataDir: this.#profile.userDataDir,
       headless: options.headed !== true,
       channel: this.#channel,
+      ...(this.#executablePath === undefined ? {} : { executablePath: this.#executablePath }),
       timeoutMs: this.#navigationTimeoutMs,
     });
     this.#context = context;
@@ -165,8 +171,11 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     if (!this.#context || !this.#page || this.#page.isClosed()) return false;
     try {
       // A cheap round-trip: a hung renderer passes isClosed() but fails to answer a title read.
-      await Promise.race([this.#page.title(), this.#sleep(3_000).then(() => "timeout" as const)]);
-      return true;
+      const timeout = Symbol("health-timeout");
+      const result = await Promise.race([this.#page.title(), this.#sleep(3_000).then(() => timeout)]);
+      // Promise.race resolves successfully for the timer as well as for title(). Checking only for
+      // rejection therefore reported a hung renderer as healthy indefinitely.
+      return result !== timeout;
     } catch {
       return false;
     }
@@ -300,6 +309,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
       page: () => this.#requirePage(),
       runExclusive: (operation) => this.runExclusive(operation),
       timeoutMs: this.#navigationTimeoutMs,
+      pollIntervalMs: this.#pollIntervalMs,
       sleep: this.#sleep,
     });
   }

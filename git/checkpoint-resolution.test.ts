@@ -7,7 +7,15 @@ import {
   fakeGit,
   type FakeGitOutcome,
 } from "../test/fixtures.js";
-import type { GitHubApi, GitHubOutcome, ObjectPresence, PullRequestSummary } from "./github-api.js";
+import {
+  createGitHubApi,
+  type GitHubApi,
+  type GitHubFetch,
+  type GitHubOutcome,
+  type GitHubFetchResponse,
+  type ObjectPresence,
+  type PullRequestSummary,
+} from "./github-api.js";
 import { resolveCheckpoint } from "./checkpoint-resolution.js";
 
 const REMOTES = `origin\thttps://github.com/SaehwanPark/pi-with-chatgpt.git (fetch)\norigin\thttps://github.com/SaehwanPark/pi-with-chatgpt.git (push)\n`;
@@ -70,6 +78,50 @@ async function resolve(options: {
 }
 
 describe("resolveCheckpoint", () => {
+  it("uses a GitHub fork when the preferred remote does not contain the checkpoint", async () => {
+    const remotes =
+      "origin\thttps://github.com/upstream/pi-with-chatgpt.git (fetch)\n" +
+      "origin\thttps://github.com/upstream/pi-with-chatgpt.git (push)\n" +
+      "fork\tgit@github.com:fork-owner/pi-with-chatgpt.git (fetch)\n" +
+      "fork\tgit@github.com:fork-owner/pi-with-chatgpt.git (push)\n";
+    const { executor } = fakeGit(
+      gitHandlers({
+        "remote -v": remotes,
+        "rev-parse --verify --quiet refs/remotes/origin/main": { code: 1, stdout: "" },
+        "rev-parse --verify --quiet refs/remotes/fork/main": { code: 1, stdout: "" },
+      }),
+    );
+    const checked: string[] = [];
+    const github: GitHubApi = {
+      checkCommitPresence(repository, commit) {
+        checked.push(`${repository}:${commit}`);
+        return Promise.resolve(
+          repository === "fork-owner/pi-with-chatgpt"
+            ? ({ ok: true, value: "present" } as const)
+            : ({ ok: true, value: "absent" } as const),
+        );
+      },
+      listOpenPullRequestsForHead: () => Promise.resolve({ ok: true, value: [] }),
+    };
+
+    const result = await resolveCheckpoint({
+      git: executor,
+      github,
+      cwd: "/repo",
+      requestedRef: "HEAD",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.resolved.anchor.repository).toBe("fork-owner/pi-with-chatgpt");
+    expect(result.resolved.workingState.remoteName).toBe("fork");
+    expect(result.resolved.workingState.selectionReason).toBe("remote-containing-checkpoint");
+    expect(checked.map((entry) => entry.split(":")[0])).toEqual([
+      "upstream/pi-with-chatgpt",
+      "fork-owner/pi-with-chatgpt",
+    ]);
+  });
+
   it("produces a dispatch-ready anchor for a pushed checkpoint", async () => {
     const { result, githubCalls } = await resolve({
       pullRequests: { ok: true, value: [{ number: 7, headSha: CHECKPOINT_SHA, baseRefName: "main" }] },
@@ -136,6 +188,42 @@ describe("resolveCheckpoint", () => {
     });
     expect(result.refusal.explanation).toContain("repository-not-pushed");
     expect(githubCalls.filter((call) => call.startsWith("pr:"))).toEqual([]);
+  });
+
+  it("refuses a local-only commit when an anonymous public-repository probe says it is absent", async () => {
+    const requests: { readonly url: string; readonly authorization: string | undefined }[] = [];
+    const response = (status: number, body: unknown): GitHubFetchResponse => ({
+      status,
+      ok: status >= 200 && status < 300,
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    });
+    const fetchImpl: GitHubFetch = (url, init) => {
+      requests.push({ url, authorization: init.headers["authorization"] });
+      if (url.includes("/commits/")) return Promise.resolve(response(404, { message: "Not Found" }));
+      return Promise.resolve(response(200, { full_name: REPO_KEY }));
+    };
+    const github = createGitHubApi({ fetchImpl });
+    const { executor } = fakeGit(
+      gitHandlers({
+        // No remote-tracking ref: the exact checkpoint exists only in the local object database.
+        "rev-parse --verify --quiet refs/remotes/origin/main": { code: 1, stdout: "" },
+      }),
+    );
+
+    const result = await resolveCheckpoint({
+      git: executor,
+      github,
+      cwd: "/repo",
+      requestedRef: "HEAD",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.refusal).toMatchObject({ stage: "availability", reason: "checkpoint-not-remote" });
+    expect(result.refusal.explanation).toContain("repository-not-pushed");
+    expect(requests).toHaveLength(2);
+    expect(requests.every((request) => request.authorization === undefined)).toBe(true);
   });
 
   it("refuses when an inconclusive probe leaves reachability unverified", async () => {
