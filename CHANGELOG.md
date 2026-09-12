@@ -9,6 +9,14 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M5 (consultation execution engine and dispatch)
+
+- `jobs/engine.ts` implements `ConsultationEngine` coordinating synchronous and asynchronous consultation jobs.
+- Full lifecycle: queued job persistence before browser dispatch, Project and task conversation resolution, claim with dispatch HEAD binding, turn execution on isolated browser runtime, durable response persistence before completion, and targeted Pi session wake-up (INV-09, INV-15).
+- Keyed concurrency serialization for turns targeting the same conversation thread, alongside bounded concurrent execution for independent task conversations (M5 exit criterion verified).
+- Cancellation support mid-flight via AbortSignal or `engine.cancel(address)`.
+- Bounded retry and safe failure mappings; advisory failure non-blocking by default (INV-07).
+
 ### Added — M5 (durable job storage)
 
 - Versioned job records with immutable GitHub checkpoint identity, stable consultation IDs,

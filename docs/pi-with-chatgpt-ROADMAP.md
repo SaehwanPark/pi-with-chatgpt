@@ -603,11 +603,11 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 - [x] Define consultation job state machine.
 - [x] Support queued, running, completed, failed, cancelled.
-- [ ] Support synchronous and asynchronous modes.
-- [ ] Support `dependency: advisory | required`.
+- [x] Support synchronous and asynchronous modes.
+- [x] Support `dependency: advisory | required`.
 - [x] Allocate stable consultation IDs such as `adv-...`.
-- [ ] Persist state before browser submission.
-- [ ] Persist result before wake-up delivery.
+- [x] Persist state before browser submission.
+- [x] Persist result before wake-up delivery.
 
 ## Suggested Job Record
 
@@ -629,34 +629,37 @@ barrel keeps it a deep import so loading the extension never launches Chrome.
 
 ## Synchronous Execution
 
-- [ ] Submit and await adviser response.
-- [ ] Bound wait behavior.
-- [ ] Allow cancellation.
-- [ ] Surface provider/auth errors cleanly.
-- [ ] Preserve durable result if user interrupts UI delivery.
+- [x] Submit and await adviser response.
+- [x] Bound wait behavior.
+- [x] Allow cancellation.
+- [x] Surface provider/auth errors cleanly.
+- [x] Preserve durable result if user interrupts UI delivery.
 
 ## Asynchronous Execution
 
-- [ ] Dispatch without blocking the worker.
-- [ ] Persist detached/background job state safely.
-- [ ] Continue Pi work.
-- [ ] Detect completion.
-- [ ] Best-effort wake-up matching the correct Pi session/task.
-- [ ] Preserve result even if wake-up is missed.
-- [ ] Add `/advisor-status` and `/advisor-read`.
+- [x] Dispatch without blocking the worker.
+- [x] Persist detached/background job state safely.
+- [x] Continue Pi work.
+- [x] Detect completion.
+- [x] Best-effort wake-up matching the correct Pi session/task.
+- [x] Preserve result even if wake-up is missed.
+- [ ] Add `/advisor-status` and `/advisor-read`. (Commands registered in M8; engine backing exists.)
 
 ## Concurrency
 
-- [ ] Configure a conservative default maximum number of concurrent ChatGPT jobs.
-- [ ] Serialize operations within the same ChatGPT conversation.
-- [ ] Permit parallel conversations when safe.
-- [ ] Prevent Project-creation races.
-- [ ] Prevent auth-maintenance races.
-- [ ] Prevent duplicate job dispatch after retries/restarts.
+- [x] Configure a conservative default maximum number of concurrent ChatGPT jobs.
+- [x] Serialize operations within the same ChatGPT conversation.
+- [x] Permit parallel conversations when safe.
+- [x] Prevent Project-creation races.
+- [x] Prevent auth-maintenance races.
+- [x] Prevent duplicate job dispatch after retries/restarts.
 
 ## Exit Criteria
 
-- [ ] At least two independent task consultations can run safely without cross-delivery or conversation contamination.
+- [x] At least two independent task consultations can run safely without cross-delivery or conversation contamination.
+      — Evidence: `jobs/engine.test.ts` ("allows parallel consultations across independent task conversations (M5 exit criterion)",
+      "prevents cross-delivery to unrelated Pi session wake-up listeners (INV-09)", "serializes consultations within the same task conversation (INV-09)");
+      `jobs/store.test.ts` (27 storage tests covering claims, terminal races, recovery).
 
 ---
 
