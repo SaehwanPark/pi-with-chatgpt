@@ -9,6 +9,15 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added — M8 (Pi UX, slash commands, agent tools, and TUI integration)
+
+- `extension/commands.ts` implements 11 user-facing slash commands (`/advisor`, `/advisor-plan`, `/advisor-review`, `/advisor-audit`, `/advisor-debug`, `/advisor-challenge`, `/advisor-followup`, `/advisor-status`, `/advisor-read`, `/advisor-cancel`, `/advisor-auth`) wired into Pi's command palette.
+- `extension/tools.ts` implements 8 agent-facing tools for the Pi worker (`advisor_preflight`, `advisor_submit`, `advisor_read`, `advisor_status`, `advisor_followup`, `advisor_cancel`, `advisor_auth`, `advisor_disposition`) returning structured, opacity-filtered advice.
+- `extension/index.ts` provides pure activation wiring commands and tools without I/O or browser launches at startup, verified by `test/pi-smoke.mjs` against real Pi 0.85.1 installation.
+- `ui/tui.ts` formats single-line compact dispatch notifications (`[advisor:kind] dispatching id (repo@sha, mode)`), completion notifications with action item summaries, and on-demand full advisory markdown expansions.
+- `ui/policy.ts` implements conservative auto-consultation policy evaluation (`off | high-value | always`, default `high-value`) matching semantic triggers (architectural shift, migration/schema, security/auth, major refactor, concurrency/leak) while suppressing trivial edits (lint, formatting, comments, version bumps) and simple retry loops.
+- `ui/worker-facing.ts` maps ledger records and entries to minimal worker-facing projections (`WorkerFacingAdvisory`), enforcing INV-13 opacity by filtering out DOM selectors, conversation URLs, browser profile paths, and auth headers.
+
 ### Added — M7 (drift analysis and advice disposition)
 
 - `drift/graph-drift.ts` implements graph-level drift analysis between consultation checkpoint SHA and current HEAD SHA (`equal`, `checkpoint-is-ancestor`, `checkpoint-is-descendant`, `diverged`, `unreachable`) with ahead/behind commit distances (INV-03, INV-05).

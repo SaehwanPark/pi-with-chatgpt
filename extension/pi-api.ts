@@ -27,12 +27,29 @@ export interface AdviserCommandDefinition {
   handler(args: string, ctx: AdviserCommandContext): void | Promise<void>;
 }
 
+export interface AdviserToolDefinition<TParams = unknown, TDetails = unknown> {
+  readonly name: string;
+  readonly label?: string;
+  readonly description: string;
+  readonly promptSnippet?: string;
+  readonly promptGuidelines?: readonly string[];
+  readonly parameters: unknown;
+  execute(
+    toolCallId: string,
+    params: TParams,
+    signal?: AbortSignal,
+    onUpdate?: (update: unknown) => void,
+    ctx?: unknown,
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; details?: TDetails }>;
+}
+
 /**
  * Minimal view of Pi's `ExtensionAPI`: enough to register commands and tools and to observe the
  * session lifecycle. New members are added only when a milestone actually uses them.
  */
 export interface AdviserExtensionApi {
   registerCommand(name: string, definition: AdviserCommandDefinition): void;
+  registerTool?(tool: AdviserToolDefinition<unknown, unknown>): void;
   on(event: string, handler: (payload: unknown, ctx: AdviserCommandContext) => void | Promise<void>): void;
 }
 

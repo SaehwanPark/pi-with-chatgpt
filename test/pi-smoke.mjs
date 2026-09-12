@@ -47,18 +47,21 @@ if (!existsSync(entry)) fail("built entry", `run "npm run build" first (expected
 const module = await import(entry);
 check("default export is an activation function", typeof module.default === "function");
 
-let registrations = 0;
+let commandCount = 0;
+let toolCount = 0;
 const mockPi = {
   registerCommand() {
-    registrations += 1;
+    commandCount += 1;
   },
-  on() {
-    registrations += 1;
+  registerTool() {
+    toolCount += 1;
   },
+  on() {},
 };
 
 const activation = module.default(mockPi);
-check("activation registers nothing", registrations === 0, `registered ${registrations} resources`);
+check("activation registers 11 slash commands", commandCount === 11, `registered ${commandCount} commands`);
+check("activation registers 8 agent tools", toolCount === 8, `registered ${toolCount} tools`);
 check("activation returns its configuration", activation?.config?.dependencyDefault === "advisory");
 
 // 2 + 3. Real Pi installation, isolated from the developer's configuration.
