@@ -13,6 +13,7 @@ import type { ConsultationId } from "../protocol/checkpoint.js";
 import type { AdviserCommandContext, AdviserUi } from "./pi-api.js";
 import type { GitHubApi } from "../git/github-api.js";
 import type { ConsultationEngine } from "../jobs/engine.js";
+import { scopedTaskIdForSession } from "../jobs/record.js";
 
 const REPO = canonicalRepositoryKey("acme", "repo");
 const COMMIT = requireFullCommitSha(CHECKPOINT_SHA);
@@ -140,7 +141,7 @@ describe("extension/commands (M8)", () => {
     expect(submitAsync).toHaveBeenCalledOnce();
     expect(submitSync).not.toHaveBeenCalled();
     expect(submitAsync.mock.calls[0]?.[0]).toMatchObject({
-      taskId: "test-session-123",
+      taskId: scopedTaskIdForSession("test-session-123", "command"),
       mode: "async",
     });
     expect(notifications.some((n) => n.message.includes("queued for asynchronous delivery"))).toBe(true);

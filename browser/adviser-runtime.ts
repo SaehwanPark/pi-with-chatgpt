@@ -17,14 +17,16 @@
  * login must show a window or the person has nothing to type into.
  */
 import { chromium, type BrowserContext } from "playwright-core";
+import { join } from "node:path";
 
 import type { AdviserLoginPort, SessionObservation } from "../auth/login-flow.js";
 import type { AdviserConfig } from "../config/schema.js";
 import { adviserProfileFor, prepareStateStorage, type StateStoragePaths } from "./state-storage.js";
 import { PlaywrightAdviserDriver, type PlaywrightLauncher } from "./playwright-driver.js";
 import { AdviserRuntime } from "./runtime.js";
-import type { AdviserBrowserRuntime, AdviserProjectSurface, SurfaceState } from "./runtime-types.js";
+import type { AdviserBrowserRuntime, AdviserProjectSurface, SurfaceObservation, SurfaceState } from "./runtime-types.js";
 import type { AdviserProfile } from "./profile.js";
+import type { GitHubConnectorProbe } from "./consultation-capability.js";
 
 /**
  * The real launcher. Isolation comes entirely from `userDataDir`, which the caller obtained from
@@ -49,6 +51,8 @@ type PlaywrightLaunchContext = Awaited<ReturnType<PlaywrightLauncher>>["context"
 export interface AdviserBrowserBundle {
   readonly runtime: AdviserBrowserRuntime;
   readonly loginPort: AdviserLoginPort;
+  /** Optional extension-owned proof that ChatGPT can use its GitHub connector for a target checkpoint. */
+  readonly githubConnectorProbe?: GitHubConnectorProbe;
   /** M4 Project/conversation surface over the *same* tab the runtime consults through (INV-09). */
   readonly projectSurface: AdviserProjectSurface;
   readonly profile: AdviserProfile;
@@ -66,6 +70,9 @@ export async function createAdviserBrowser(paths: StateStoragePaths, config?: Ad
   const driver = new PlaywrightAdviserDriver({
     profile,
     launch: launchChrome,
+    // Chromium's profile singleton is process-local and platform-specific. Keep an extension-owned
+    // advisory lock beside the profile so a second Pi process is refused before it can touch cookies.
+    profileLockPath: join(paths.browserRoot, "chatgpt-profile.lock"),
     executablePath: config?.browserExecutablePath,
     pollIntervalMs: config?.pollIntervalMs,
   });
@@ -74,8 +81,20 @@ export async function createAdviserBrowser(paths: StateStoragePaths, config?: Ad
     profileDir: profile.userDataDir,
     defaultTurnTimeoutMs: config?.syncTimeoutMs,
   });
-  return { runtime, loginPort: loginPortFor(profile, runtime), projectSurface: driver.projectSurface(), profile };
+  return {
+    runtime,
+    loginPort: loginPortFor(profile, runtime),
+    // The Playwright surface does not expose a supported connected-app permission API. Returning an
+    // explicit unverified outcome is the safe default: production composition must inject a reviewed
+    // connector probe before any GitHub-grounded consultation can run.
+    githubConnectorProbe: unverifiedGitHubConnectorProbe,
+    projectSurface: driver.projectSurface(),
+    profile,
+  };
 }
+
+/** Fail closed until a connector implementation can prove access to the exact repository/checkpoint. */
+const unverifiedGitHubConnectorProbe: GitHubConnectorProbe = () => Promise.resolve("unverified");
 
 /**
  * Implement the M2 login port against the runtime.
@@ -100,7 +119,7 @@ export function loginPortFor(profile: AdviserProfile, runtime: AdviserBrowserRun
     },
     async observeSession(_profile: AdviserProfile): Promise<SessionObservation> {
       const observation = await runtime.probeSurface();
-      return toSessionObservation(observation.state, observation.explanation);
+      return toSessionObservation(observation.state, observation.explanation, observation.identity);
     },
     // Nothing to flush explicitly: launchPersistentContext persists the profile on close, and the manual
     // login flow seals before it reports success. This method exists so the flow's contract is honoured.
@@ -112,7 +131,11 @@ export function loginPortFor(profile: AdviserProfile, runtime: AdviserBrowserRun
 }
 
 /** Map a surface state onto the login flow's terminal observation set. */
-export function toSessionObservation(state: SurfaceState, explanation?: string): SessionObservation {
+export function toSessionObservation(
+  state: SurfaceState,
+  explanation?: string,
+  identity?: SurfaceObservation["identity"],
+): SessionObservation {
   switch (state) {
     case "signed-out":
       return { kind: "signed-out" };
@@ -121,7 +144,7 @@ export function toSessionObservation(state: SurfaceState, explanation?: string):
     case "conversation-ready":
     case "generating":
     case "response-complete":
-      return { kind: "signed-in" };
+      return { kind: "signed-in", ...(identity === undefined ? {} : { identity }) };
     default:
       // "unknown" and provider errors are not proof of either state; report unreachable so the flow keeps
       // polling on its own schedule rather than declaring success or a challenge it did not see.

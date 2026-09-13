@@ -148,6 +148,13 @@ export function deliveryKeyForSession(sessionId: string): string {
   return createHash("sha256").update(sessionId, "utf8").digest("hex");
 }
 
+/** Namespace a logical task by its Pi session without persisting the raw session identifier. */
+export function scopedTaskIdForSession(sessionId: string, logicalTaskId = "default"): string {
+  const normalized = logicalTaskId.trim();
+  if (normalized.length === 0 || hasControlCharacters(normalized)) throw new InvalidJobRecordError();
+  return `pi-session-${deliveryKeyForSession(sessionId)}-task-${normalized}`;
+}
+
 /** Allocate a stable adviser id before browser dispatch. */
 export function generateConsultationId(): ConsultationId {
   return `adv-${randomUUID()}` as ConsultationId;

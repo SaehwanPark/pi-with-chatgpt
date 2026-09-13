@@ -24,6 +24,18 @@ session state: `signed-in`, `signed-out`, `human-verification`, `unreachable`, o
 fresh browser probe was available. A historical `SESSION-ESTABLISHED` marker only records that a human
 completed sign-in once; it is never treated as current readiness.
 
+Production consultation commands and tools pass the fresh browser observation, together with Pi's
+credential-derived identity, through `auth/readiness.ts` and the single `resolveAdviserAuth` state
+machine before dispatch. A demonstrated account mismatch stops with `review-account-mismatch`; a signed-in
+browser that exposes no stable account identifier is also refused with
+`browser-identity-unverified`. No consultation is sent until the browser account can be verified (or a
+pair-bound human decision is supplied for a demonstrated mismatch).
+
+The shipped Playwright adapter does not claim connected-app permissions it cannot observe: its default
+GitHub connector probe is `unverified`, so production dispatch remains refused until a reviewed
+extension-owned connector verifier is supplied through activation. This is an intentional release
+limitation, not a best-effort GitHub transport.
+
 ## Credential discovery
 
 1. **Preferred** — Pi's own `AuthStorage.getAuth("openai-codex")`, resolved through the installed
@@ -68,7 +80,7 @@ log could leak.
 | `…/browser/capability.json` | last capability probe | `0600` |
 | `…/browser/chrome-state-import.json` | import provenance (no identity detail) | `0600` |
 | `…/browser/imported/` | staging copy before it becomes the profile | `0700` |
-| `…/browser/profile.lock` | single-writer lock | `0600` |
+| `…/browser/chatgpt-profile.lock` | single-writer lock | `0600` |
 | `~/.pi/agent/pi-with-chatgpt/projects.json` | repository → ChatGPT Project mapping | `0600` |
 | `…/conversations/` | task/kind → ChatGPT conversation records | `0700` tree; files `0600` |
 | `…/locks/` | short-lived mapping/conversation coordination locks | `0700` tree; files `0600` |
@@ -165,7 +177,17 @@ age alone:
 All four checks block a consultation. GitHub is the sole repository-context channel in V1, so a missing
 or unverified connector cannot produce a repository-grounded answer. An **unverified** check is distinct
 from a failed one: "we have not looked" must not be reported as "it is broken", and it never dispatches
-a consultation. See `browser/capability-checks.ts`.
+a consultation. The production dispatch boundary is `browser/consultation-capability.ts`: its
+`ensureConsultationCapability` method re-probes the browser and model, requires a connector verifier for
+the exact repository/checkpoint, and refuses when that verifier is missing. See
+`browser/capability-checks.ts` for checklist classification and `browser/consultation-capability.ts`
+for the authoritative gate.
+
+The default Playwright browser bundle intentionally reports the connector as `unverified`: the ChatGPT
+web surface does not expose a stable, supported connected-app permission API that can prove access to an
+exact repository and commit. A deployment may inject a reviewed `GitHubConnectorProbe` that performs
+that exact proof. Until then, both `advisor_preflight` and consultation submission refuse; there is no
+anonymous or generic-answer fallback.
 
 ## Platform support
 

@@ -17,6 +17,18 @@ describe("toSessionObservation", () => {
     }
   });
 
+  it("carries only a browser-observed identity into the login observation", () => {
+    const identity = {
+      source: "chatgpt-browser" as const,
+      accountIdHint: "account-from-surface",
+      accountIdNamespace: "chatgpt-account" as const,
+    };
+    expect(toSessionObservation("conversation-ready", undefined, identity)).toEqual({
+      kind: "signed-in",
+      identity,
+    });
+  });
+
   it("maps a sign-in shell to signed-out", () => {
     expect(toSessionObservation("signed-out")).toEqual({ kind: "signed-out" });
   });

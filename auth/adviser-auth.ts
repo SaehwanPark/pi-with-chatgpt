@@ -59,6 +59,7 @@ export type AdviserAuthState =
   | "plan-unsupported"
   | "environment-unavailable"
   | "account-mismatch"
+  | "browser-identity-unverified"
   | "adviser-skipped"
   | "ready"
   | "ready-unverified-identity";

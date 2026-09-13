@@ -49,8 +49,8 @@ Configuration can be applied at two levels:
 | `enabled` | boolean | `true` | `true`, `false` | Global, Project |
 | `dependencyDefault` | string | `"advisory"` | `"advisory"`, `"required"` | **Global only** for `"required"` |
 | `defaultMode` | string | `"sync"` | `"sync"`, `"async"` | Global, Project |
-| `syncTimeoutMs` | number | `240000` | `5000` to `900000` (5s to 15m) | Global, Project |
-| `pollIntervalMs` | number | `5000` | `1000` to `600000` (1s to 10m) | Global, Project |
+| `syncTimeoutMs` | number | `240000` | `5000` to `900000` (5s to 15m) | Process-shared browser setting; must agree across active workspaces |
+| `pollIntervalMs` | number | `5000` | `1000` to `600000` (1s to 10m) | Process-shared browser setting; must agree across active workspaces |
 | `autoConsult.enabled` | boolean | `false` | `true`, `false` | **Global only** |
 | `autoConsult.confirmBeforeDispatch` | boolean | `true` | `true`, `false` | Global, Project |
 | `browserExecutablePath` | string | *auto-detected* | Absolute file path | **Global only** |
@@ -77,10 +77,18 @@ The maximum duration Pi will wait for a synchronous consultation turn. Defaults 
 ### `pollIntervalMs` (number, milliseconds)
 The polling frequency used when monitoring asynchronous jobs. Defaults to `5000` (5 seconds). Kept intentionally coarse to avoid hammering the local Playwright browser process.
 
+`syncTimeoutMs` and `pollIntervalMs` are consumed by the one extension-owned browser shared by active
+workspaces in a Pi process. If a second workspace supplies different values, service composition refuses
+to reuse the browser rather than silently applying one workspace's timing to another.
+
 ### `autoConsult` (object)
-Allows Pi worker models to suggest consultations automatically at high-leverage architectural moments:
-- `enabled` (boolean, default `false`): Enables heuristic triggers (e.g. major structural changes, security-sensitive edits). Must be enabled in user global settings.
-- `confirmBeforeDispatch` (boolean, default `true`): Prompts the user before dispatching an auto-consultation to GitHub and ChatGPT.
+The setting is parsed and persisted for forward-compatible configuration, but V1 has no automatic trigger
+or dispatch path. Consultations are dispatched only by an explicit slash command or `advisor_submit` tool
+call. Enabling this option therefore does not cause background work or change the worker's execution path;
+the fields remain reserved for the future auto-consultation milestone:
+
+- `enabled` (boolean, default `false`): Reserved; currently has no effect.
+- `confirmBeforeDispatch` (boolean, default `true`): Reserved; currently has no effect.
 
 ### `browserExecutablePath` (string, optional)
 Explicit file path to Google Chrome or Chromium executable. If omitted, Playwright automatically discovers the system Chrome installation.

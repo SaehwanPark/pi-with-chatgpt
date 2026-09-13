@@ -11,6 +11,20 @@ change invalidates (see `AGENTS.md`).
 
 ### Fixed
 
+- Addressed the Round 2 audit: capability verification is now an authoritative production dispatch gate,
+  with ChatGPT access, live model selection, exact GitHub connector/repository checks, and fail-closed
+  behavior when connector proof is unavailable.
+- Fixed the single-tab concurrency and cancellation hazards: semaphore slots transfer correctly under
+  contention, all workspaces share one browser transaction scheduler, cancellation reaches the browser
+  polling loop, and terminal ledger projection follows the durable winner.
+- Hardened browser interaction and ownership: visible DOM duplicates are resolved to the actual element,
+  `auto-best` uses deterministic capability ranking, and the extension-owned persistent profile is held
+  by a stale-owner-aware lock for its full lifetime.
+- Namespaced worker task identifiers by Pi session, enforced live Pi/browser auth resolution, and rejected
+  structurally invalid ledger records while preserving only syntactically truncated trailing-line recovery.
+- Removed stale capability positives, required browser-account identity for production dispatch, redacted
+  auth/profile paths from status output, rejected duplicate action-item ids, and marked unknown model
+  rankings degraded.
 - Activated the GitHub Actions verification workflow under `.github/workflows/ci.yml`, covering
   Linux and macOS typecheck, lint, build, unit tests, and Pi installation/load smoke tests.
 - Addressed the 2026-09-12 production audit: activation now uses a lazy real service composition,

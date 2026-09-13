@@ -25,6 +25,7 @@ import { ConsultationJobStore, jobAddress } from "./store.js";
 import type { ConsultationAnchor, ConsultationId } from "../protocol/checkpoint.js";
 import { canonicalRepositoryKey } from "../protocol/repo.js";
 import { requireFullCommitSha } from "../protocol/sha.js";
+import { createConsultationCapabilityGate } from "../browser/consultation-capability.js";
 
 const VALID_COMMIT = requireFullCommitSha("0f2c8f4a1d6b4f1e9c2d8e6a5b4c3d2e1f0a9b8c");
 const RECEIPT_COMMIT = requireFullCommitSha("1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d");
@@ -316,6 +317,61 @@ describe("ConsultationEngine (M5)", () => {
     }
   });
 
+  it("transfers the browser slot across contention so a later consultation still runs", async () => {
+    const fixture = await createEngineFixture();
+    try {
+      let resolveFirstTurn: () => void = () => undefined;
+      const firstTurnStarted = new Promise<void>((resolve) => {
+        resolveFirstTurn = resolve;
+      });
+      let releaseFirstTurn: () => void = () => undefined;
+      const firstTurnRelease = new Promise<void>((resolve) => {
+        releaseFirstTurn = resolve;
+      });
+      let turnNumber = 0;
+
+      fixture.setTurnDelay(
+        0,
+        () => {
+          turnNumber += 1;
+          if (turnNumber === 1) resolveFirstTurn();
+        },
+        undefined,
+        async () => {
+          if (turnNumber === 1) await firstTurnRelease;
+        },
+      );
+
+      const request = (taskId: string): EngineConsultationRequest => ({
+        anchor: VALID_ANCHOR,
+        branch: "main",
+        taskId,
+        deliveryKey: `delivery-${taskId}`,
+        kind: "consult",
+        prompt: `Question from ${taskId}`,
+        modelId: "gpt-5",
+      });
+
+      const first = fixture.engine.submitSync(request("task-slot-A"));
+      await firstTurnStarted;
+
+      const second = fixture.engine.submitSync(request("task-slot-B"));
+      await waitForQueuedJob(fixture.store);
+      releaseFirstTurn();
+
+      const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+      expect(firstOutcome.ok).toBe(true);
+      expect(secondOutcome.ok).toBe(true);
+
+      // This third job is the regression check. Before slot transfer, A+B left the internal count at
+      // the limit even though no browser turn was active, so C waited forever.
+      const thirdOutcome = await resolvesBefore(fixture.engine.submitSync(request("task-slot-C")), 500);
+      expect(thirdOutcome.ok).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("cancels an in-flight consultation without recording fake completion", async () => {
     const fixture = await createEngineFixture();
     try {
@@ -347,6 +403,55 @@ describe("ConsultationEngine (M5)", () => {
       expect(stored?.state).toBe("cancelled");
       expect(await fixture.engine.ledger.getById(outcome.record!.consultationId, REPOSITORY))
         .toMatchObject({ status: "cancelled" });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("does not append completion history when cancellation wins during terminal persistence", async () => {
+    const fixture = await createEngineFixture();
+    try {
+      let releaseCompletion: () => void = () => undefined;
+      const completionRelease = new Promise<void>((resolve) => {
+        releaseCompletion = resolve;
+      });
+      let completeEntered: () => void = () => undefined;
+      const completionEntered = new Promise<void>((resolve) => {
+        completeEntered = resolve;
+      });
+
+      const originalComplete = fixture.store.complete.bind(fixture.store);
+      let blockedAddress: ReturnType<typeof jobAddress> | undefined;
+      fixture.store.complete = async (address, input) => {
+        blockedAddress = address;
+        completeEntered();
+        await completionRelease;
+        return await originalComplete(address, input);
+      };
+
+      const submission = fixture.engine.submitSync({
+        anchor: VALID_ANCHOR,
+        branch: "main",
+        taskId: "task-terminal-race",
+        deliveryKey: "delivery-terminal-race",
+        kind: "consult",
+        prompt: "Wait for the terminal race barrier.",
+        modelId: "gpt-5",
+      });
+
+      await completionEntered;
+      expect(blockedAddress).toBeDefined();
+      const cancelPromise = fixture.engine.cancel(blockedAddress!);
+      await waitForJobState(fixture.store, blockedAddress!, "cancelled");
+      releaseCompletion();
+
+      const [outcome, cancelled] = await Promise.all([submission, cancelPromise]);
+      expect(cancelled.state).toBe("cancelled");
+      expect(outcome).toMatchObject({ ok: false, failure: "cancelled", record: { state: "cancelled" } });
+
+      const history = (await fixture.engine.ledger.list({ repository: REPOSITORY }))
+        .filter((entry) => entry.consultationId === blockedAddress!.consultationId);
+      expect(history.map((entry) => entry.status)).toEqual(["cancelled"]);
     } finally {
       await fixture.cleanup();
     }
@@ -623,6 +728,10 @@ async function createEngineFixture(): Promise<{
     runtime,
     getHeadCommit: () => Promise.resolve(RECEIPT_COMMIT),
     maxConcurrentJobs: 3,
+    capabilityGate: createConsultationCapabilityGate({
+      runtime,
+      githubConnectorProbe: () => Promise.resolve("verified"),
+    }),
   });
 
   return {
@@ -652,5 +761,38 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void
   while (!predicate()) {
     if (Date.now() - start > timeoutMs) throw new Error("Timed out waiting for condition");
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function waitForQueuedJob(store: ConsultationJobStore, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while ((await store.list({ states: ["queued"] })).length === 0) {
+    if (Date.now() - start > timeoutMs) throw new Error("Timed out waiting for queued job");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function waitForJobState(
+  store: ConsultationJobStore,
+  address: ReturnType<typeof jobAddress>,
+  state: "queued" | "running" | "completed" | "failed" | "cancelled",
+  timeoutMs = 2000,
+): Promise<void> {
+  const start = Date.now();
+  while ((await store.get(address))?.state !== state) {
+    if (Date.now() - start > timeoutMs) throw new Error(`Timed out waiting for ${state} job`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function resolvesBefore<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`Promise did not resolve within ${timeoutMs}ms`)), timeoutMs);
+      void promise.then(resolve, reject);
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }

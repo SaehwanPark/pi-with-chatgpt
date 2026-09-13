@@ -40,6 +40,7 @@ import { toWorkerFacingAdvisory } from "../ui/worker-facing.js";
 import { buildProjectInstructions } from "../chatgpt/project-instructions.js";
 import { ensurePrivateDirectory } from "../ledger/state-store.js";
 import { ensureProjectForRepository } from "../chatgpt/project-mapping.js";
+import { createConsultationCapabilityGate } from "../browser/consultation-capability.js";
 
 const VALID_COMMIT = requireFullCommitSha("0f2c8f4a1d6b4f1e9c2d8e6a5b4c3d2e1f0a9b8c");
 const RECEIPT_COMMIT = requireFullCommitSha("1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d");
@@ -155,6 +156,10 @@ async function createHarness(maxConcurrentJobs = 2): Promise<TestHarness> {
     runtime,
     getHeadCommit: () => Promise.resolve(RECEIPT_COMMIT),
     maxConcurrentJobs,
+    capabilityGate: createConsultationCapabilityGate({
+      runtime,
+      githubConnectorProbe: () => Promise.resolve("verified"),
+    }),
   });
 
   return {

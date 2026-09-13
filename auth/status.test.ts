@@ -67,7 +67,7 @@ describe("adviserStatus", () => {
     const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
     const authFile = await writeAuthFile(dir, "account-deep-secret");
     const status = await adviserStatus(profileFor(join(dir, "profile")), { piAuthPath: authFile });
-    expect(status.piAuthFile).toEqual({ path: authFile, readable: true, mode: "600" });
+    expect(status.piAuthFile).toEqual({ readable: true, mode: "600" });
     if (!status.openAiSignIn.present) throw new Error("expected a sign-in");
     expect(status.openAiSignIn).toMatchObject({ via: "auth-file", accountIdPrefix: "account-", planHint: "pro", expired: false });
     expect(status.openAiSignIn.emailMasked).toBe("s***@example.com");
@@ -164,5 +164,13 @@ describe("assertStatusIsRedacted", () => {
     const status = await adviserStatus(profileFor(join(dir, "profile")), { piAuthPath: join(dir, "absent.json") });
     const leaked = { ...status, profile: { userDataDir: "eyJhbGciOi", exists: false, everSignedInHere: false } } as unknown as typeof status;
     expect(() => assertStatusIsRedacted(leaked)).toThrow(/JWT/u);
+  });
+
+  it("does not expose auth or browser filesystem paths", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pwc-status-"));
+    const status = await adviserStatus(profileFor(join(dir, "profile")), { piAuthPath: join(dir, "auth.json") });
+    const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain(dir);
+    expect(serialized).not.toContain("userDataDir");
   });
 });

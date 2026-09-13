@@ -23,12 +23,17 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 
-import type { ConsultationId } from "../protocol/checkpoint.js";
-import type { FullCommitSha } from "../protocol/sha.js";
+import { isConsultationId, type ConsultationId } from "../protocol/checkpoint.js";
+import { isFullCommitSha, type FullCommitSha } from "../protocol/sha.js";
 import type { GitHubRepositoryKey } from "../protocol/repo.js";
-import type { ConsultationKind } from "../chatgpt/scope.js";
-import type { DependencyMode } from "../protocol/dependency.js";
-import type { DurableJobState, JobResultStatus } from "../jobs/record.js";
+import { isConsultationKind, type ConsultationKind } from "../protocol/brief.js";
+import { DEPENDENCY_MODES, type DependencyMode } from "../protocol/dependency.js";
+import {
+  DURABLE_JOB_STATES,
+  JOB_RESULT_STATUSES,
+  type DurableJobState,
+  type JobResultStatus,
+} from "../jobs/record.js";
 import type { JobRecord } from "../jobs/record.js";
 import {
   type AdviserStateLayout,
@@ -449,20 +454,27 @@ export class ConsultationLedger {
       const line = rawLine.trim();
       if (line.length === 0) continue;
 
+      let raw: unknown;
       try {
-        const raw: unknown = JSON.parse(line);
-        const parsed = normalizeLedgerEntry(raw);
-        if (parsed) {
-          entries.push(parsed);
-        } else if (i !== lastNonEmptyLine) {
-          throw new LedgerError("Ledger contains a malformed non-trailing record.");
-        }
+        raw = JSON.parse(line);
       } catch {
-        // Tolerate only a malformed final non-empty line: an interrupted append can leave a
-        // truncated tail, but silently dropping a middle record would destroy audit history.
+        // Tolerate only a syntactically malformed final non-empty line: an interrupted append can
+        // leave a truncated tail, but silently dropping a middle record would destroy audit history.
         if (i === lastNonEmptyLine) continue;
         throw new LedgerError("Ledger contains a malformed non-trailing record.");
       }
+
+      // A complete JSON value with the wrong shape is not an interrupted append. Reject it even
+      // when it is the final line so tampered history cannot be hidden behind tail tolerance.
+      const parsed = normalizeLedgerEntry(raw);
+      if (parsed === undefined) {
+        throw new LedgerError(
+          i === lastNonEmptyLine
+            ? "Ledger contains a malformed trailing record."
+            : "Ledger contains a malformed non-trailing record.",
+        );
+      }
+      entries.push(parsed);
     }
 
     return entries;
@@ -475,55 +487,226 @@ export class ConsultationLedger {
 function normalizeLedgerEntry(raw: unknown): LedgerEntry | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
+  if (!hasOnlyKeys(obj, LEDGER_ENTRY_KEYS)) return undefined;
 
-  if (typeof obj.consultationId !== "string") return undefined;
-  if (typeof obj.repository !== "string") return undefined;
+  // Missing fields are deliberately migrated below for the original M6 ledger format. Once a
+  // field is present, however, it must have the shape promised by LedgerEntry; silently replacing
+  // a malformed value with a default would make a tampered record look like valid history.
+  const consultationId = obj.consultationId;
+  const repository = obj.repository;
+  const resolvedCommit = obj.resolvedCommit;
+  const schemaVersion = obj.schemaVersion === undefined ? LEDGER_ENTRY_SCHEMA_VERSION : obj.schemaVersion;
+  const taskId = obj.taskId === undefined ? "" : obj.taskId;
+  const branch = obj.branch === undefined ? null : obj.branch;
+  const requestedRef = obj.requestedRef === undefined ? "HEAD" : obj.requestedRef;
+  const headAtDispatch = obj.headAtDispatch === undefined ? resolvedCommit : obj.headAtDispatch;
+  const reviewedCommit = obj.reviewedCommit;
+  const headAtReceipt = obj.headAtReceipt;
+  const prNumber = obj.prNumber;
+  const kind = obj.kind === undefined ? "consult" : obj.kind;
+  const dependency = obj.dependency === undefined ? "advisory" : obj.dependency;
+  const projectId = obj.projectId === undefined ? "" : obj.projectId;
+  const conversationId = obj.conversationId === undefined ? "" : obj.conversationId;
+  const status = obj.status === undefined ? "completed" : obj.status;
+  const resultStatus = obj.resultStatus;
+  const responsePath = obj.responsePath;
+  const responseSha256 = obj.responseSha256;
+  const adviserAnswer = obj.adviserAnswer;
+  const createdAt = obj.createdAt === undefined ? new Date(0).toISOString() : obj.createdAt;
+  const completedAt = obj.completedAt;
+  const failureReason = obj.failureReason;
+  const provenanceNotes = obj.provenanceNotes;
 
-  const schemaVersion = typeof obj.schemaVersion === "number" && obj.schemaVersion === 1 ? 1 : 1;
+  if (!isConsultationIdValue(consultationId)) return undefined;
+  if (!isRepositoryKey(repository)) return undefined;
+  if (schemaVersion !== LEDGER_ENTRY_SCHEMA_VERSION) return undefined;
+  if (!isExactFullCommitSha(resolvedCommit)) return undefined;
+  if (!isString(taskId)) return undefined;
+  if (branch !== null && !isNonEmptyText(branch)) return undefined;
+  if (!isNonEmptyText(requestedRef)) return undefined;
+  if (!isExactFullCommitSha(headAtDispatch)) return undefined;
+  if (reviewedCommit !== undefined && !isExactFullCommitSha(reviewedCommit)) return undefined;
+  if (headAtReceipt !== undefined && !isExactFullCommitSha(headAtReceipt)) return undefined;
+  if (prNumber !== undefined && !isPositiveInteger(prNumber)) return undefined;
+  if (!isConsultationKindValue(kind)) return undefined;
+  if (!isDependencyModeValue(dependency)) return undefined;
+  if (!isString(projectId) || !isString(conversationId)) return undefined;
+  if (!isDurableJobStateValue(status)) return undefined;
+  if (resultStatus !== undefined && !isJobResultStatusValue(resultStatus)) return undefined;
+  if (responsePath !== undefined && !isNonEmptyText(responsePath)) return undefined;
+  if (responseSha256 !== undefined && !isSha256(responseSha256)) return undefined;
+  if (adviserAnswer !== undefined && !isString(adviserAnswer)) return undefined;
+  if (!isTimestamp(createdAt)) return undefined;
+  if (completedAt !== undefined && !isTimestamp(completedAt)) return undefined;
+  if (failureReason !== undefined && !isString(failureReason)) return undefined;
+  if (provenanceNotes !== undefined && !isStringArray(provenanceNotes)) return undefined;
 
   const actionItems: LedgerActionItemEntry[] = [];
-  if (Array.isArray(obj.actionItems)) {
+  const actionItemIds = new Set<string>();
+  if (hasOwn(obj, "actionItems")) {
+    if (!Array.isArray(obj.actionItems)) return undefined;
     for (const item of obj.actionItems) {
-      if (typeof item === "object" && item !== null) {
-        const itemObj = item as Record<string, unknown>;
-        if (typeof itemObj.id === "string" && typeof itemObj.summary === "string") {
-          actionItems.push({
-            id: itemObj.id,
-            summary: itemObj.summary,
-            disposition: isActionItemDisposition(itemObj.disposition) ? itemObj.disposition : "pending",
-            dispositionNote: typeof itemObj.dispositionNote === "string" ? itemObj.dispositionNote : undefined,
-            updatedAt: typeof itemObj.updatedAt === "string" ? itemObj.updatedAt : undefined,
-          });
-        }
-      }
+      if (!isRecord(item)) return undefined;
+      if (!hasOnlyKeys(item, ACTION_ITEM_KEYS)) return undefined;
+      const id = item.id;
+      const summary = item.summary;
+      const disposition = item.disposition === undefined ? "pending" : item.disposition;
+      const dispositionNote = item.dispositionNote;
+      const updatedAt = item.updatedAt;
+      if (!isString(id) || id.trim().length === 0 || !isString(summary)) return undefined;
+      const normalizedId = id.trim().toLowerCase();
+      if (actionItemIds.has(normalizedId)) return undefined;
+      actionItemIds.add(normalizedId);
+      if (!isActionItemDisposition(disposition)) return undefined;
+      if (dispositionNote !== undefined && !isString(dispositionNote)) return undefined;
+      if (updatedAt !== undefined && !isTimestamp(updatedAt)) return undefined;
+      actionItems.push({
+        id,
+        summary,
+        disposition,
+        ...(dispositionNote === undefined ? {} : { dispositionNote }),
+        ...(updatedAt === undefined ? {} : { updatedAt }),
+      });
     }
   }
 
+  if (responsePath !== undefined && responsePath !== `responses/${consultationId}.md`) return undefined;
+
   return {
-    schemaVersion,
-    consultationId: obj.consultationId as ConsultationId,
-    taskId: typeof obj.taskId === "string" ? obj.taskId : "",
-    repository: obj.repository as GitHubRepositoryKey,
-    branch: typeof obj.branch === "string" ? obj.branch : null,
-    requestedRef: typeof obj.requestedRef === "string" ? obj.requestedRef : "HEAD",
-    resolvedCommit: obj.resolvedCommit as FullCommitSha,
-    reviewedCommit: typeof obj.reviewedCommit === "string" ? (obj.reviewedCommit as FullCommitSha) : undefined,
-    headAtDispatch: (obj.headAtDispatch ?? obj.resolvedCommit) as FullCommitSha,
-    headAtReceipt: typeof obj.headAtReceipt === "string" ? (obj.headAtReceipt as FullCommitSha) : undefined,
-    prNumber: typeof obj.prNumber === "number" ? obj.prNumber : undefined,
-    kind: (obj.kind ?? "consult") as ConsultationKind,
-    dependency: (obj.dependency ?? "advisory") as DependencyMode,
-    projectId: typeof obj.projectId === "string" ? obj.projectId : "",
-    conversationId: typeof obj.conversationId === "string" ? obj.conversationId : "",
-    status: (obj.status ?? "completed") as DurableJobState,
-    resultStatus: typeof obj.resultStatus === "string" ? (obj.resultStatus as JobResultStatus) : undefined,
-    responsePath: typeof obj.responsePath === "string" ? obj.responsePath : undefined,
-    responseSha256: typeof obj.responseSha256 === "string" ? obj.responseSha256 : undefined,
-    adviserAnswer: typeof obj.adviserAnswer === "string" ? obj.adviserAnswer : undefined,
+    schemaVersion: LEDGER_ENTRY_SCHEMA_VERSION,
+    consultationId,
+    taskId,
+    repository,
+    branch,
+    requestedRef,
+    resolvedCommit,
+    ...(reviewedCommit === undefined ? {} : { reviewedCommit }),
+    headAtDispatch,
+    ...(headAtReceipt === undefined ? {} : { headAtReceipt }),
+    ...(prNumber === undefined ? {} : { prNumber }),
+    kind,
+    dependency,
+    projectId,
+    conversationId,
+    status,
+    ...(resultStatus === undefined ? {} : { resultStatus }),
+    ...(responsePath === undefined ? {} : { responsePath }),
+    ...(responseSha256 === undefined ? {} : { responseSha256 }),
+    ...(adviserAnswer === undefined ? {} : { adviserAnswer }),
     actionItems,
-    createdAt: typeof obj.createdAt === "string" ? obj.createdAt : new Date(0).toISOString(),
-    completedAt: typeof obj.completedAt === "string" ? obj.completedAt : undefined,
-    failureReason: typeof obj.failureReason === "string" ? obj.failureReason : undefined,
-    provenanceNotes: Array.isArray(obj.provenanceNotes) ? (obj.provenanceNotes as readonly string[]) : undefined,
+    createdAt,
+    ...(completedAt === undefined ? {} : { completedAt }),
+    ...(failureReason === undefined ? {} : { failureReason }),
+    ...(provenanceNotes === undefined ? {} : { provenanceNotes }),
   };
+}
+
+function isConsultationIdValue(value: unknown): value is ConsultationId {
+  return typeof value === "string" && isConsultationId(value);
+}
+
+function isRepositoryKey(value: unknown): value is GitHubRepositoryKey {
+  return typeof value === "string" && /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u.test(value);
+}
+
+function isExactFullCommitSha(value: unknown): value is FullCommitSha {
+  return typeof value === "string" && value === value.trim() && isFullCommitSha(value);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
+function isString(value: unknown): value is string {
+  // Markdown responses and notes are intentionally allowed to contain newlines. NUL and DEL
+  // remain forbidden because they cannot be represented safely in the line-oriented state files.
+  return typeof value === "string" && !containsNulOrDelete(value);
+}
+
+function isNonEmptyText(value: unknown): value is string {
+  return isString(value) && value.trim().length > 0 && !containsLineControl(value);
+}
+
+function containsNulOrDelete(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code === 0 || code === 0x7f;
+  });
+}
+
+function containsLineControl(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code >= 1 && code <= 0x1f;
+  });
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function isTimestamp(value: unknown): value is string {
+  return isNonEmptyText(value) && Number.isFinite(Date.parse(value));
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((entry) => isString(entry));
+}
+
+function isConsultationKindValue(value: unknown): value is ConsultationKind {
+  return typeof value === "string" && isConsultationKind(value);
+}
+
+function isDependencyModeValue(value: unknown): value is DependencyMode {
+  return typeof value === "string" && (DEPENDENCY_MODES as readonly string[]).includes(value);
+}
+
+function isDurableJobStateValue(value: unknown): value is DurableJobState {
+  return typeof value === "string" && (DURABLE_JOB_STATES as readonly string[]).includes(value);
+}
+
+function isJobResultStatusValue(value: unknown): value is JobResultStatus {
+  return typeof value === "string" && (JOB_RESULT_STATUSES as readonly string[]).includes(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+const LEDGER_ENTRY_KEYS = [
+  "schemaVersion",
+  "consultationId",
+  "taskId",
+  "repository",
+  "branch",
+  "requestedRef",
+  "resolvedCommit",
+  "reviewedCommit",
+  "headAtDispatch",
+  "headAtReceipt",
+  "prNumber",
+  "kind",
+  "dependency",
+  "projectId",
+  "conversationId",
+  "status",
+  "resultStatus",
+  "responsePath",
+  "responseSha256",
+  "adviserAnswer",
+  "actionItems",
+  "createdAt",
+  "completedAt",
+  "failureReason",
+  "provenanceNotes",
+] as const;
+
+const ACTION_ITEM_KEYS = ["id", "summary", "disposition", "dispositionNote", "updatedAt"] as const;
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
 }

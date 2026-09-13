@@ -8,6 +8,9 @@
  * distinguish this turn's advice from last turn's, which is exactly the bug these tests exist to keep fixed.
  */
 import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { CHATGPT_URLS } from "./chatgpt-dom.js";
 import { createAdviserProfile } from "./profile.js";
@@ -41,6 +44,8 @@ interface FakeNode {
   readonly visible: boolean;
   /** Only `href` is read (M4 parses Project/conversation ids out of links). */
   readonly href?: string;
+  readonly ariaDisabled?: boolean;
+  readonly disabled?: boolean;
 }
 
 /** Mutable on purpose: the thread has to change while the driver is polling it. */
@@ -82,8 +87,15 @@ function fakePage(thread: FakeThread, startUrl: string, title: () => Promise<str
           isVisible: () => Promise.resolve(target !== undefined && target.visible),
           innerText: () => Promise.resolve(target?.text ?? ""),
           inputValue: () => Promise.resolve(target?.text ?? ""),
-          getAttribute: (name: string) =>
-            Promise.resolve(name === "href" ? (target?.href ?? null) : null),
+          getAttribute: (name: string) => Promise.resolve(
+            name === "href"
+              ? (target?.href ?? null)
+              : name === "aria-disabled"
+                ? (target?.ariaDisabled === undefined ? null : String(target.ariaDisabled))
+                : name === "disabled"
+                  ? (target?.disabled ? "" : null)
+                  : null,
+          ),
           click: () => {
             clicked.push(target?.text ?? "<no node>");
             return Promise.resolve();
@@ -162,6 +174,25 @@ function scriptedSleep(step: (tick: number) => void): (ms: number) => Promise<vo
 }
 
 describe("PlaywrightAdviserDriver.askAndAwaitTurn", () => {
+  it("honours a pre-aborted signal without touching the composer or sending", async () => {
+    const thread: FakeThread = {
+      [COMPOSER]: [node("")],
+      [SEND]: [node("")],
+      [USER]: [],
+      [ASSISTANT]: [],
+    };
+    const controller = new AbortController();
+    controller.abort();
+    const { clicked, driver, typed } = await startedDriver({ thread });
+
+    await expect(driver.askAndAwaitTurn({ ...TURN, signal: controller.signal })).resolves.toEqual({
+      ok: false,
+      failure: "generation-timeout",
+    });
+    expect(clicked).toEqual([]);
+    expect(typed).toEqual([]);
+  });
+
   it("reads the answer this turn produced, not the one already on screen", async () => {
     // The regression: the thread already held an answer, and turn completion treated any visible answer as
     // the new one, so yesterday's advice was recorded against this consultationId.
@@ -207,6 +238,35 @@ describe("PlaywrightAdviserDriver.askAndAwaitTurn", () => {
     const outcome = await driver.askAndAwaitTurn({ ...TURN, timeoutMs: 20 });
 
     expect(outcome).toEqual({ ok: false, failure: "composer-missing" });
+  });
+
+  it("acts on the later visible duplicate instead of the hidden first match", async () => {
+    const thread: FakeThread = {
+      [COMPOSER]: [
+        { text: "hidden composer", visible: false },
+        { text: "visible composer", visible: true },
+      ],
+      [SEND]: [
+        { text: "hidden send", visible: false },
+        { text: "visible send", visible: true },
+      ],
+      [USER]: [],
+      [ASSISTANT]: [],
+    };
+    const sleep = scriptedSleep((tick) => {
+      if (tick === 1) thread[USER]!.push(node(TURN.prompt));
+      if (tick === 2) thread[ASSISTANT]!.push(node("advice from the visible controls"));
+    });
+
+    const { clicked, driver, typed } = await startedDriver({ thread, sleep });
+    const outcome = await driver.askAndAwaitTurn(TURN);
+
+    expect(outcome).toMatchObject({ ok: true, text: "advice from the visible controls" });
+    expect(typed).toContain(TURN.prompt);
+    expect(clicked).toContain("visible composer");
+    expect(clicked).toContain("visible send");
+    expect(clicked).not.toContain("hidden composer");
+    expect(clicked).not.toContain("hidden send");
   });
 });
 
@@ -268,6 +328,37 @@ describe("PlaywrightAdviserDriver.runExclusive", () => {
   });
 });
 
+describe("PlaywrightAdviserDriver profile ownership", () => {
+  it("holds the profile lock for the context lifetime and releases it on shutdown", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pwc-driver-profile-lock-"));
+    const lockPath = join(root, "profile.lock");
+    const firstPage = fakePage({}, "https://chatgpt.com/").page;
+    const secondPage = fakePage({}, "https://chatgpt.com/").page;
+    const first = new PlaywrightAdviserDriver({
+      profile: PROFILE,
+      launch: launcherFor(firstPage),
+      profileLockPath: lockPath,
+    });
+    const second = new PlaywrightAdviserDriver({
+      profile: PROFILE,
+      launch: launcherFor(secondPage),
+      profileLockPath: lockPath,
+    });
+
+    try {
+      await first.start({ purpose: "consultation" });
+      await expect(second.start({ purpose: "consultation" })).rejects.toThrow(/state-busy|another pi-with-chatgpt process/iu);
+
+      await first.shutdown();
+      await expect(second.start({ purpose: "consultation" })).resolves.toMatchObject({ chromeVersion: "152.0.0.0" });
+    } finally {
+      await first.shutdown();
+      await second.shutdown();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("PlaywrightAdviserDriver.selectModel", () => {
   const PICKER = 'button[aria-label*="model" i]';
   const OPTION = '[role="menuitem"]';
@@ -305,5 +396,54 @@ describe("PlaywrightAdviserDriver.selectModel", () => {
 
     expect(selected).toBe(false);
     expect(clicked).not.toContain("First option in the menu");
+  });
+
+  it("reads the visible model picker when a hidden duplicate comes first", async () => {
+    const thread: FakeThread = {
+      [PICKER]: [
+        { text: "stale hidden picker", visible: false },
+        { text: "GPT-5.5", visible: true },
+      ],
+      [OPTION]: [],
+    };
+    const { driver } = await startedDriver({ thread });
+
+    expect(await driver.selectModel("gpt-5.5")).toBe(true);
+  });
+
+  it("enumerates only visible model options", async () => {
+    const thread: FakeThread = {
+      [PICKER]: [node("GPT-5.5")],
+      [OPTION]: [
+        { text: "Hidden legacy model", visible: false },
+        { text: "GPT-5.5", visible: true },
+        { text: "GPT-5", visible: true },
+      ],
+    };
+    const { driver } = await startedDriver({ thread });
+
+    await expect(driver.listModels()).resolves.toEqual([
+      { modelId: "GPT-5.5", displayName: "GPT-5.5", available: true },
+      { modelId: "GPT-5", displayName: "GPT-5", available: true },
+    ]);
+  });
+
+  it("marks disabled model options unavailable instead of treating them as selectable", async () => {
+    const thread: FakeThread = {
+      [PICKER]: [node("GPT-5.5")],
+      [OPTION]: [
+        { text: "GPT-5.5", visible: true },
+        { text: "GPT-5-pro", visible: true },
+      ],
+    };
+    thread[OPTION]![1] = { text: "GPT-5-pro", visible: true, ariaDisabled: true };
+    const original = fakePage(thread, "https://chatgpt.com/");
+    const driver = new PlaywrightAdviserDriver({ profile: PROFILE, launch: launcherFor(original.page) });
+    await driver.start({ purpose: "model-discovery" });
+
+    await expect(driver.listModels()).resolves.toEqual([
+      { modelId: "GPT-5.5", displayName: "GPT-5.5", available: true },
+      { modelId: "GPT-5-pro", displayName: "GPT-5-pro", available: false, unavailableReason: "disabled" },
+    ]);
   });
 });

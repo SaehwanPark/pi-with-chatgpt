@@ -108,6 +108,17 @@ cannot see the repository, a redirect, a timeout — stays `unknown` and is neve
 `available`. Because that host decides dispatch and holds the bearer credential, its hostname is
 pinned (`ALLOWED_GITHUB_API_HOSTS`).
 
+The browser-side `createConsultationCapabilityGate` is the authoritative dispatch preflight. It requires
+four live facts — ChatGPT access, a selectable adviser model, a verified GitHub connector for the
+canonical repository/checkpoint, and target-repository reachability — before returning a dispatchable
+result. Missing connector verification is `unverified` and therefore blocks; it is never treated as a
+degraded-but-usable consultation. The production gate performs a fresh observation for every dispatch
+and exposes an invalidation hook for compatibility with callers that track sign-in, import, account,
+model, or repository changes; no stale positive result is reused.
+The default Playwright bundle supplies an explicit `unverified` connector probe because the web surface
+has no stable permission API for proving exact repository access; a reviewed `GitHubConnectorProbe` must
+be injected to enable that path. This is an intentional fail-closed state, not a degraded consultation.
+
 ### INV-05
 
 **Advice is untrusted, non-authoritative input.**
@@ -153,7 +164,9 @@ queue safely rather than racing navigation and send. Deleted or stale records ar
 same Project. The driver-owned exclusive browser operation lock also serialises Project/conversation
 navigation with consultation, login, and model operations (`chatgpt/scope.ts`,
 `chatgpt/conversation-mapping.ts`, `chatgpt/conversation-recovery.ts`, `browser/runtime.ts`,
-`browser/playwright-driver.ts`, `jobs/engine.ts`).
+`browser/playwright-driver.ts`, `browser/transaction.ts`, `jobs/engine.ts`). The capability gate is
+inside that same transaction and probes afresh for every dispatch, so a second workspace cannot navigate
+the shared tab between preflight and send.
 
 ### INV-10
 
@@ -162,7 +175,9 @@ navigation with consultation, login, and model operations (`chatgpt/scope.ts`,
 `resolveAccountIdentity` is the only function that turns identity observations into a decision, so a
 caller cannot get a different rule by asking a different module; without an explicit user choice the
 outcome is `awaiting-user`, that choice is bound to the account pair it was made for, and plan metadata is
-a hint only (`auth/identity.ts`).
+a hint only (`auth/identity.ts`). Production dispatch additionally refuses a signed-in browser whose
+account identity is unavailable (`auth/readiness.ts`); it never copies Pi's identity into the browser
+observation.
 
 ### INV-11
 

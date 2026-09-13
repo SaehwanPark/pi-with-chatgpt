@@ -37,6 +37,11 @@ coordinate system, and the adviser has no execution power. Six non-negotiables:
    extension-owned browser profile — never the user's active browser, never a shared account
    switch, never credentials in logs or model context.
 
+Production dispatch also requires a fresh, fail-closed capability check for ChatGPT access, a selectable
+model, the exact GitHub connector/repository, and the anchored full SHA. Signed-in browser account identity
+must be comparable to Pi's identity; unknown identity is refused rather than guessed. Browser work is one
+serialized transaction across the process, and cancellation must settle before the shared tab is reused.
+
 The full numbered invariant list (INV-01…INV-16) is in
 `.agents/skills/pwc-invariant-review/references/invariants.md`.
 

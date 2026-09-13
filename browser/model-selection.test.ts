@@ -30,9 +30,26 @@ describe("resolveModelPreference", () => {
   });
 
   it("falls back to the strongest selectable model when no preference matches", () => {
-    const result = resolveModelPreference(["gpt-9"], [model("gpt-5.5"), model("gpt-5")]);
+    // The provider is free to reorder its picker; fallback strength must not follow DOM order.
+    const result = resolveModelPreference(["gpt-9"], [model("gpt-5"), model("gpt-5.5")]);
     expect(result).toMatchObject({ ok: true, model: { modelId: "gpt-5.5" }, degraded: true });
     if (result.ok) expect(result.reason).toContain("no preference");
+  });
+
+  it("resolves auto-best by capability rank rather than picker order", () => {
+    const result = resolveModelPreference(["auto-best"], [model("gpt-5"), model("gpt-5.5"), model("gpt-4o")]);
+    expect(result).toMatchObject({ ok: true, model: { modelId: "gpt-5.5" }, degraded: false });
+  });
+
+  it("uses explicit variant ranking for auto-best", () => {
+    const result = resolveModelPreference(["auto-best"], [model("gpt-5-mini"), model("gpt-5-pro")]);
+    expect(result).toMatchObject({ ok: true, model: { modelId: "gpt-5-pro" }, degraded: false });
+  });
+
+  it("marks an unrecognised model family degraded instead of claiming a capability ranking", () => {
+    const result = resolveModelPreference(["auto-best"], [model("custom-adviser"), model("legacy-model")]);
+    expect(result).toMatchObject({ ok: true, degraded: true, model: { modelId: "custom-adviser" } });
+    if (result.ok) expect(result.reason).toContain("ranking unavailable");
   });
 
   it("reports no-models distinctly from none-available", () => {

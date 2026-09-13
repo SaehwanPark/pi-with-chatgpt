@@ -62,7 +62,8 @@ export type AdviserBrowserSessionStatus =
     };
 
 export interface AdviserStatus {
-  readonly piAuthFile: { readonly path: string; readonly readable: boolean; readonly mode?: string };
+  /** Presence and permissions only; filesystem paths are never part of user/tool output. */
+  readonly piAuthFile: { readonly readable: boolean; readonly mode?: string };
   readonly openAiSignIn:
     | {
         readonly present: true;
@@ -76,7 +77,8 @@ export interface AdviserStatus {
         readonly present: false;
         readonly reason: "missing-file" | "unparsable" | "no-openai-credential" | "api-key-only";
       };
-  readonly profile: { readonly userDataDir: string; readonly exists: boolean; readonly everSignedInHere: boolean };
+  /** Opaque profile state only; the extension-owned filesystem path is intentionally omitted. */
+  readonly profile: { readonly exists: boolean; readonly everSignedInHere: boolean };
   /**
    * Current ChatGPT web-session observation. `unverified` is the safe default: a Pi OAuth credential or
    * `SESSION-ESTABLISHED` marker alone cannot establish that the isolated browser is authenticated now.
@@ -132,9 +134,9 @@ async function describeAuthFile(path: string): Promise<AdviserStatus["piAuthFile
   try {
     const info = await stat(path);
     // The mode is reported because a group-readable auth file is a real problem worth surfacing.
-    return { path, readable: true, mode: (info.mode & 0o777).toString(8) };
+    return { readable: true, mode: (info.mode & 0o777).toString(8) };
   } catch {
-    return { path, readable: false };
+    return { readable: false };
   }
 }
 
@@ -181,7 +183,6 @@ function reasonFor(failure: PiCredentialFailure): Extract<AdviserStatus["openAiS
 async function describeProfile(profile: AdviserProfile): Promise<AdviserStatus["profile"]> {
   const exists = await pathExists(profile.userDataDir);
   return {
-    userDataDir: profile.userDataDir,
     exists,
     // "A human signed in here once" is what lets the UI offer *repair sign-in* instead of *sign in*
     // after an expiry.
@@ -212,5 +213,8 @@ export function assertStatusIsRedacted(status: AdviserStatus): void {
   if (serialized.includes("eyJ")) {
     // "eyJ" is base64 for "{" and therefore the prefix of every JWT.
     throw new Error("status snapshot contains what looks like a JWT");
+  }
+  if (/(?:userDataDir|piAuthFile).*(?:\/|\\)|(?:\/Users\/|\/home\/|[A-Z]:\\)/u.test(serialized)) {
+    throw new Error("status snapshot contains a filesystem path");
   }
 }
