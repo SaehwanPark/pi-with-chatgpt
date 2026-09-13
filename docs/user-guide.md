@@ -215,4 +215,4 @@ ChatGPT session; without a fresh browser probe, readiness is `unverified`.
 You can set your default preference in configuration or override it per request:
 
 - **Need advice right now?** By default (`defaultMode: "sync"`), Pi pauses and waits up to `syncTimeoutMs` (default 4 minutes) for the adviser's turn to finish.
-- **Want to keep hacking?** Configure `"defaultMode": "async"`. Dispatched consultations run in the background. Pi immediately returns to your prompt, and notifies you when the adviser completes!
+- **Want to keep hacking?** Configure `"defaultMode": "async"`. Dispatched consultations run in the background. Pi immediately returns to your prompt and shows a session-scoped completion notification when the adviser finishes. The notification does not resume or inject a message into the worker model; use `/advisor-status <id>` or `/advisor-read <id>` to retrieve the result.

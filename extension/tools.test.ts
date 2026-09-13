@@ -12,6 +12,7 @@ import { requireFullCommitSha } from "../protocol/sha.js";
 import type { ConsultationId } from "../protocol/checkpoint.js";
 import type { GitHubApi } from "../git/github-api.js";
 import type { ConsultationEngine } from "../jobs/engine.js";
+import { scopedTaskIdForSession } from "../jobs/record.js";
 
 const REPO = canonicalRepositoryKey("acme", "repo");
 const COMMIT = requireFullCommitSha(CHECKPOINT_SHA);
@@ -137,7 +138,82 @@ describe("extension/tools (M8)", () => {
     expect(result.details).toMatchObject({ ok: true, mode: "async", state: "queued" });
     expect(submitAsync).toHaveBeenCalledOnce();
     expect(submitSync).not.toHaveBeenCalled();
-    expect(submitAsync.mock.calls[0]?.[0]).toMatchObject({ taskId: "tool-session-async", mode: "async" });
+    expect(submitAsync.mock.calls[0]?.[0]).toMatchObject({
+      taskId: scopedTaskIdForSession("tool-session-async"),
+      mode: "async",
+    });
+  });
+
+  it("namespaces a worker taskId by Pi session without changing delivery routing", async () => {
+    const dir = makeTestDirectory("pwc-tools-task-scope-");
+    const git = makeGit();
+    const submitAsync = vi.fn((request: { consultationId?: string; taskId: string; sessionId?: string }) => ({
+      consultationId: request.consultationId!,
+      address: {
+        repository: REPO,
+        taskId: request.taskId,
+        consultationId: request.consultationId!,
+        deliveryKey: "0".repeat(64),
+      },
+      state: "queued" as const,
+    }));
+    const engine = { submitAsync, submitSync: vi.fn() } as unknown as ConsultationEngine;
+    const manager = new ToolManager({
+      config: { ...DEFAULT_CONFIG, defaultMode: "async" },
+      git,
+      github: mockGitHub,
+      ledger: new ConsultationLedger({ layout: adviserStateLayout(dir) }),
+      engine,
+    });
+    const submitTool = manager.getTools().find((t) => t.name === "advisor_submit")!;
+    const submit = (sessionId: string) => submitTool.execute(
+      `call-${sessionId}`,
+      { goal: "Review task isolation", kind: "review", cwd: dir, taskId: "shared-worker-task" },
+      undefined,
+      undefined,
+      { cwd: dir, sessionManager: { getSessionId: () => sessionId }, isProjectTrusted: () => true },
+    );
+
+    await submit("pi-session-a");
+    await submit("pi-session-b");
+    await submit("pi-session-a");
+
+    const requests = submitAsync.mock.calls.map(([request]) => request);
+    expect(requests[0]?.taskId).toContain("shared-worker-task");
+    expect(requests[0]?.taskId).not.toBe(requests[1]?.taskId);
+    expect(requests[0]?.taskId).toBe(requests[2]?.taskId);
+    // The session id remains a separate engine input, so async wake-up delivery stays canonical.
+    expect(requests.map((request) => request.sessionId)).toEqual([
+      "pi-session-a",
+      "pi-session-b",
+      "pi-session-a",
+    ]);
+  });
+
+  it("refuses an explicit worker taskId when Pi session identity is unavailable", async () => {
+    const dir = makeTestDirectory("pwc-tools-task-session-required-");
+    const submitAsync = vi.fn();
+    const engine = { submitAsync, submitSync: vi.fn() } as unknown as ConsultationEngine;
+    const manager = new ToolManager({
+      config: { ...DEFAULT_CONFIG, defaultMode: "async" },
+      git: makeGit(),
+      github: mockGitHub,
+      ledger: new ConsultationLedger({ layout: adviserStateLayout(dir) }),
+      engine,
+    });
+    const submitTool = manager.getTools().find((t) => t.name === "advisor_submit")!;
+
+    const result = await submitTool.execute(
+      "call-no-session",
+      { goal: "Review task isolation", kind: "review", cwd: dir, taskId: "shared-worker-task" },
+      undefined,
+      undefined,
+      { cwd: dir, isProjectTrusted: () => true },
+    );
+
+    expect(result.details).toMatchObject({ ok: false, failure: "session-unavailable" });
+    expect(result.content[0]!.text).toContain("session identity");
+    expect(submitAsync).not.toHaveBeenCalled();
   });
 
   it("executes advisor_disposition tool", async () => {

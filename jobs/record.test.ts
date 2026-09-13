@@ -11,6 +11,7 @@ import {
   deliveryKeyForSession,
   parseJobFile,
   responsePathForConsultation,
+  scopedTaskIdForSession,
   transitionJob,
   type JobRecord,
 } from "./record.js";
@@ -84,6 +85,14 @@ describe("durable consultation job record", () => {
     expect(first.consultationId).toMatch(/^adv-[0-9a-f-]{36}$/u);
     expect(first.consultationId).not.toBe(second.consultationId);
     expect(responsePathForConsultation(first.consultationId)).toBe(`responses/${first.consultationId}.json`);
+  });
+
+  it("namespaces logical task labels without persisting the raw Pi session", () => {
+    const scoped = scopedTaskIdForSession("pi-session-alpha", "review");
+    expect(scoped).toBe(`pi-session-${deliveryKeyForSession("pi-session-alpha")}-task-review`);
+    expect(scoped).not.toContain("pi-session-alpha");
+    expect(() => scopedTaskIdForSession("pi-session-alpha", "   ")).toThrow();
+    expect(() => scopedTaskIdForSession("pi-session-alpha", "review\nnext")).toThrow();
   });
 
   it("rejects anchors that are not exact, available GitHub checkpoints", () => {

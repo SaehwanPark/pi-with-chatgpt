@@ -18,6 +18,7 @@ import { ToolManager, type ToolServiceOptions } from "./tools.js";
 import type { ConsultationEngine, WakeUpNotification } from "../jobs/engine.js";
 import { formatCompletionNotification } from "../ui/tui.js";
 import { createProductionServiceFactory } from "./services.js";
+import type { GitHubConnectorProbe } from "../browser/consultation-capability.js";
 
 export * from "./pi-api.js";
 export * from "./commands.js";
@@ -32,6 +33,8 @@ export interface AdviserActivation {
 
 export interface ActivationOptions extends CommandServiceOptions, ToolServiceOptions {
   readonly config?: AdviserConfig;
+  /** Reviewed extension-owned proof for exact GitHub repository/checkpoint access. */
+  readonly githubConnectorProbe?: GitHubConnectorProbe;
 }
 
 type EngineResolver = (cwd: string) => Promise<ConsultationEngine | undefined>;
@@ -125,15 +128,18 @@ export function activate(pi: AdviserExtensionApi, options?: AdviserConfig | Acti
     configFactory,
     git: suppliedOptions.git,
     ledger: suppliedOptions.ledger,
+    githubConnectorProbe: suppliedOptions.githubConnectorProbe,
   });
   const productionEngine = async (cwd: string) => (await productionServices(cwd)).engine;
   const productionLoginPort = async (cwd: string) => (await productionServices(cwd)).loginPort;
+  const productionCapabilityGate = async (cwd: string) => (await productionServices(cwd)).capabilityGate;
   const commandOpts: CommandServiceOptions = {
     ...suppliedOptions,
     config,
     configFactory,
     engineFactory: suppliedOptions.engineFactory ?? productionEngine,
     loginPortFactory: suppliedOptions.loginPortFactory ?? productionLoginPort,
+    capabilityGateFactory: suppliedOptions.capabilityGateFactory ?? productionCapabilityGate,
   };
   const toolOpts: ToolServiceOptions = {
     ...suppliedOptions,
@@ -141,6 +147,7 @@ export function activate(pi: AdviserExtensionApi, options?: AdviserConfig | Acti
     configFactory,
     engineFactory: suppliedOptions.engineFactory ?? productionEngine,
     loginPortFactory: suppliedOptions.loginPortFactory ?? productionLoginPort,
+    capabilityGateFactory: suppliedOptions.capabilityGateFactory ?? productionCapabilityGate,
   };
 
   const commandManager = new CommandManager(commandOpts);

@@ -30,6 +30,7 @@ import {
 } from "../drift/index.js";
 import { adviserStatus } from "../auth/status.js";
 import type { AdviserLoginPort } from "../auth/login-flow.js";
+import { authDecisionAllowsConsultation, resolveLiveAdviserAuth, type AdviserAuthDecision } from "../auth/readiness.js";
 import { resolveCheckpoint } from "../git/checkpoint-resolution.js";
 import { createGitExecutor, createNodeCommandRunner, type GitExecutor } from "../git/exec.js";
 import type { GitHubApi } from "../git/github-api.js";
@@ -37,8 +38,9 @@ import { createGitHubApi } from "../git/github-api.js";
 import { adviserStateLayout } from "../config/state-layout.js";
 import { adviserProfileFor, stateStoragePaths } from "../browser/state-storage.js";
 import type { ConsultationEngine } from "../jobs/engine.js";
-import { generateConsultationId } from "../jobs/record.js";
+import { generateConsultationId, scopedTaskIdForSession } from "../jobs/record.js";
 import { DEFAULT_MODEL_PREFERENCE } from "../browser/model-selection.js";
+import type { ConsultationCapabilityGate } from "../browser/consultation-capability.js";
 
 export interface ToolServiceOptions {
   readonly config?: AdviserConfig;
@@ -56,6 +58,9 @@ export interface ToolServiceOptions {
   readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
   /** Ranked adviser model preferences; resolved against the live ChatGPT model picker by the engine. */
   readonly modelPreference?: readonly string[];
+  /** Authoritative production preflight shared with the engine; absent only for direct test seams. */
+  readonly capabilityGate?: ConsultationCapabilityGate;
+  readonly capabilityGateFactory?: (cwd: string) => Promise<ConsultationCapabilityGate>;
 }
 
 function defaultGitHubApi(): GitHubApi {
@@ -95,6 +100,8 @@ export class ToolManager {
   private readonly loginPort?: AdviserLoginPort;
   private readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
   private readonly modelPreference: readonly string[];
+  private readonly capabilityGate?: ConsultationCapabilityGate;
+  private readonly capabilityGateFactory?: (cwd: string) => Promise<ConsultationCapabilityGate>;
 
   constructor(options: ToolServiceOptions = {}) {
     this.config = options.config ?? DEFAULT_CONFIG;
@@ -113,6 +120,8 @@ export class ToolManager {
     this.loginPort = options.loginPort;
     this.loginPortFactory = options.loginPortFactory;
     this.modelPreference = options.modelPreference ?? DEFAULT_MODEL_PREFERENCE;
+    this.capabilityGate = options.capabilityGate;
+    this.capabilityGateFactory = options.capabilityGateFactory;
   }
 
   private async resolveEngine(cwd: string): Promise<ConsultationEngine | undefined> {
@@ -133,6 +142,71 @@ export class ToolManager {
       return await this.configFactory(cwd);
     } catch {
       return this.config;
+    }
+  }
+
+  private async resolveCapabilityGate(cwd: string): Promise<ConsultationCapabilityGate | undefined> {
+    if (this.capabilityGate) return this.capabilityGate;
+    if (this.capabilityGateFactory) return await this.capabilityGateFactory(cwd);
+    return undefined;
+  }
+
+  private async requireCapability(
+    cwd: string,
+    anchor: Parameters<ConsultationCapabilityGate["ensureConsultationCapability"]>[0]["anchor"],
+  ): Promise<
+    | { readonly ok: true; readonly result?: Extract<Awaited<ReturnType<ConsultationCapabilityGate["ensureConsultationCapability"]>>, { readonly ok: true }> }
+    | { readonly ok: false; readonly explanation: string }
+  > {
+    let gate: ConsultationCapabilityGate | undefined;
+    try {
+      gate = await this.resolveCapabilityGate(cwd);
+    } catch {
+      return { ok: false, explanation: "Consultation capability verification could not be initialized." };
+    }
+    if (gate === undefined) return { ok: true };
+    try {
+      const result = await gate.ensureConsultationCapability({ anchor, modelPreference: this.modelPreference });
+      return result.ok ? { ok: true, result } : { ok: false, explanation: result.explanation };
+    } catch {
+      return { ok: false, explanation: "Consultation capability verification failed." };
+    }
+  }
+
+  /** Resolve the live Pi/browser auth state before a production tool dispatch. */
+  private async resolveLiveAuth(cwd: string): Promise<AdviserAuthDecision | undefined> {
+    if (!this.engineFactory && !this.loginPortFactory && !this.loginPort) return undefined;
+    const paths = stateStoragePaths();
+    const profile = adviserProfileFor(paths);
+    const status = await adviserStatus(profile);
+    let browserSession: Awaited<ReturnType<AdviserLoginPort["observeSession"]>> | undefined;
+    if (status.openAiSignIn.present && status.profile.exists) {
+      const loginPort = await this.resolveLoginPort(cwd).catch(() => undefined);
+      if (loginPort) browserSession = await loginPort.observeSession(profile).catch(() => undefined);
+    }
+    return await resolveLiveAdviserAuth({ profile, browserSession, requireBrowserIdentity: true });
+  }
+
+  private async requireLiveAuth(cwd: string): Promise<
+    | { readonly ok: true }
+    | { readonly ok: false; readonly decision: AdviserAuthDecision }
+  > {
+    try {
+      const decision = await this.resolveLiveAuth(cwd);
+      return decision === undefined || authDecisionAllowsConsultation(decision)
+        ? { ok: true }
+        : { ok: false, decision };
+    } catch {
+      return {
+        ok: false,
+        decision: {
+          state: "environment-unavailable",
+          action: "repair-environment",
+          explanation: "Live adviser authentication could not be verified.",
+          requiresManualIntervention: true,
+          warnings: [],
+        },
+      };
     }
   }
 
@@ -197,6 +271,26 @@ export class ToolManager {
         }
 
         const { anchor, readiness } = checkpointRes.resolved;
+        const auth = await this.requireLiveAuth(cwd);
+        if (!auth.ok) {
+          return {
+            content: [{ type: "text", text: `Preflight refused: ${auth.decision.explanation}` }],
+            details: {
+              ready: false,
+              reason: "adviser-auth",
+              authState: auth.decision.state,
+              nextAction: auth.decision.action,
+              identityComparison: auth.decision.identityComparison,
+            },
+          };
+        }
+        const capability = await this.requireCapability(cwd, anchor);
+        if (!capability.ok) {
+          return {
+            content: [{ type: "text", text: `Preflight refused: ${capability.explanation}` }],
+            details: { ready: false, reason: "capability", explanation: capability.explanation },
+          };
+        }
         return {
           content: [{
             type: "text",
@@ -207,6 +301,15 @@ export class ToolManager {
             repository: anchor.repository,
             checkpointCommit: anchor.resolvedCommit,
             remoteAvailability: anchor.remoteAvailability,
+            ...(capability.result === undefined ? {} : {
+              capability: {
+                checklist: capability.result.checklist,
+                evaluation: capability.result.evaluation,
+                modelId: capability.result.modelId,
+                degraded: capability.result.degraded,
+                ...(capability.result.modelReason === undefined ? {} : { modelReason: capability.result.modelReason }),
+              },
+            }),
             readiness,
           },
         };
@@ -251,32 +354,29 @@ export class ToolManager {
             details: { ok: false, failure: "project-untrusted" },
           };
         }
-        let taskId: string;
-        let sessionId: string | undefined;
+        let sessionId: string;
         try {
           sessionId = getPiSessionId(ctx as AdviserExtensionContext);
-          taskId = requestedTaskId ?? sessionId;
-        } catch (err) {
-          if (requestedTaskId !== undefined) {
-            taskId = requestedTaskId;
-          } else {
-            return {
-              content: [{ type: "text", text: `Consultation submission refused: ${err instanceof Error ? err.message : String(err)}` }],
-              details: {
-                ok: false,
-                failure: "session-unavailable",
-                explanation: "A real Pi session identity is required when taskId is not supplied.",
-              },
-            };
-          }
-        }
-        if (taskId === undefined) {
+        } catch {
           return {
-            content: [{ type: "text", text: "Consultation submission refused: taskId is required." }],
+            content: [{ type: "text", text: "Consultation submission refused: Pi session identity unavailable." }],
             details: {
               ok: false,
-              failure: "task-unavailable",
-              explanation: "A task identifier could not be resolved.",
+              failure: "session-unavailable",
+              explanation: "A real Pi session identity is required to namespace taskId and route delivery safely.",
+            },
+          };
+        }
+        let taskId: string;
+        try {
+          taskId = scopedTaskIdForSession(sessionId, requestedTaskId ?? "default");
+        } catch (err) {
+          return {
+            content: [{ type: "text", text: `Consultation submission refused: ${err instanceof Error ? err.message : String(err)}` }],
+            details: {
+              ok: false,
+              failure: "task-invalid",
+              explanation: "A non-empty task identifier is required.",
             },
           };
         }
@@ -303,6 +403,26 @@ export class ToolManager {
         }
 
         const { anchor, workingState } = checkpointRes.resolved;
+        const auth = await this.requireLiveAuth(cwd);
+        if (!auth.ok) {
+          return {
+            content: [{ type: "text", text: `Consultation submission refused: ${auth.decision.explanation}` }],
+            details: {
+              ok: false,
+              failure: "adviser-auth",
+              authState: auth.decision.state,
+              nextAction: auth.decision.action,
+              identityComparison: auth.decision.identityComparison,
+            },
+          };
+        }
+        const capability = await this.requireCapability(cwd, anchor);
+        if (!capability.ok) {
+          return {
+            content: [{ type: "text", text: `Consultation submission refused: ${capability.explanation}` }],
+            details: { ok: false, failure: "capability", explanation: capability.explanation },
+          };
+        }
         const consultationId = generateConsultationId();
 
         const brief = buildConsultationBrief({
@@ -324,7 +444,7 @@ export class ToolManager {
                 anchor,
                 branch: workingState.branch ?? null,
                 taskId,
-                ...(sessionId === undefined ? {} : { sessionId }),
+                sessionId,
                 kind,
                 dependency: config.dependencyDefault,
                 mode: "async",
@@ -350,7 +470,7 @@ export class ToolManager {
               anchor,
               branch: workingState.branch ?? null,
               taskId,
-              ...(sessionId === undefined ? {} : { sessionId }),
+              sessionId,
               kind,
               dependency: config.dependencyDefault,
               mode: "sync",
@@ -704,6 +824,26 @@ export class ToolManager {
         }
 
         const { anchor, workingState } = checkpointRes.resolved;
+        const auth = await this.requireLiveAuth(cwd);
+        if (!auth.ok) {
+          return {
+            content: [{ type: "text", text: `Follow-up refused: ${auth.decision.explanation}` }],
+            details: {
+              ok: false,
+              failure: "adviser-auth",
+              authState: auth.decision.state,
+              nextAction: auth.decision.action,
+              identityComparison: auth.decision.identityComparison,
+            },
+          };
+        }
+        const capability = await this.requireCapability(cwd, anchor);
+        if (!capability.ok) {
+          return {
+            content: [{ type: "text", text: `Follow-up refused: ${capability.explanation}` }],
+            details: { ok: false, failure: "capability", explanation: capability.explanation },
+          };
+        }
         const entries = await this.ledger.list({ repository: anchor.repository });
         const prior = entries.find((e) => e.consultationId === priorId);
         if (!prior) {
@@ -942,15 +1082,19 @@ export class ToolManager {
         const loginPort = status.openAiSignIn.present
           ? await this.resolveLoginPort(ctx?.cwd ?? process.cwd()).catch(() => undefined)
           : undefined;
+        let browserSession: Awaited<ReturnType<AdviserLoginPort["observeSession"]>> | undefined;
         if (status.profile.exists && loginPort) {
-          const browserSession = await loginPort.observeSession(profile).catch(() => ({
+          browserSession = await loginPort.observeSession(profile).catch(() => ({
             kind: "unreachable",
             reason: "browser-failed",
           } as const));
           status = await adviserStatus(profile, { browserSession });
         }
+        const authDecision = await resolveLiveAdviserAuth({ profile, browserSession, requireBrowserIdentity: true });
         const authenticated: boolean | "unknown" =
-          status.browserSession.state === "signed-in"
+          authDecision.action === "review-account-mismatch"
+            ? false
+            : status.browserSession.state === "signed-in"
             ? true
             : status.browserSession.state === "signed-out" ||
                 status.browserSession.state === "human-verification" ||
@@ -967,6 +1111,9 @@ export class ToolManager {
             // This is intentionally based on a fresh isolated-browser observation, never Pi OAuth.
             // Unknown is a first-class state when no browser observer was supplied.
             authenticated,
+            authState: authDecision.state,
+            nextAction: authDecision.action,
+            identityComparison: authDecision.identityComparison,
             browserSession: status.browserSession,
             piOpenAiSignInPresent: status.openAiSignIn.present,
             plan: status.openAiSignIn.present ? status.openAiSignIn.planHint : undefined,

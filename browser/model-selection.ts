@@ -41,6 +41,22 @@ export function resolveModelPreference(
   // Match on the id *or* the display label, because a saved preference may record either form and the
   // picker may report either. Normalising both sides is what keeps a rename from losing every preference.
   for (const wanted of preference) {
+    // `auto-best` is a policy, not a model id. It must never be passed through to the browser as a
+    // synthetic selection, and it must not inherit the picker's DOM ordering by taking `selectable[0]`.
+    if (normalise(wanted) === "autobest") {
+      const best = strongestSelectable(selectable);
+      const unranked = modelCapabilityRank(best) === 0;
+      return {
+        ok: true,
+        model: best,
+        degraded: wanted !== preference[0] || unranked,
+        ...(wanted !== preference[0]
+          ? { reason: `top preference "${String(preference[0])}" unavailable` }
+          : unranked
+            ? { reason: "model capability ranking unavailable; selected deterministically" }
+            : {}),
+      };
+    }
     const match = selectable.find((option) => sameModel(option, wanted));
     if (match) {
       return {
@@ -53,10 +69,51 @@ export function resolveModelPreference(
     }
   }
 
-  // Nothing on the preference list is selectable. Fall back to the first selectable model and flag it —
-  // the user still gets the strongest model the account allows, clearly labelled as a fallback.
-  const fallback = selectable[0] as ModelOption;
-  return { ok: true, model: fallback, degraded: true, reason: "no preference available; used most capable selectable model" };
+  // Nothing on the preference list is selectable. Fall back to the strongest selectable model and flag it
+  // — the account's picker order is presentation detail, not a capability ranking.
+  const fallback = strongestSelectable(selectable);
+  const fallbackReason = modelCapabilityRank(fallback) === 0
+    ? "no preference available; model capability ranking unavailable"
+    : "no preference available; used most capable selectable model";
+  return { ok: true, model: fallback, degraded: true, reason: fallbackReason };
+}
+
+/**
+ * Rank the model labels we can observe without relying on provider internals.
+ *
+ * The numeric family/version is the primary signal. A small, explicit variant adjustment handles common
+ * labels such as "mini" and "pro"; unknown labels are still selected deterministically by their id rather
+ * than by DOM order. This is intentionally a bounded heuristic: a new provider naming scheme should be
+ * surfaced as a stable choice until its ranking policy is reviewed, not guessed from arbitrary page order.
+ */
+function strongestSelectable(options: readonly ModelOption[]): ModelOption {
+  return options.reduce((best, candidate) => (compareModelCapability(candidate, best) > 0 ? candidate : best));
+}
+
+function compareModelCapability(left: ModelOption, right: ModelOption): number {
+  const rankDifference = modelCapabilityRank(left) - modelCapabilityRank(right);
+  if (rankDifference !== 0) return rankDifference;
+  // A stable tie-break makes auto-best independent of the DOM's insertion order while keeping equivalent
+  // labels reproducible across calls.
+  const leftId = normalise(left.modelId);
+  const rightId = normalise(right.modelId);
+  return rightId.localeCompare(leftId);
+}
+
+function modelCapabilityRank(option: ModelOption): number {
+  const label = `${option.modelId} ${option.displayName}`.toLowerCase();
+  const gpt = /\bgpt[\s_-]?(\d+)(?:\.(\d+))?/u.exec(label);
+  const reasoning = /\bo[\s_-]?(\d+)(?:\.(\d+))?/u.exec(label);
+  const match = gpt ?? reasoning;
+  if (!match) return 0;
+
+  const family = gpt ? 2_000_000 : 1_000_000;
+  const major = Number.parseInt(match[1] ?? "0", 10);
+  const minor = Number.parseInt(match[2] ?? "0", 10);
+  let variant = 0;
+  if (/\b(?:pro|max|thinking|reasoning)\b/u.test(label)) variant += 20;
+  if (/\b(?:mini|nano|small|fast|instant|lite)\b/u.test(label)) variant -= 20;
+  return family + major * 1_000 + minor * 100 + variant;
 }
 
 function sameModel(option: ModelOption, wanted: string): boolean {

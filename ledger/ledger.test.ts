@@ -213,6 +213,61 @@ describe("ConsultationLedger (M6)", () => {
     await expect(ledger.list({ repository: REPO })).rejects.toThrow("malformed non-trailing record");
   });
 
+  it("rejects structurally invalid records instead of coercing them into ledger history", async () => {
+    const malformedRecords: readonly { readonly label: string; readonly value: (entry: LedgerEntry) => unknown }[] = [
+      { label: "consultation ID", value: (entry) => ({ ...entry, consultationId: "not-an-adviser-id" }) },
+      { label: "repository key", value: (entry) => ({ ...entry, repository: "not-a-repository" }) },
+      { label: "schema version", value: (entry) => ({ ...entry, schemaVersion: 2 }) },
+      { label: "resolved commit SHA", value: (entry) => ({ ...entry, resolvedCommit: "HEAD" }) },
+      { label: "dispatch commit SHA", value: (entry) => ({ ...entry, headAtDispatch: "HEAD" }) },
+      { label: "reviewed commit SHA", value: (entry) => ({ ...entry, reviewedCommit: "abc123" }) },
+      { label: "status", value: (entry) => ({ ...entry, status: "unknown" }) },
+      { label: "consultation kind", value: (entry) => ({ ...entry, kind: "vibe-check" }) },
+      { label: "dependency mode", value: (entry) => ({ ...entry, dependency: "optional" }) },
+      { label: "action-item list", value: (entry) => ({ ...entry, actionItems: "not-an-array" }) },
+      {
+        label: "action-item disposition",
+        value: (entry) => ({
+          ...entry,
+          actionItems: [{ id: "A1", summary: "Keep this item", disposition: "unknown" }],
+        }),
+      },
+      {
+        label: "duplicate action-item ids",
+        value: (entry) => ({
+          ...entry,
+          actionItems: [
+            { id: "A1", summary: "First item", disposition: "pending" },
+            { id: "a1", summary: "Second item", disposition: "pending" },
+          ],
+        }),
+      },
+      { label: "response SHA-256", value: (entry) => ({ ...entry, responseSha256: "not-a-digest" }) },
+    ];
+
+    for (const malformed of malformedRecords) {
+      const { ledger, layout } = await createFixture();
+      await ledger.recordConsultation(createTestEntry());
+      const repoLayout = repositoryStateLayout(layout, REPO);
+      await writeFile(repoLayout.ledgerFile, `${JSON.stringify(malformed.value(createTestEntry()))}\n`, { flag: "a" });
+
+      // A valid JSON record with an invalid shape is not a recoverable interrupted append, even at
+      // the end of the file. It must not be silently normalized into a fabricated default.
+      await expect(ledger.list({ repository: REPO })).rejects.toThrow(/malformed trailing record/iu);
+    }
+  });
+
+  it("rejects missing identity fields while preserving defaults for omitted legacy fields", async () => {
+    const { ledger, layout } = await createFixture();
+    await ledger.recordConsultation(createTestEntry());
+    const repoLayout = repositoryStateLayout(layout, REPO);
+    const { consultationId: _consultationId, resolvedCommit: _resolvedCommit, ...missingIdentity } = createTestEntry();
+
+    await writeFile(repoLayout.ledgerFile, `${JSON.stringify(missingIdentity)}\n`, { flag: "a" });
+
+    await expect(ledger.list({ repository: REPO })).rejects.toThrow(/malformed trailing record/iu);
+  });
+
   it("keeps the first terminal response when duplicate projections race", async () => {
     const { ledger } = await createFixture();
     const queued = createQueuedJob({

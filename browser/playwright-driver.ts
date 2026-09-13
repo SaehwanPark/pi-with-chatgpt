@@ -25,6 +25,7 @@ import {
   scrubPageText,
   type SurfaceSnapshot,
 } from "./chatgpt-dom.js";
+import { acquireStateLock, type StateLock } from "../ledger/state-store.js";
 import type { AdviserProfile } from "./profile.js";
 import { createPlaywrightProjectSurface } from "./playwright-project-surface.js";
 import type {
@@ -94,6 +95,12 @@ export type PlaywrightLauncher = (options: {
 export interface PlaywrightDriverOptions {
   readonly profile: AdviserProfile;
   readonly launch: PlaywrightLauncher;
+  /**
+   * Lock held for the complete persistent-context lifetime. Production passes a path below the
+   * extension-owned browser state; leaving it unset keeps the structural driver seam usable by unit
+   * tests that do not create a real state tree.
+   */
+  readonly profileLockPath?: string;
   /** Playwright channel for the system Chrome; `"chrome"` selects the installed Google Chrome. */
   readonly channel?: string;
   readonly executablePath?: string;
@@ -106,6 +113,7 @@ export interface PlaywrightDriverOptions {
 export class PlaywrightAdviserDriver implements AdviserPageDriver {
   readonly #profile: AdviserProfile;
   readonly #launch: PlaywrightLauncher;
+  readonly #profileLockPath: string | undefined;
   readonly #channel: string;
   readonly #executablePath: string | undefined;
   readonly #navigationTimeoutMs: number;
@@ -115,12 +123,14 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   #context: BrowserContext | undefined;
   #page: TrackedPage | undefined;
   #chromeVersion = "unknown";
+  #profileLock: StateLock | undefined;
   /** One queue for every operation that can touch the tracked tab, including M4's Project surface. */
   #operationTail: Promise<void> = Promise.resolve();
 
   constructor(options: PlaywrightDriverOptions) {
     this.#profile = options.profile;
     this.#launch = options.launch;
+    this.#profileLockPath = options.profileLockPath;
     this.#channel = options.channel ?? "chrome";
     this.#executablePath = options.executablePath;
     this.#navigationTimeoutMs = options.navigationTimeoutMs ?? 45_000;
@@ -149,22 +159,63 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     if (this.#context && this.#page && !this.#page.isClosed()) {
       return { chromeVersion: this.#chromeVersion };
     }
+    if (this.#context) {
+      // The tracked page can be closed by Chromium while the persistent context is still healthy. Reuse
+      // that context (and its already-held profile lock) instead of trying to launch a second one.
+      try {
+        this.#page = await this.#context.newPage();
+        return { chromeVersion: this.#chromeVersion };
+      } catch (error) {
+        // A dead context is no longer a safe owner of the profile. Tear it down before releasing the
+        // lock so a retry cannot leave a half-live Chromium process behind.
+        const context = this.#context;
+        this.#context = undefined;
+        this.#page = undefined;
+        await context.close().catch(() => undefined);
+        const profileLock = this.#profileLock;
+        this.#profileLock = undefined;
+        await profileLock?.release();
+        throw error;
+      }
+    }
+    // Chromium's own singleton lock is not sufficient: it appears only after launch and its error is
+    // platform-specific. Acquire our explicit state lock first so two Pi processes cannot race to open
+    // the same persistent profile or observe a half-initialized context (INV-11/INV-12).
+    const profileLock = this.#profileLockPath === undefined
+      ? undefined
+      : await acquireStateLock({ path: this.#profileLockPath, timeoutMs: 0 });
     // One tab, reused. launchPersistentContext is what keeps every cookie the adviser gains inside the
     // extension-owned directory (INV-11/INV-12); there is no code path here that touches the user profile.
     // `headless` follows the caller's `headed` flag: a manual login MUST show a window (INV-11 needs a
     // human to type), while a probe stays headless. Default is headless — a window is the deliberate choice.
-    const { context, chromeVersion } = await this.#launch({
-      userDataDir: this.#profile.userDataDir,
-      headless: options.headed !== true,
-      channel: this.#channel,
-      ...(this.#executablePath === undefined ? {} : { executablePath: this.#executablePath }),
-      timeoutMs: this.#navigationTimeoutMs,
-    });
-    this.#context = context;
-    this.#chromeVersion = chromeVersion;
-    const existing = context.pages()[0];
-    this.#page = existing ?? (await context.newPage());
-    return { chromeVersion };
+    let context: BrowserContext | undefined;
+    try {
+      const launchResult = await this.#launch({
+        userDataDir: this.#profile.userDataDir,
+        headless: options.headed !== true,
+        channel: this.#channel,
+        ...(this.#executablePath === undefined ? {} : { executablePath: this.#executablePath }),
+        timeoutMs: this.#navigationTimeoutMs,
+      });
+      context = launchResult.context;
+      const { chromeVersion } = launchResult;
+      this.#context = context;
+      this.#chromeVersion = chromeVersion;
+      const existing = context.pages()[0];
+      this.#page = existing ?? (await context.newPage());
+      this.#profileLock = profileLock;
+      return { chromeVersion };
+    } catch (error) {
+      // Do not leave a lock behind when Chromium rejects the launch or page creation.
+      // If page creation failed after Chromium returned a context, close that context and clear the
+      // tracked handles before the next retry. Otherwise the released profile lock would be paired with
+      // a still-live context, allowing another process to open the same user-data directory.
+      if (context !== undefined) await context.close().catch(() => undefined);
+      if (this.#context === context) this.#context = undefined;
+      this.#page = undefined;
+      await profileLock?.release();
+      throw error;
+    }
   }
 
   async isHealthy(): Promise<boolean> {
@@ -182,15 +233,18 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   }
 
   async resetTab(): Promise<void> {
-    if (!this.#context) return;
-    for (const page of this.#context.pages()) {
-      if (page !== this.#page && !page.url().startsWith("chrome://")) {
-        await page.close().catch(() => undefined);
-      }
+    const context = this.#context;
+    if (!context) return;
+    const tracked = this.#page;
+    this.#page = undefined;
+    // Closing the tracked page is intentional: it is the only reliable way to stop a generation that
+    // was still streaming when its owner cancelled. A fresh page keeps the next transaction from seeing
+    // the old composer, user message, or assistant turn.
+    if (tracked && !tracked.isClosed()) await tracked.close().catch(() => undefined);
+    for (const page of context.pages()) {
+      if (!page.url().startsWith("chrome://")) await page.close().catch(() => undefined);
     }
-    if (!this.#page || this.#page.isClosed()) {
-      this.#page = await this.#context.newPage();
-    }
+    this.#page = await context.newPage();
   }
 
   async observeSurface(): Promise<SurfaceObservation> {
@@ -213,14 +267,11 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     const page = await this.#requirePage();
     const picker = await firstVisible(page, CHATGPT_SELECTORS.modelPicker);
     if (!picker) return [];
-    const current = await safeText(picker.first());
+    const current = await safeText(picker);
     // Read the picker's own labels; a closed menu yields only the current model, which is still a valid
     // one-option answer rather than an empty list that would look like "no models exist".
-    await picker.first().click().catch(() => undefined);
-    const options: ModelOption[] = [];
-    for (const option of await visibleTexts(page, CHATGPT_SELECTORS.modelOption)) {
-      if (option.trim().length > 0) options.push({ modelId: option.trim(), displayName: option.trim(), available: true });
-    }
+    await picker.click().catch(() => undefined);
+    const options = await visibleModelOptions(page, CHATGPT_SELECTORS.modelOption);
     if (options.length === 0 && current.trim().length > 0) {
       options.push({ modelId: current.trim(), displayName: current.trim(), available: true });
     }
@@ -232,17 +283,19 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     const page = await this.#requirePage();
     const picker = await firstVisible(page, CHATGPT_SELECTORS.modelPicker);
     if (!picker) return false;
-    if (modelMatchesLabel(modelId, await safeText(picker.first()))) return true;
+    if (modelMatchesLabel(modelId, await safeText(picker))) return true;
 
-    await picker.first().click().catch(() => undefined);
+    await picker.click().catch(() => undefined);
     const fragment = safeSelectorFragment(modelId);
     if (fragment === undefined) return false;
     for (const candidate of CHATGPT_SELECTORS.modelOption) {
-      const option = page.locator(`${candidate}:has-text("${fragment}")`);
-      if ((await option.count().catch(() => 0)) > 0) {
-        await option.first().click().catch(() => undefined);
+      const option = await firstVisible(page, [`${candidate}:has-text("${fragment}")`]);
+      if (option) {
+        const ariaDisabled = (await option.getAttribute("aria-disabled").catch(() => null))?.toLowerCase();
+        if (ariaDisabled === "true" || (await option.getAttribute("disabled").catch(() => null)) !== null) continue;
+        await option.click().catch(() => undefined);
         // Confirm by re-reading the picker, never by assuming the click landed.
-        return modelMatchesLabel(modelId, await safeText((await firstVisible(page, CHATGPT_SELECTORS.modelPicker))?.first()));
+        return modelMatchesLabel(modelId, await safeText(await firstVisible(page, CHATGPT_SELECTORS.modelPicker)));
       }
     }
     await page.keyboard.press("Escape").catch(() => undefined);
@@ -251,6 +304,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
 
   async askAndAwaitTurn(request: ConsultationRequest): Promise<ConsultationOutcome> {
     const started = Date.now();
+    if (request.signal?.aborted) return { ok: false, failure: "generation-timeout" };
     const page = await this.#requirePage();
 
     const composer = await firstVisible(page, CHATGPT_SELECTORS.composer);
@@ -260,20 +314,41 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     // the thread grows an answer, so the count is taken here, before anything is typed.
     const assistantCountBefore = await countVisible(page, CHATGPT_SELECTORS.assistantMessage);
 
-    await composer.first().click().catch(() => undefined);
-    await composer.first().pressSequentially(request.prompt, { delay: 4 }).catch(async () => {
+    let turnTouched = false;
+    if (request.signal?.aborted) return await this.#cancelledTurn(turnTouched);
+    turnTouched = true;
+    await composer.click().catch(() => undefined);
+    if (request.signal?.aborted) return await this.#cancelledTurn(turnTouched);
+    await composer.pressSequentially(request.prompt, { delay: 4 }).catch(async () => {
       // Sequenced typing fails on some accessible textboxes; fill() is the fallback.
-      await composer.first().fill(request.prompt).catch(() => undefined);
+      await composer.fill(request.prompt).catch(() => undefined);
     });
 
+    if (request.signal?.aborted) return await this.#cancelledTurn(turnTouched);
     const send = await firstVisible(page, CHATGPT_SELECTORS.sendButton);
-    if (send) await send.first().click().catch(() => page.keyboard.press("Enter"));
-    else await page.keyboard.press("Enter");
+    if (request.signal?.aborted) return await this.#cancelledTurn(turnTouched);
+    let submitted = false;
+    if (send) {
+      try {
+        submitted = true;
+        await send.click();
+      } catch {
+        if (!request.signal?.aborted) {
+          submitted = true;
+          await page.keyboard.press("Enter");
+        }
+      }
+    } else if (!request.signal?.aborted) {
+      submitted = true;
+      await page.keyboard.press("Enter");
+    }
 
     const deadline = started + (request.timeoutMs ?? 180_000);
     let sawOwnMessage = false;
     while (Date.now() < deadline) {
+      if (request.signal?.aborted) return await this.#cancelledTurn(submitted);
       const snapshot = await this.#snapshot();
+      if (request.signal?.aborted) return await this.#cancelledTurn(submitted);
       const ownMessageVisible = (await firstVisible(page, CHATGPT_SELECTORS.userMessage)) !== undefined;
       sawOwnMessage = sawOwnMessage || ownMessageVisible;
       const assistantCountNow = await countVisible(page, CHATGPT_SELECTORS.assistantMessage);
@@ -288,12 +363,22 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
         return { ok: false, failure: snapshot.showsVerification ? "needs-human" : "provider-error" };
       }
       if (verdict === "complete") {
+        if (request.signal?.aborted) return await this.#cancelledTurn(submitted);
         const text = await this.#readLatestAnswer(page);
         if (text === undefined) return { ok: false, failure: "response-unreadable" };
         return { ok: true, text, elapsedMs: Date.now() - started };
       }
+      // Cancellation does not interrupt an in-flight Playwright call, but it must stop the next poll so
+      // the shared tab can be handed to the next queued consultation as soon as the current call settles.
       await this.#sleep(this.#pollIntervalMs);
     }
+    if (submitted) await this.resetTab().catch(async () => this.shutdown().catch(() => undefined));
+    return { ok: false, failure: "generation-timeout" };
+  }
+
+  /** Cancelled turns must leave no live generation behind on the shared page. */
+  async #cancelledTurn(turnTouched: boolean): Promise<ConsultationOutcome> {
+    if (turnTouched) await this.resetTab().catch(async () => this.shutdown().catch(() => undefined));
     return { ok: false, failure: "generation-timeout" };
   }
 
@@ -319,6 +404,9 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     this.#context = undefined;
     this.#page = undefined;
     if (context) await context.close().catch(() => undefined);
+    const profileLock = this.#profileLock;
+    this.#profileLock = undefined;
+    await profileLock?.release();
   }
 
   async #requirePage(): Promise<TrackedPage> {
@@ -344,7 +432,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
       this.#firstVisibleAcrossFrames(page, CHATGPT_SELECTORS.verification),
       firstVisible(page, CHATGPT_SELECTORS.errorNotice),
     ]);
-    const errorNotice = error ? scrubPageText(await safeText(error.first())) : undefined;
+    const errorNotice = error ? scrubPageText(await safeText(error)) : undefined;
     return {
       url: page.url(),
       title: await page.title().catch(() => ""),
@@ -358,7 +446,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     };
   }
 
-  async #firstVisibleAcrossFrames(page: TrackedPage, selectors: readonly string[]): Promise<AdviserLocator | undefined> {
+  async #firstVisibleAcrossFrames(page: TrackedPage, selectors: readonly string[]): Promise<AdviserElement | undefined> {
     // Cloudflare renders the challenge in a nested frame; the main frame cannot see it. `page` itself
     // satisfies the same `{ locator }` shape as a frame, so it heads the list.
     const scopes: readonly { locator(selector: string): AdviserLocator }[] = [page, ...page.frames()];
@@ -405,18 +493,20 @@ function toObservation(snapshot: SurfaceSnapshot): SurfaceObservation {
  * id, and within a selector we scan the matched elements for the first visible one rather than trusting
  * element [0]. ChatGPT ships many hidden duplicate controls (mobile menus, portals); a selector can match
  * fourteen nodes whose first is invisible while a later one is the real, clickable control. Checking only
- * `.first()` made a genuinely present control read as absent.
+ * `.first()` made a genuinely present control read as absent, and returning the collection after finding a
+ * later visible element would still make callers operate on the hidden first match.
  */
 /** How many matched elements a single probe will check for visibility. */
 const VISIBLE_SCAN_CAP = 12;
 
-async function firstVisible(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<AdviserLocator | undefined> {
+async function firstVisible(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<AdviserElement | undefined> {
   for (const selector of selectors) {
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
     // Cap the scan: a runaway selector match should not turn a probe into a hundred visibility checks.
     for (let index = 0; index < Math.min(count, VISIBLE_SCAN_CAP); index += 1) {
-      if (await locator.nth(index).isVisible().catch(() => false)) return locator;
+      const element = locator.nth(index);
+      if (await element.isVisible().catch(() => false)) return element;
     }
   }
   return undefined;
@@ -461,13 +551,30 @@ async function countVisible(page: { locator(s: string): AdviserLocator }, select
   return 0;
 }
 
-async function visibleTexts(page: { locator(s: string): AdviserLocator }, selectors: readonly string[]): Promise<string[]> {
+async function visibleModelOptions(
+  page: { locator(s: string): AdviserLocator },
+  selectors: readonly string[],
+): Promise<ModelOption[]> {
   for (const selector of selectors) {
     const locator = page.locator(selector);
-    if ((await locator.count().catch(() => 0)) > 0) {
-      const text = await locator.first().innerText().catch(() => "");
-      if (text.trim().length > 0) return text.split("\n");
+    const count = await locator.count().catch(() => 0);
+    const options: ModelOption[] = [];
+    for (let index = 0; index < Math.min(count, VISIBLE_SCAN_CAP); index += 1) {
+      const element = locator.nth(index);
+      if (!(await element.isVisible().catch(() => false))) continue;
+      const label = (await element.innerText().catch(() => "")).trim();
+      if (label.length === 0) continue;
+      const ariaDisabled = (await element.getAttribute("aria-disabled").catch(() => null))?.toLowerCase();
+      const disabledAttribute = await element.getAttribute("disabled").catch(() => null);
+      const disabled = disabledAttribute !== null || ariaDisabled === "true";
+      options.push({
+        modelId: label,
+        displayName: label,
+        available: !disabled,
+        ...(disabled ? { unavailableReason: "disabled" } : {}),
+      });
     }
+    if (options.length > 0) return options;
   }
   return [];
 }

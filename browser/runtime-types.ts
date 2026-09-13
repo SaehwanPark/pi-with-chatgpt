@@ -1,3 +1,5 @@
+import type { AccountIdentityHint } from "../auth/identity.js";
+
 /**
  * M3 — the contract between the consultation engine and the browser that carries it.
  *
@@ -76,6 +78,8 @@ export interface ConsultationRequest {
    */
   readonly checkpointSha?: string;
   readonly timeoutMs?: number;
+  /** Cancellation requested by the owning job; the driver stops polling before the tab is reused. */
+  readonly signal?: AbortSignal;
 }
 
 export type ConsultationOutcome =
@@ -149,6 +153,12 @@ export interface SurfaceObservation {
    * (INV-05) and reaches the worker only through this bounded field.
    */
   readonly explanation?: string;
+  /**
+   * A stable account hint only when the browser surface actually exposed one. The browser adapter must
+   * leave this absent when it cannot identify the signed-in account; callers must never copy the Pi
+   * credential into this field as a substitute for observation.
+   */
+  readonly identity?: AccountIdentityHint;
   /** Whether the runtime can proceed without a person. */
   readonly actionable: boolean;
 }

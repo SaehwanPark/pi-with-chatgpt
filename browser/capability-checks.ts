@@ -46,7 +46,7 @@ export type PrerequisiteEvaluation =
       /** Items that failed or were never checked, in the order a human should address them. */
       readonly blocking: readonly {
         readonly item: VerificationItem;
-        readonly outcome: Exclude<VerificationOutcome, "verified" | "not-applicable">;
+        readonly outcome: Exclude<VerificationOutcome, "verified">;
       }[];
     };
 
@@ -63,9 +63,12 @@ export function evaluateConsultationPrerequisites(
   const blocking = required
     .map((item) => ({ item, result: checklist.results.find((candidate) => candidate.item === item) }))
     .filter((entry) => entry.result === undefined || !isPassing(entry.result.outcome))
-    .map((entry) => ({
+    .map((entry): { item: VerificationItem; outcome: "unavailable" | "unverified" } => ({
       item: entry.item,
-      outcome: (entry.result?.outcome ?? "unverified") as "unavailable" | "unverified",
+      // `not-applicable` is a valid observation for an optional capability, but every item in the V1
+      // default set is required. Normalize it to an actionable unverified blocker rather than letting
+      // a connector silently pass because a provider said the check did not apply.
+      outcome: entry.result?.outcome === "unavailable" ? "unavailable" : "unverified",
     }));
   return blocking.length === 0
     ? { ok: true, verified: required.filter((item) => isPassing(checklist.results.find((r) => r.item === item)?.outcome)) }
@@ -75,10 +78,12 @@ export function evaluateConsultationPrerequisites(
 /**
  * V1 is GitHub-only: an adviser that cannot use the GitHub connector cannot inspect the anchored
  * repository. Treating that check as optional would let a generic-looking answer masquerade as a
- * repository-grounded consultation, so every required item uses the same strict passing rule.
+ * repository-grounded consultation, so every required item uses the same strict passing rule. The
+ * `not-applicable` outcome remains available for callers that supply a different optional set, but it
+ * is never accepted by this V1 gate.
  */
 function isPassing(outcome: VerificationOutcome | undefined): boolean {
-  return outcome === "verified" || outcome === "not-applicable";
+  return outcome === "verified";
 }
 
 /**
@@ -169,7 +174,7 @@ export function checklistToCapabilityRecord(
   }
   const first = evaluation.blocking[0];
   const blockingItem = first?.item ?? "chatgpt-access";
-  const outcome = first?.outcome ?? "unverified";
+  const outcome = first?.outcome === "unavailable" ? "unavailable" : "unverified";
   const status = statusFor(blockingItem, outcome);
   const action = actionFor(blockingItem, outcome);
   return {

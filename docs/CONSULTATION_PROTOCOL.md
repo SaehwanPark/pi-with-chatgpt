@@ -50,6 +50,14 @@ same-host advisory lock for that consultation ID. Engine callers can resolve and
 after the store supplies the immutable address; callers must not synthesize delivery fields.
 There is no general record-update API that can rewrite the original anchor or delivery address.
 
+Before a production dispatch, `createConsultationCapabilityGate().ensureConsultationCapability(...)`
+must pass all four V1 prerequisites: live ChatGPT access, a selectable adviser model, a verified GitHub
+connector for the exact repository and checkpoint, and target-repository reachability. The gate is
+fail-closed when its connector verifier is absent or inconclusive, so a generic answer cannot be
+mistaken for repository-grounded advice. Every dispatch performs a fresh probe (there is no stale
+positive cache), and the probe plus Project/conversation/turn/receipt sequence runs under one process-wide
+browser transaction.
+
 - Creation refuses an existing or corrupted job; it never overwrites it on retry.
 - Claim persists `queued → running` with Project/conversation binding and dispatch HEAD before
   returning `claimed: true`. Only one caller can claim a job. Browser submission must occur after
@@ -79,8 +87,11 @@ must be projected into a compact worker-facing result, never serialized wholesal
 
 The execution engine persists a result before notifying a listener registered for the matching session
 delivery digest. The extension binds and removes that listener through Pi's session lifecycle; an absent
-or ambiguous endpoint leaves the result available for explicit status/read queries. A UI notification on
-whichever session is focused is not targeted delivery.
+or ambiguous endpoint leaves the result available for explicit status/read queries. In V1 this listener
+drives a session-scoped UI notification; it does not inject a message into, or automatically resume, the
+worker model. Workers that need the completed advice must call `advisor_status`/`advisor_read` (or the
+equivalent slash commands) from their own turn. A UI notification on whichever session is focused is not
+targeted delivery.
 
 ## Execution boundary
 

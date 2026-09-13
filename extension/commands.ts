@@ -31,6 +31,7 @@ import {
 } from "../drift/index.js";
 import { adviserStatus } from "../auth/status.js";
 import { runManualLogin, type AdviserLoginPort } from "../auth/login-flow.js";
+import { authDecisionAllowsConsultation, resolveLiveAdviserAuth, type AdviserAuthDecision } from "../auth/readiness.js";
 import { resolveCheckpoint } from "../git/checkpoint-resolution.js";
 import { createGitExecutor, createNodeCommandRunner, type GitExecutor } from "../git/exec.js";
 import type { GitHubApi } from "../git/github-api.js";
@@ -38,8 +39,9 @@ import { createGitHubApi } from "../git/github-api.js";
 import { adviserStateLayout } from "../config/state-layout.js";
 import { adviserProfileFor, stateStoragePaths } from "../browser/state-storage.js";
 import type { ConsultationEngine } from "../jobs/engine.js";
-import { generateConsultationId } from "../jobs/record.js";
+import { generateConsultationId, scopedTaskIdForSession } from "../jobs/record.js";
 import { DEFAULT_MODEL_PREFERENCE } from "../browser/model-selection.js";
+import type { ConsultationCapabilityGate } from "../browser/consultation-capability.js";
 import { parseAdviserResponse } from "../protocol/response.js";
 
 export interface CommandServiceOptions {
@@ -57,6 +59,9 @@ export interface CommandServiceOptions {
   readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
   /** Ranked adviser model preferences; resolved against the live ChatGPT model picker by the engine. */
   readonly modelPreference?: readonly string[];
+  /** Authoritative production preflight shared with the engine; absent only for direct test seams. */
+  readonly capabilityGate?: ConsultationCapabilityGate;
+  readonly capabilityGateFactory?: (cwd: string) => Promise<ConsultationCapabilityGate>;
 }
 
 function defaultGitHubApi(): GitHubApi {
@@ -96,6 +101,8 @@ export class CommandManager {
   private readonly loginPort?: AdviserLoginPort;
   private readonly loginPortFactory?: (cwd: string) => Promise<AdviserLoginPort>;
   private readonly modelPreference: readonly string[];
+  private readonly capabilityGate?: ConsultationCapabilityGate;
+  private readonly capabilityGateFactory?: (cwd: string) => Promise<ConsultationCapabilityGate>;
 
   constructor(options: CommandServiceOptions = {}) {
     this.config = options.config ?? DEFAULT_CONFIG;
@@ -114,6 +121,8 @@ export class CommandManager {
     this.loginPort = options.loginPort;
     this.loginPortFactory = options.loginPortFactory;
     this.modelPreference = options.modelPreference ?? DEFAULT_MODEL_PREFERENCE;
+    this.capabilityGate = options.capabilityGate;
+    this.capabilityGateFactory = options.capabilityGateFactory;
   }
 
   private async resolveEngine(cwd: string): Promise<ConsultationEngine | undefined> {
@@ -137,6 +146,67 @@ export class CommandManager {
       // caller keeps the safe defaults and reports the adviser as unavailable when it needs services.
       return this.config;
     }
+  }
+
+  private async resolveCapabilityGate(cwd: string): Promise<ConsultationCapabilityGate | undefined> {
+    if (this.capabilityGate) return this.capabilityGate;
+    if (this.capabilityGateFactory) return await this.capabilityGateFactory(cwd);
+    return undefined;
+  }
+
+  private async requireCapability(
+    cwd: string,
+    anchor: Parameters<ConsultationCapabilityGate["ensureConsultationCapability"]>[0]["anchor"],
+    ctx: AdviserCommandContext,
+  ): Promise<boolean> {
+    let gate: ConsultationCapabilityGate | undefined;
+    try {
+      gate = await this.resolveCapabilityGate(cwd);
+    } catch {
+      ctx.ui.notify("Consultation refused: capability verification could not be initialized.", "error");
+      return false;
+    }
+    if (gate === undefined) return true;
+    try {
+      const result = await gate.ensureConsultationCapability({ anchor, modelPreference: this.modelPreference });
+      if (result.ok) return true;
+      ctx.ui.notify(`Consultation refused: ${result.explanation}`, "error");
+    } catch {
+      ctx.ui.notify("Consultation refused: capability verification failed.", "error");
+    }
+    return false;
+  }
+
+  /**
+   * Probe the production auth boundary before dispatch. Directly injected engines are test seams and
+   * deliberately retain their existing behaviour; the lazy production composition always supplies an
+   * engine factory, so live calls cannot bypass the Pi/browser identity resolver.
+   */
+  private async resolveLiveAuth(cwd: string): Promise<AdviserAuthDecision | undefined> {
+    if (!this.engineFactory && !this.loginPortFactory) return undefined;
+    const paths = stateStoragePaths();
+    const profile = adviserProfileFor(paths);
+    const status = await adviserStatus(profile);
+    let browserSession: Awaited<ReturnType<AdviserLoginPort["observeSession"]>> | undefined;
+    if (status.openAiSignIn.present && status.profile.exists) {
+      const loginPort = await this.resolveLoginPort(cwd).catch(() => undefined);
+      if (loginPort) browserSession = await loginPort.observeSession(profile).catch(() => undefined);
+    }
+    return await resolveLiveAdviserAuth({ profile, browserSession, requireBrowserIdentity: true });
+  }
+
+  private async requireLiveAuth(cwd: string, ctx: AdviserCommandContext): Promise<boolean> {
+    let decision: AdviserAuthDecision | undefined;
+    try {
+      decision = await this.resolveLiveAuth(cwd);
+    } catch {
+      ctx.ui.notify("Consultation refused: live adviser authentication could not be verified.", "error");
+      return false;
+    }
+    if (decision === undefined || authDecisionAllowsConsultation(decision)) return true;
+    const severity = decision.action === "review-account-mismatch" ? "error" : "warning";
+    ctx.ui.notify(`Consultation refused: ${decision.explanation}`, severity);
+    return false;
   }
 
   getCommands(): Record<string, AdviserCommandDefinition> {
@@ -225,9 +295,13 @@ export class CommandManager {
       return;
     }
 
+    if (!(await this.requireLiveAuth(cwd, ctx))) return;
+
     const { anchor, workingState } = checkpointRes.resolved;
+    if (!(await this.requireCapability(cwd, anchor, ctx))) return;
     const consultationId = generateConsultationId();
-    const taskId = getPiSessionId(ctx);
+    const sessionId = getPiSessionId(ctx);
+    const taskId = scopedTaskIdForSession(sessionId, "command");
 
     ctx.ui.notify(
       formatDispatchStatus({
@@ -260,7 +334,7 @@ export class CommandManager {
             anchor,
             branch: workingState.branch ?? null,
             taskId,
-            sessionId: taskId,
+            sessionId,
             kind,
             dependency: config.dependencyDefault,
             mode: "async",
@@ -279,7 +353,7 @@ export class CommandManager {
           anchor,
           branch: workingState.branch ?? null,
           taskId,
-          sessionId: taskId,
+          sessionId,
           kind,
           dependency: config.dependencyDefault,
           mode: "sync",
@@ -363,7 +437,10 @@ export class CommandManager {
       return;
     }
 
+    if (!(await this.requireLiveAuth(cwd, ctx))) return;
+
     const { anchor, workingState } = checkpointRes.resolved;
+    if (!(await this.requireCapability(cwd, anchor, ctx))) return;
     const entries = await this.ledger.list({ repository: anchor.repository });
     const prior = entries.find((e) => e.consultationId === consultationId);
 
@@ -688,17 +765,27 @@ export class CommandManager {
     // session. When the production login port is available, perform the browser-side observation and
     // feed that fact into the redacted status snapshot. Without it, keep the state explicitly unknown
     // rather than claiming that the isolated profile is authenticated from the Pi credential alone.
+    let browserSession: Awaited<ReturnType<AdviserLoginPort["observeSession"]>> | undefined;
     if (status.profile.exists && loginPort) {
-      const browserSession = await loginPort.observeSession(profile).catch(() => ({
+      browserSession = await loginPort.observeSession(profile).catch(() => ({
         kind: "unreachable",
         reason: "browser-failed",
       } as const));
       status = await adviserStatus(profile, { browserSession });
     }
 
+    // This is the only production account comparison. In particular, do not treat the presence of Pi
+    // OAuth as proof that the isolated browser belongs to that account. A demonstrated mismatch stops
+    // here until a pair-bound human decision is supplied.
+    const authDecision = await resolveLiveAdviserAuth({ profile, browserSession, requireBrowserIdentity: true });
+    if (authDecision.action === "review-account-mismatch") {
+      ctx.ui.notify(`ChatGPT adviser authentication refused: ${authDecision.explanation}`, "error");
+      return;
+    }
+
     if (!status.openAiSignIn.present) {
       ctx.ui.notify(
-        `ChatGPT adviser sign-in required (${status.openAiSignIn.reason}). Profile: ${status.profile.userDataDir}`,
+        `ChatGPT adviser sign-in required (${status.openAiSignIn.reason}). The isolated adviser profile is not ready.`,
         "warning",
       );
       if (loginPort) {

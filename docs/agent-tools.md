@@ -18,7 +18,7 @@ In addition to user-facing slash commands, `pi-with-chatgpt` registers **8 agent
 
 | Tool Name | Purpose | Primary Invariants |
 | --- | --- | --- |
-| [`advisor_preflight`](#1-advisor_preflight) | Pre-check git anchor and remote reachability | INV-03, INV-04 |
+| [`advisor_preflight`](#1-advisor_preflight) | Verify git anchor, remote reachability, live ChatGPT access/model, GitHub connector, and target repository | INV-03, INV-04, INV-09, INV-10 |
 | [`advisor_submit`](#2-advisor_submit) | Submit new consultation and persist to ledger | INV-01, INV-06, INV-13 |
 | [`advisor_read`](#3-advisor_read) | Fetch full markdown advice and action items | INV-13, INV-15 |
 | [`advisor_status`](#4-advisor_status) | Inspect status, graph drift, and file drift | INV-01, INV-05 |
@@ -31,7 +31,7 @@ In addition to user-facing slash commands, `pi-with-chatgpt` registers **8 agent
 
 ## 1. `advisor_preflight`
 
-Performs a read-only preflight verification of the current git checkpoint and confirms that the commit is reachable on the configured GitHub remote.
+Performs a read-only preflight verification of the current git checkpoint and confirms that the commit is reachable on the configured GitHub remote. It then runs the live, fail-closed capability gate: ChatGPT access, the selected adviser model, the exact GitHub connector repository/checkpoint, and target repository availability. The result is dispatchable only when all four capability checks pass and the browser account identity is verified.
 
 ### Schema
 - **Parameters**:
@@ -45,6 +45,18 @@ Performs a read-only preflight verification of the current git checkpoint and co
       "repository": "owner/repo",
       "checkpointCommit": "3510f4a8e29bc12d098e72c81a5e182379bc0192",
       "remoteAvailability": "present",
+      "capability": {
+        "checklist": {
+          "results": [
+            { "item": "chatgpt-access", "outcome": "verified" },
+            { "item": "adviser-model", "outcome": "verified" },
+            { "item": "github-connector", "outcome": "verified" },
+            { "item": "target-repository", "outcome": "verified" }
+          ]
+        },
+        "modelId": "gpt-5.5",
+        "degraded": false
+      },
       "readiness": {
         "ready": true,
         "clean": true,
@@ -55,7 +67,7 @@ Performs a read-only preflight verification of the current git checkpoint and co
   ```
 
 ### When to Call
-Call `advisor_preflight` before committing large changes or dispatching a consultation to ensure that the commit has been pushed to GitHub. If `ready: false`, the tool returns exact remediation instructions (e.g. `git push -u origin <branch>`).
+Call `advisor_preflight` before committing large changes or dispatching a consultation to ensure that the commit has been pushed to GitHub. If `ready: false`, the tool returns an explicit refusal stage and reason. A capability failure uses `reason: "capability"` and includes a safe explanation; no consultation is submitted until the missing live prerequisite is repaired.
 
 ---
 
@@ -74,7 +86,9 @@ Submits a new consultation to the senior adviser, anchoring it to the verified c
     - `"challenge"`: Architecture red-teaming.
   - `goal` *(string, required)*: Specific question or goal for the consultation.
   - `cwd` *(string, optional)*: Working directory.
-  - `taskId` *(string, optional)*: Scoping identifier for conversation isolation. Defaults to current session ID.
+  - `taskId` *(string, optional)*: Logical scoping label for conversation isolation. It is namespaced by
+    a SHA-256 digest of the current Pi session; the raw session ID is used only for delivery routing and
+    is never persisted.
 - **Returns**:
   ```json
   {

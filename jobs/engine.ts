@@ -14,6 +14,8 @@
 
 import type { AdviserProjectSurface, AdviserBrowserRuntime, ConsultationOutcome } from "../browser/runtime-types.js";
 import { DEFAULT_MODEL_PREFERENCE, resolveModelPreference } from "../browser/model-selection.js";
+import type { ConsultationCapabilityGate } from "../browser/consultation-capability.js";
+import { createBrowserTransactionScheduler, type BrowserTransactionScheduler } from "../browser/transaction.js";
 import type { AdviserStateLayout } from "../config/state-layout.js";
 import { assertCredentialFreeValue } from "../ledger/record.js";
 import { redactSensitiveText } from "../protocol/masking.js";
@@ -106,6 +108,10 @@ export interface ConsultationEngineDependencies {
   readonly fileSystem?: StateStoreFileSystem;
   readonly maxConcurrentJobs?: number;
   readonly now?: () => Date;
+  /** Shared process-wide lock for the single tracked browser tab. */
+  readonly browserTransaction?: BrowserTransactionScheduler;
+  /** Production dispatch preflight. Every engine must carry the authoritative fail-closed gate. */
+  readonly capabilityGate: ConsultationCapabilityGate;
 }
 
 /**
@@ -114,6 +120,7 @@ export interface ConsultationEngineDependencies {
  * the browser transaction serial until the runtime grows a conversation-scoped page/atomic operation.
  */
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
+const DEFAULT_BROWSER_TRANSACTION = createBrowserTransactionScheduler();
 
 export class ConsultationEngine {
   readonly #layout: AdviserStateLayout;
@@ -124,7 +131,9 @@ export class ConsultationEngine {
   readonly #ledger: ConsultationLedger;
   readonly #fileSystem: StateStoreFileSystem;
   readonly #maxConcurrentJobs: number;
+  readonly #browserTransaction: BrowserTransactionScheduler;
   readonly #now: () => Date;
+  readonly #capabilityGate: ConsultationCapabilityGate;
 
   /** Keyed mutex per conversation thread so turns to the same conversation run in sequence (INV-09). */
   readonly #conversationQueues = new Map<ChatGptConversationKey, Promise<void>>();
@@ -153,7 +162,11 @@ export class ConsultationEngine {
       1,
       Math.min(dependencies.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS, DEFAULT_MAX_CONCURRENT_JOBS),
     );
+    // Even direct engine callers share the process-wide default; production composition may inject the
+    // activation-owned scheduler so its capability gate and login port use the exact same queue.
+    this.#browserTransaction = dependencies.browserTransaction ?? DEFAULT_BROWSER_TRANSACTION;
     this.#now = dependencies.now ?? (() => new Date());
+    this.#capabilityGate = dependencies.capabilityGate;
     this.#ledger =
       dependencies.ledger ??
       new ConsultationLedger({
@@ -401,16 +414,39 @@ export class ConsultationEngine {
         return await this.#cancelOutcome(address, dependency);
       }
 
-      // 1. Ensure ChatGPT Project exists and is bound to this repository (INV-08).
-      const instructions = buildProjectInstructions({ repository: request.anchor.repository });
-      const projectResult: EnsureProjectResult = await ensureProjectForRepository({
-        layout: this.#layout,
-        repository: request.anchor.repository,
-        surface: this.#surface,
-        instructions,
-        fileSystem: this.#fileSystem,
-        now: this.#now,
-      });
+      // A driver lock only protects one DOM call. Hold the process-wide transaction lock over the entire
+      // project/conversation selection, model resolution, send, and receipt sequence so another CWD's
+      // engine cannot navigate the shared tracked tab between inspection and submission.
+      return await this.#browserTransaction.runExclusive(async () => {
+        if (abortController.signal.aborted) {
+          return await this.#cancelOutcome(address, dependency);
+        }
+
+        // Capability probing navigates the same tracked tab as the rest of this sequence. Keeping the
+        // final gate inside this transaction closes the gap between a preflight result and dispatch, while
+        // still allowing commands/tools to run an earlier user-facing preflight.
+        const capability = await this.#ensureCapability(request);
+        if (!capability.ok) {
+          const failedRecord = await this.#failJob(address, "capability");
+          return {
+            ok: false,
+            record: failedRecord,
+            failure: "capability",
+            blocked: dependency === "required",
+            explanation: capability.explanation,
+          };
+        }
+
+        // 1. Ensure ChatGPT Project exists and is bound to this repository (INV-08).
+        const instructions = buildProjectInstructions({ repository: request.anchor.repository });
+        const projectResult: EnsureProjectResult = await ensureProjectForRepository({
+          layout: this.#layout,
+          repository: request.anchor.repository,
+          surface: this.#surface,
+          instructions,
+          fileSystem: this.#fileSystem,
+          now: this.#now,
+        });
 
       if (!projectResult.ok) {
         const failure = mapProjectFailure(projectResult.reason);
@@ -538,6 +574,7 @@ export class ConsultationEngine {
             modelId: modelSelection.modelId,
             checkpointSha: request.anchor.resolvedCommit,
             timeoutMs: request.timeoutMs,
+            signal: abortController.signal,
           });
         } catch {
           const failedRecord = await this.#failJob(address, "browser");
@@ -608,6 +645,22 @@ export class ConsultationEngine {
           text: safeResponseText,
         });
 
+        // `complete()` is first-terminal-winner: cancellation may have committed while the browser
+        // answer was being parsed. Never project a successful ledger event for a different terminal
+        // winner, or durable job state and consultation history will disagree.
+        if (completedRecord.state !== "completed") {
+          await this.#recordTerminalLedger(completedRecord);
+          const failure = completedRecord.state === "failed"
+            ? completedRecord.failure ?? "browser"
+            : "cancelled";
+          return {
+            ok: false,
+            record: completedRecord,
+            failure,
+            blocked: failure !== "cancelled" && dependency === "required",
+          };
+        }
+
         // Record into persistent repository ledger (INV-15)
         try {
           await this.#ledger.recordConsultation(
@@ -662,6 +715,7 @@ export class ConsultationEngine {
           response: persistedResponse,
         };
       });
+      });
     } catch {
       // Any unexpected project/conversation/receipt exception still gets a durable terminal
       // outcome. Do not expose provider or filesystem exception text to the worker.
@@ -691,6 +745,27 @@ export class ConsultationEngine {
     }
   }
 
+  /**
+   * The engine is the last production boundary before a job is persisted/dispatched. Managers may run
+   * preflight for user feedback, but they cannot bypass this gate.
+   */
+  async #ensureCapability(request: EngineConsultationRequest): Promise<
+    | { readonly ok: true }
+    | { readonly ok: false; readonly explanation: string }
+  > {
+    try {
+      const result = await this.#capabilityGate.ensureConsultationCapability({
+        anchor: request.anchor,
+        ...(request.modelPreference === undefined
+          ? request.modelId === undefined ? {} : { modelPreference: [request.modelId] }
+          : { modelPreference: request.modelPreference }),
+      }, { transactionHeld: true });
+      return result.ok ? { ok: true } : { ok: false, explanation: result.explanation };
+    } catch {
+      return { ok: false, explanation: "Consultation capability verification failed." };
+    }
+  }
+
   async #failJob(address: JobAddress, failure: JobFailureCode): Promise<JobRecord> {
     const failed = await this.#store.fail(address, failure);
     await this.#recordTerminalLedger(failed);
@@ -699,7 +774,9 @@ export class ConsultationEngine {
 
   async #cancelJob(address: JobAddress): Promise<JobRecord> {
     const cancelled = await this.#store.cancel(address);
-    await this.#recordTerminalLedger(cancelled);
+    // A completion that won the terminal race already has its detailed ledger entry. Recording a
+    // cancellation projection here would append a duplicate, metadata-poor completed entry.
+    if (cancelled.state !== "completed") await this.#recordTerminalLedger(cancelled);
     return cancelled;
   }
 
@@ -801,7 +878,8 @@ export class ConsultationEngine {
         const index = this.#concurrencyWaiters.indexOf(onSlotAvailable);
         if (index >= 0) this.#concurrencyWaiters.splice(index, 1);
         signal.removeEventListener("abort", onAbort);
-        this.#activeJobCount += 1;
+        // Releasing a slot to a waiter transfers the existing slot. Incrementing here would count
+        // both the releasing job and its successor, eventually wedging every later consultation.
         resolve();
       };
       signal.addEventListener("abort", onAbort, { once: true });

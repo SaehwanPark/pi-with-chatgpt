@@ -87,6 +87,8 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   #launchInFlight: Promise<{ readonly ok: boolean; readonly rejection?: RuntimeRejection }> | undefined;
   /** Consultations are serialised: one tab, one composer, one turn at a time. */
   #turnQueue: Promise<unknown> = Promise.resolve();
+  /** Monotonic barrier: shutdown invalidates turns that were queued before it. */
+  #turnGeneration = 0;
   readonly #listeners = new Set<RuntimeEventListener>();
 
   readonly #driver: AdviserPageDriver;
@@ -174,11 +176,21 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       // proven transport failure, unlike the human gate, which is only an expectation about the page.
       return { ok: false, rejection: "launch-failed" };
     }
+    let contextDiscarded = false;
     if (this.#phase === "ready") {
       if (await this.#driver.isHealthy()) return { ok: true };
       // The common production surprise: the process is gone but the object graph still says "ready".
       this.#phase = "degraded";
       this.#emit({ type: "recovered", reason: "unhealthy" });
+      // Do not let start() reuse a renderer that answered the health check as unhealthy. Discard the
+      // complete context first; the driver owns the profile lock and will reacquire it on relaunch.
+      await this.#driver.shutdown().catch(() => undefined);
+      contextDiscarded = true;
+    }
+    if (this.#phase === "degraded" && !contextDiscarded) {
+      // A turn can mark the runtime degraded after a driver exception without a preceding health check.
+      // The next attempt must not hand that potentially hung context back to start().
+      await this.#driver.shutdown().catch(() => undefined);
     }
     return await this.#launchOrReuse(options);
   }
@@ -190,7 +202,11 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
    * "the model refused" from "we timed out": a caller must know whether retrying could help.
    */
   async consult(request: ConsultationRequest): Promise<ConsultationOutcome> {
-    const run = this.#turnQueue.then(() => this.#driver.runExclusive(() => this.#runTurn(request)));
+    const generation = this.#turnGeneration;
+    const run = this.#turnQueue.then(() => {
+      if (generation !== this.#turnGeneration) return { ok: false as const, failure: "browser-lost" as const };
+      return this.#driver.runExclusive(() => this.#runTurn(request));
+    });
     // Keep the queue alive regardless of how this turn ends; a rejected promise here would poison it.
     this.#turnQueue = run.then(
       () => undefined,
@@ -200,6 +216,9 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }
 
   async shutdown(): Promise<void> {
+    // Invalidate queued turns before waiting for the driver lock. The active turn is allowed to unwind;
+    // turns behind it must not observe `stopped` and relaunch a browser after shutdown completes.
+    this.#turnGeneration += 1;
     await this.#driver.runExclusive(async () => {
       if (this.#phase === "stopped") return;
       this.#phase = "stopping";
@@ -213,6 +232,8 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }
 
   async #runTurn(request: ConsultationRequest): Promise<ConsultationOutcome> {
+    if (request.signal?.aborted) return { ok: false, failure: "generation-timeout" };
+
     const ready = await this.#ensureReady({ purpose: "consultation" });
     if (!ready.ok) {
       // Report the reason the browser could not start. A remembered human gate is not the cause here,
@@ -236,6 +257,8 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       this.#emit({ type: "turn-failed", failure: "model-unavailable" });
       return { ok: false, failure: "model-unavailable" };
     }
+
+    if (request.signal?.aborted) return { ok: false, failure: "generation-timeout" };
 
     const startedAt = this.#clock.now();
     let outcome: ConsultationOutcome;
@@ -367,7 +390,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
 function rejectionFromError(error: unknown): RuntimeRejection {
   const message = error instanceof Error ? error.message : String(error);
   if (/executable doesn't exist|can't find chrome|not found/iu.test(message)) return "chrome-not-found";
-  if (/process.*lock|user data directory is already in use|singletonlock/iu.test(message)) {
+  if (/process.*(?:lock|holds)|state-busy|profile lock|user data directory is already in use|singletonlock/iu.test(message)) {
     return "profile-locked-by-other-process";
   }
   if (/eperm|eacces|userdata|user data/iu.test(message)) return "profile-unusable";
