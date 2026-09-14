@@ -43,7 +43,7 @@ The preferred worker-facing entry point for a normal adviser consultation. It or
 - **Returns**: A synchronous call returns a compact worker-facing advisory with checkpoint, result status, advice, and actionable items. An asynchronous call returns a consultation ID and queued state; use `advisor_status` and `advisor_read` for the durable result.
 
 ### Routing policy
-Use this tool when the user or trusted project instructions explicitly ask for ChatGPT/adviser help, a plan, review, audit, debugging help, or a second opinion. Do not use it when the user explicitly says not to use external advisers. `agentUse.mode` controls whether autonomous calls are allowed (`off`, `explicit`, or `proactive`); the extension does not regex-classify user prompts.
+Use this tool when the user or trusted project instructions explicitly ask for ChatGPT/adviser help, a plan, review, audit, debugging help, or a second opinion. Do not use it when the user explicitly says not to use external advisers. `agentUse.mode` controls whether autonomous submission is allowed (`off`, `explicit`, or `proactive`); with `off`, `advisor_consult`, `advisor_submit`, and `advisor_followup` refuse dispatch while read-only lifecycle tools remain available. The extension does not regex-classify user prompts.
 
 ### Completion integrity
 The adviser response must match the anchored full SHA and end with `consultation_complete: <consultation-id>`. Missing or malformed completion proof produces an `incomplete` or `provenance-ambiguous` result, retains only safe diagnostic evidence, and exposes no actionable items.

@@ -417,6 +417,12 @@ export class ToolManager {
         const requestedTaskId = rawParams?.taskId as string | undefined;
         const requestedMode = rawParams?.mode === "async" ? "async" : rawParams?.mode === "sync" ? "sync" : undefined;
         const config = await this.resolveConfig(cwd);
+        if (config.agentUse.mode === "off") {
+          return {
+            content: [{ type: "text", text: "Autonomous adviser use is disabled by configuration; use an explicit adviser command instead." }],
+            details: { ok: false, failure: "agent-use-off" },
+          };
+        }
         if (signal?.aborted) {
           return {
             content: [{ type: "text", text: "Consultation submission cancelled before dispatch." }],
@@ -899,6 +905,12 @@ export class ToolManager {
         const request = (rawParams?.request as string) || "";
         const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
         const config = await this.resolveConfig(cwd);
+        if (config.agentUse.mode === "off") {
+          return {
+            content: [{ type: "text", text: "Autonomous adviser use is disabled by configuration; use an explicit adviser command instead." }],
+            details: { ok: false, failure: "agent-use-off" },
+          };
+        }
         if (signal?.aborted) {
           return {
             content: [{ type: "text", text: "Follow-up cancelled before dispatch." }],

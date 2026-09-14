@@ -78,7 +78,7 @@ Controls whether a failure to reach or consult ChatGPT blocks your Pi worker:
 ### `agentUse.mode` (`"off"` | `"explicit"` | `"proactive"`)
 Controls autonomous use of the high-level `advisor_consult` tool. This is routing guidance for Pi's worker model, not a natural-language classifier inside the extension:
 
-- `"off"`: Autonomous adviser calls are refused. User slash commands and explicit low-level operations remain available.
+- `"off"`: Agent-facing adviser submission calls are refused. User slash commands remain available; read-only status, read, auth, and disposition tools still work.
 - `"explicit"` (default): The worker should consult when the user or trusted project instructions explicitly request ChatGPT, an adviser, a review, a plan, an audit, or a second opinion.
 - `"proactive"`: A user-level policy that also permits the worker to consult at high-value decision points such as security work, major architecture changes, difficult debugging, or final adversarial review. It does not dispatch consultations automatically by itself.
 

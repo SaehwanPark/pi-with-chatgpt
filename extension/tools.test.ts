@@ -107,13 +107,18 @@ describe("extension/tools (M8)", () => {
       github: mockGitHub,
       engine: { submitSync, submitAsync: vi.fn() } as unknown as ConsultationEngine,
     });
-    const tool = manager.getTools().find((candidate) => candidate.name === "advisor_consult")!;
-    const result = await tool.execute("call-off", { kind: "consult", goal: "Should not dispatch" }, undefined, undefined, {
+    const context = {
       cwd: makeTestDirectory("pwc-tools-off-"),
       isProjectTrusted: () => true,
       sessionManager: { getSessionId: () => "off-session" },
-    });
+    };
+    const tool = manager.getTools().find((candidate) => candidate.name === "advisor_consult")!;
+    const result = await tool.execute("call-off", { kind: "consult", goal: "Should not dispatch" }, undefined, undefined, context);
     expect(result.details).toMatchObject({ ok: false, failure: "agent-use-off" });
+
+    const submitTool = manager.getTools().find((candidate) => candidate.name === "advisor_submit")!;
+    const submitResult = await submitTool.execute("call-submit-off", { kind: "consult", goal: "Still should not dispatch" }, undefined, undefined, context);
+    expect(submitResult.details).toMatchObject({ ok: false, failure: "agent-use-off" });
     expect(submitSync).not.toHaveBeenCalled();
   });
 
