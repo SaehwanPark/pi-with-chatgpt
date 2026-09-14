@@ -112,7 +112,8 @@ named in a table.
   to ask "has the person finished?" is not automating the challenge and must stay possible — latching the gate
   as a blanket refusal would deadlock manual login, because opening the window is itself a `signed-out`
   observation. Only the launch-retry circuit breaker refuses `ensureReady`, and it trips on a proven transport
-  failure rather than on a page the human may still be fixing.
+  failure rather than on a page the human may still be fixing. The separate engine health circuit only
+  short-circuits repeated browser/provider transport failures; it never retries a human gate.
 
 - **Diagnostics refuse to capture a login screen.** Screenshots are written only for surface states past
   login; DOM dumps redact credential-shaped attribute values; everything is `0600` inside the git-ignored

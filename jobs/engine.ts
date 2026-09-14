@@ -304,6 +304,7 @@ export class ConsultationEngine {
     const dependency = request.dependency ?? "advisory";
     const mode = "async";
     const deliveryKey = resolveDeliveryKey(request);
+    if (request.signal?.aborted) throw new Error("Consultation cancelled before asynchronous dispatch.");
     const admission = this.#healthCircuit.admit();
     if (!admission.allowed) throw new AdviserCircuitOpenError(admission.retryAfterMs ?? 0);
 
@@ -327,9 +328,11 @@ export class ConsultationEngine {
 
     const address = jobAddress(record);
 
-    // 2. Launch background execution detached from caller await. Keep the promise indexed so a cancel
-    // request can wait for the runner to observe the abort and release its lock/slot before returning.
-    const execution = this.#executeJob(record, address, request);
+    // 2. Launch background execution detached from caller await. Once the queued job is durable, the
+    // caller's tool lifecycle no longer owns it: an abort after this method returns is handled by the
+    // explicit advisor_cancel path rather than cancelling a consultation that was already dispatched.
+    const { signal: _callerSignal, ...detachedRequest } = request;
+    const execution = this.#executeJob(record, address, detachedRequest);
     this.#inFlightExecutions.set(address.consultationId, execution);
     void execution.then(
       (outcome) => {

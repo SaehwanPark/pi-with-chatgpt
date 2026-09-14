@@ -309,13 +309,13 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       return { ok: false, failure: "needs-human" };
     }
 
-    if (!(await this.#driver.selectModel(request.modelId))) {
+    const modelSelected = await this.#driver.selectModel(request.modelId);
+    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
+    if (!modelSelected) {
       this.#lastFailure = "model-unavailable";
       this.#emit({ type: "turn-failed", failure: "model-unavailable" });
       return { ok: false, failure: "model-unavailable" };
     }
-
-    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
 
     const startedAt = this.#clock.now();
     let outcome: ConsultationOutcome;

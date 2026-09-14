@@ -62,6 +62,7 @@ export function createBrowserTransactionScheduler(): BrowserTransactionScheduler
       const previous = tail;
       let release: () => void = () => undefined;
       let released = false;
+      let admitted = false;
       const current = new Promise<void>((resolve) => {
         release = () => {
           if (released) return;
@@ -75,6 +76,7 @@ export function createBrowserTransactionScheduler(): BrowserTransactionScheduler
       try {
         await waitForAdmission(previous, options.signal);
         if (options.signal?.aborted) throw new BrowserTransactionError("cancelled");
+        admitted = true;
 
         const running = Promise.resolve().then(operation);
         // Once the lease expires, the late operation is intentionally left attached so a rejection cannot
@@ -97,10 +99,19 @@ export function createBrowserTransactionScheduler(): BrowserTransactionScheduler
         }
         throw error;
       } finally {
-        // If admission was cancelled, resolving `current` is safe: it only lets this no-op queue node
-        // drain after its predecessor. It never grants a second owner while the predecessor is live.
         release();
-        if (tail === scheduled) tail = Promise.resolve();
+        if (tail === scheduled) {
+          if (admitted) {
+            tail = Promise.resolve();
+          } else {
+            // Keep the predecessor chain visible to later callers. Resetting `tail` immediately here
+            // would let a new transaction bypass an older owner that is still running after this waiter
+            // was cancelled.
+            void scheduled.then(() => {
+              if (tail === scheduled) tail = Promise.resolve();
+            });
+          }
+        }
       }
     },
   };

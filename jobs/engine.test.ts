@@ -174,6 +174,33 @@ describe("ConsultationEngine (M5)", () => {
     }
   });
 
+  it("does not cancel an async job after durable dispatch when the caller signal aborts", async () => {
+    const fixture = await createEngineFixture();
+    try {
+      const notifications: WakeUpNotification[] = [];
+      fixture.engine.registerWakeUpListener("delivery-async-signal", (notification) => notifications.push(notification));
+      const controller = new AbortController();
+      const dispatched = await fixture.engine.submitAsync({
+        anchor: VALID_ANCHOR,
+        branch: "feat",
+        taskId: "task-async-signal",
+        deliveryKey: "delivery-async-signal",
+        kind: "consult",
+        mode: "async",
+        prompt: "Continue after the tool returns.",
+        modelId: "gpt-5",
+        signal: controller.signal,
+      });
+      controller.abort();
+
+      await waitFor(() => notifications.length > 0);
+      expect(notifications[0]?.state).toBe("completed");
+      expect(notifications[0]?.address.consultationId).toBe(dispatched.consultationId);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("prevents cross-delivery to unrelated Pi session wake-up listeners (INV-09)", async () => {
     const fixture = await createEngineFixture();
     try {

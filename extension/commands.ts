@@ -373,14 +373,16 @@ export class CommandManager {
             summary: it.summary,
             disposition: "pending" as const,
           }));
+          const resultStatus = turnResult.record.result?.resultStatus ?? parsed.resultStatus;
+          const usable = resultStatus === "complete" || resultStatus === "degraded";
 
           ctx.ui.notify(
             formatCompletionNotification({
               consultationId: turnResult.record.consultationId,
               kind,
-              actionItems,
+              ...(usable ? { actionItems } : { degradedReason: resultStatus }),
             }),
-            "info",
+            usable ? "info" : "warning",
           );
         } else {
           ctx.ui.notify(
@@ -521,12 +523,15 @@ export class CommandManager {
         });
 
         if (turnResult.ok) {
+          const resultStatus = turnResult.record.result?.resultStatus ?? "complete";
+          const usable = resultStatus === "complete" || resultStatus === "degraded";
           ctx.ui.notify(
             formatCompletionNotification({
               consultationId: followUpId,
               kind: prior.kind,
+              ...(usable ? {} : { degradedReason: resultStatus }),
             }),
-            "info",
+            usable ? "info" : "warning",
           );
         } else {
           ctx.ui.notify(`Follow-up ended with degradation: ${turnResult.failure}`, "warning");

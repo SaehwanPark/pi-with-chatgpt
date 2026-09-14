@@ -19,10 +19,19 @@ describe("browser transaction scheduler", () => {
 
     controller.abort();
     await expect(waiting).rejects.toMatchObject({ code: "cancelled" });
+
+    let nextRan = false;
+    const next = scheduler.runExclusive(() => {
+      nextRan = true;
+      return Promise.resolve();
+    });
+    await Promise.resolve();
+    expect(nextRan).toBe(false);
+
     releaseFirst();
     await firstRun;
-
-    await expect(scheduler.runExclusive(() => Promise.resolve("next"))).resolves.toBe("next");
+    await next;
+    expect(nextRan).toBe(true);
   });
 
   it("recovers before releasing a timed-out transaction", async () => {
