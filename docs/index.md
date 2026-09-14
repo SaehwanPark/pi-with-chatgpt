@@ -23,7 +23,7 @@ ChatGPT provides architectural planning, code reviews, adversarial security audi
 | --- | --- |
 | [**Getting Started**]({{ site.baseurl }}/getting-started/) | Installation, prerequisites, and first-time setup guide. |
 | [**User Guide (Slash Commands)**]({{ site.baseurl }}/user-guide/) | Comprehensive guide to all 11 user-facing slash commands. |
-| [**Agent Tools Reference**]({{ site.baseurl }}/agent-tools/) | Technical reference for the 8 agent-facing tools used by Pi workers. |
+| [**Agent Tools Reference**]({{ site.baseurl }}/agent-tools/) | Technical reference for the 9 agent-facing tools used by Pi workers, including the high-level `advisor_consult` entry point. |
 | [**Configuration Guide**]({{ site.baseurl }}/configuration/) | Settings, options, auto-consultation policies, and environment variables. |
 | [**Drift & Disposition Guide**]({{ site.baseurl }}/drift-and-disposition/) | How dual cursors work, the 5 drift tiers, and action-item tracking. |
 | [**Troubleshooting & FAQs**]({{ site.baseurl }}/troubleshooting/) | Resolving authentication, CAPTCHAs, permissions, and git errors. |
@@ -73,6 +73,8 @@ Instead of burning expensive frontier tokens on mechanical edits or uploading ra
    By default (`dependency: "advisory"`), provider rate limits, network timeouts, or browser restarts degrade gracefully to local Pi execution without blocking development.
 6. **Durable Local Ledger (INV-15)**:
    Consultation requests, markdown advice, and action items (`A1`, `A2`, …) persist in an append-only JSONL ledger in your local agent state directory. Nothing is published to GitHub comments or issues without your explicit action.
+7. **Completion Integrity**:
+   Adviser output must carry the expected SHA and consultation-specific completion sentinel. Incomplete or ambiguous responses are retained for inspection but are not presented as actionable recommendations.
 
 ---
 
@@ -96,7 +98,7 @@ Push your current commit to GitHub, then run:
 ```text
 /advisor-review
 ```
-Pi dispatches the consultation to ChatGPT anchored to your remote commit SHA. You can continue working while the adviser reviews your changes in the background!
+Pi dispatches the consultation to ChatGPT anchored to your remote commit SHA. Synchronous consultations return the validated answer before the command completes; choose asynchronous mode when you want a durable result and notification while you continue working.
 
 ---
 

@@ -16,8 +16,10 @@ The requested ref is metadata; the resolved SHA is authoritative. Receipt HEAD i
 observation and never replaces that SHA. No store method stages, commits, pushes, launches a browser,
 executes adviser text, or publishes advice.
 
-The default record mode is `async`; the default dependency is `advisory`. The store preserves an
-explicit `required` choice. The execution layer must interpret provider failure through that flag.
+The default record mode is `async`; the default dependency is `advisory`. The worker-facing `advisor_consult`
+tool intentionally defaults to `sync` because autonomous callers usually need advice for their next
+decision; async is an explicit override (or a configured default for low-level/slash dispatch). The store
+preserves an explicit `required` choice. The execution layer must interpret provider failure through that flag.
 
 ## Local storage
 
@@ -100,9 +102,22 @@ and response reading are serialized by the engine's V1 global browser slot and t
 the dispatcher waits for cancellation cleanup before returning. A future conversation-scoped page can
 relax that limit, but no parallel browser turns are advertised today.
 
+The browser transaction scheduler applies an outer deadline derived from the requested generation timeout
+plus a fixed recovery allowance. Waiting admission is abortable. When the deadline fires, the engine aborts
+the consultation, invalidates the runtime generation, and asks the runtime to close the tracked context
+outside the normal DOM queue. Reuse is allowed only after recovery proves closure; otherwise the runtime and
+scheduler enter `poisoned`, and later adviser calls fail fast with `browser_poisoned`/`circuit_open` rather
+than sharing a stale owner. Cancellation of a touched turn resets its tab before the next transaction.
+
+A process-local `AdviserHealthCircuit` records qualifying browser/provider transport failures. Three
+failures in its rolling window open a short cooldown; one half-open probe must succeed before normal
+admissions resume. Human verification, capability, provenance, and caller cancellation do not count as
+transport health failures. This state is intentionally in-memory and shared by production engines in the
+same Pi process; it is not persisted or used to block local work under advisory dependency.
+
 Evidence: `jobs/record.test.ts`, `jobs/store.test.ts`, `jobs/state.test.ts`, `jobs/engine.test.ts`,
-`extension/index.test.ts`, and `test/m9-concurrency-recovery.test.ts`. Live ChatGPT round trips remain
-manual verification work.
+`jobs/health.test.ts`, `browser/transaction.test.ts`, `extension/index.test.ts`, and
+`test/m9-concurrency-recovery.test.ts`. Live ChatGPT round trips remain manual verification work.
 
 ## Response completion integrity
 
@@ -117,4 +132,6 @@ matches the consultation. `completion` provenance is tracked separately from che
 identity (`verified`, `missing`, `mismatched`, or `malformed`). Missing markers produce an
 `incomplete` result; mismatched or malformed markers produce `provenance-ambiguous`. Raw text may be
 retained for diagnostics, but action items from either outcome are never exposed as actionable
-recommendations.
+recommendations. A `degraded` response may remain readable with its bounded action items; `incomplete` and
+`provenance-ambiguous` responses are explicitly marked unusable in worker-facing projections. The extension
+does not blindly retry a partial stream; a worker or user must request a follow-up/retry explicitly.

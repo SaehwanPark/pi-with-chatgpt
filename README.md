@@ -35,7 +35,7 @@ Commit and push changes to GitHub, then run:
 ```text
 /advisor-review Focus on error handling in the authentication flow
 ```
-ChatGPT reviews your remote commit SHA while you continue working in Pi!
+ChatGPT reviews your remote commit SHA. Synchronous commands return the validated answer; configure async mode when you want to continue working while the durable consultation runs.
 
 ---
 
@@ -55,7 +55,9 @@ ChatGPT reviews your remote commit SHA while you continue working in Pi!
 | `/advisor-cancel <id>` | Cancel an in-flight consultation |
 | `/advisor-auth` | Inspect credentials and launch browser login |
 
-Pi worker models can also invoke 8 programmatic agent tools (`advisor_preflight`, `advisor_submit`, `advisor_read`, `advisor_status`, `advisor_followup`, `advisor_cancel`, `advisor_auth`, `advisor_disposition`).
+Pi worker models can also invoke 9 programmatic agent tools. Use `advisor_consult` for the normal autonomous path; the lower-level `advisor_preflight`, `advisor_submit`, `advisor_read`, `advisor_status`, `advisor_followup`, `advisor_cancel`, `advisor_auth`, and `advisor_disposition` tools remain available for advanced workflows.
+
+`advisor_consult` defaults to a synchronous answer and follows the `agentUse` policy (`off`, `explicit`, or `proactive`). The extension never classifies natural-language prompts itself; Pi's worker model decides when the tool policy applies.
 
 ---
 
@@ -67,6 +69,8 @@ Pi worker models can also invoke 8 programmatic agent tools (`advisor_preflight`
 4. **Isolated Browser Profile (INV-11)**: ChatGPT operates in a dedicated Playwright profile locked to `0700` permissions. Your personal browser is never automated.
 5. **Non-Blocking Advisory Failure (INV-07)**: Provider outages or rate limits degrade gracefully to local worker execution without freezing Pi.
 6. **Durable Local Ledger (INV-15)**: Consultations and action items (`A1`, `A2`, …) persist locally in JSONL. Rejections require a mandatory recorded rationale.
+7. **Completion Integrity**: Responses must end with a consultation-specific completion sentinel and match the anchored SHA before action items are exposed as actionable.
+8. **Bounded Recovery**: Hung browser transactions are cancelled and recovered; an unprovably safe browser is poisoned so future adviser calls fail fast while Pi continues locally.
 
 ---
 

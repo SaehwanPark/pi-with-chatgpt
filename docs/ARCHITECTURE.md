@@ -140,7 +140,10 @@ No blanket staging, no auto-commit, no auto-push; `origin` is not authorisation.
 **Adviser failure is non-blocking by default.**
 
 `DEFAULT_DEPENDENCY_MODE === "advisory"`; only `dependency: "required"` produces
-`blocked-on-adviser` (`protocol/dependency.ts`).
+`blocked-on-adviser` (`protocol/dependency.ts`). Whole-transaction deadlines map hung browser work to
+bounded failures, and a process-local `AdviserHealthCircuit` can fail fast during a short transport
+cooldown without blocking local Pi work. Human/capability/provenance/cancellation outcomes are not
+blindly retried by the circuit.
 
 ### INV-08
 
@@ -183,6 +186,10 @@ observation.
 
 **Isolated, extension-owned browser runtime.**
 
+The runtime has explicit `degraded` and `poisoned` phases. Cancellation and watchdog recovery invalidate
+the active generation before closing the tracked context; if closure cannot be proven within the bounded
+grace period, later calls fail with `browser-poisoned` rather than sharing a possibly live stale owner.
+
 `createAdviserProfile` is the only way to obtain an `AdviserProfile`, and it refuses any directory
 outside the extension state root or resembling a Chromium/Firefox user profile
 (`browser/profile.ts`). The runtime enforces the same rule at the call surface: no method on
@@ -211,6 +218,11 @@ action items — built by allowlist, never by serialising internal state (`ui/wo
 ### INV-14
 
 **Trust order.**
+
+Response completion is a separate integrity check from SHA/consultation provenance: `protocol/response.ts`
+requires the consultation-specific sentinel as the final non-empty line. `incomplete` and
+`provenance-ambiguous` results retain diagnostic evidence but never promote action items to worker-facing
+recommendations.
 
 Code at the requested commit > consultation brief > task conversation > Project instructions >
 Project memory. M4's `buildProjectInstructions` states the order and
@@ -247,8 +259,10 @@ transport (`protocol/provider.ts`, `config/schema.ts`). Post-V1 features stay ad
 
 Every failure must map to a job state, a worker-visible result, and a user recovery path. The
 adviser path is advisory by default, so the ordinary failure outcome is
-`{ kind: "adviser-failed", disposition: "degrade-to-local" }` and the local task continues. The
-full matrix is in `.agents/skills/pwc-adviser-runtime/references/failure-matrix.md`.
+`{ kind: "adviser-failed", disposition: "degrade-to-local" }` and the local task continues. Transport
+failures such as `transaction_timeout`, `browser_unresponsive`, `browser_poisoned`, `circuit_open`, and
+`incomplete_response` remain bounded and worker-visible without exposing browser internals. The full
+matrix is in `.agents/skills/pwc-adviser-runtime/references/failure-matrix.md`.
 
 ## Verification commands
 

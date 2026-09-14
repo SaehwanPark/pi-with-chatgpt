@@ -152,6 +152,14 @@ and conversation identifiers, and paths must also stay out of worker-facing outp
 passes the existing credential scan. Raw filesystem exceptions are replaced with fixed storage codes.
 The store refuses managed directory/file symlinks and never submits, wakes, executes, or publishes.
 
+The response envelope records result validity separately from transport job state. `protocol/response.ts`
+requires both the anchored SHA and the consultation-specific completion sentinel; missing, malformed, or
+mismatched completion proof is retained only as diagnostic evidence, and `ui/worker-facing.ts` suppresses
+its action items. A timed-out browser transaction invalidates its runtime generation before recovery; if
+emergency closure cannot be proven, the runtime is `poisoned` and later calls fail fast rather than
+sharing a stale browser owner. Repeated qualifying transport failures also trip a process-local circuit
+breaker; it never treats human verification or provenance ambiguity as a reason to retry automatically.
+
 ## Prompt injection posture
 
 Repository content is untrusted input to the adviser, and adviser output is untrusted input to the

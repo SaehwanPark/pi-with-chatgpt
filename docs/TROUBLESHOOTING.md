@@ -49,7 +49,23 @@ This guide covers common operational questions, error codes, and recovery proced
 
 ---
 
-### 1.3 State Directory Permissions Refusal (`StateStorageError: directory-not-private`)
+### 1.3 Browser transaction timeout or poisoned runtime
+**Symptoms:**
+- A consultation reports `transaction_timeout`, `browser_unresponsive`, or `browser_poisoned`.
+- Later adviser calls fail immediately with `ChatGPT adviser temporarily unavailable`.
+
+**Cause:**
+- The complete browser transaction (capability check, Project/conversation selection, model selection, submission, generation, receipt, or persistence) exceeded its bounded deadline, or emergency context recovery could not prove that the old browser owner had closed safely.
+
+**Resolution:**
+1. Let the current call settle; the extension aborts the active generation and attempts an out-of-band context close.
+2. If recovery succeeds, retry once. The next consultation uses a fresh browser generation.
+3. If the runtime is `poisoned`, continue local work under the default advisory dependency and restart Pi/the adviser browser before retrying.
+4. Do not repeatedly retry a poisoned or unavailable browser; inspect `/advisor-auth` and the runtime status after restarting.
+
+---
+
+### 1.4 State Directory Permissions Refusal (`StateStorageError: directory-not-private`)
 **Symptoms:**
 - Extension startup or command fails with:
   `StateStorageError: refusing to use state directory ... mode grants access to others`.
@@ -139,7 +155,22 @@ Check drift at any time using `/advisor-status` or the agent tool `advisor_statu
 
 ## 4. Consultation Failure & Degradation
 
-### 4.1 "Advisory failure (non-blocking)"
+### 4.1 "Incomplete or provenance-ambiguous adviser response"
+**Symptoms:**
+- `advisor_consult` or `advisor_read` reports result status `incomplete` or `provenance-ambiguous`.
+- The response says it was not accepted as actionable, and no action items are exposed.
+
+**Cause:**
+- ChatGPT returned text without the final `consultation_complete: <consultation-id>` sentinel, used a different consultation ID, or cited a different/malformed reviewed SHA. This commonly indicates a truncated stream or stale response.
+
+**Resolution:**
+1. Treat the retained text as diagnostic evidence, not as an implementation instruction.
+2. Check the durable status and checkpoint with `advisor_status`.
+3. Explicitly retry or send a follow-up after confirming the browser and remote checkpoint are healthy. The extension does not blindly resubmit partial streams.
+
+---
+
+### 4.2 "Advisory failure (non-blocking)"
 **Symptoms:**
 - You see a warning notification such as:
   `[advisor:review] Advisory consultation failed (rate-limited): provider rate limit reached. Proceeding with local Pi worker.`
@@ -151,6 +182,9 @@ Check drift at any time using `/advisor-status` or the agent tool `advisor_statu
 **If you want strict blocking:**
 - Configure `"dependencyDefault": "required"` in `~/.pi/agent/settings.json`.
 - When set to `required`, adviser failure halts execution (`blocked: true`) until resolved.
+
+### 4.3 Circuit-open fast failure
+After repeated browser/provider transport failures, the process-local adviser circuit opens briefly. New calls fail fast with `circuit_open` instead of waiting through another browser timeout. Human-required, capability, provenance, and cancellation outcomes do not trip the circuit. After the cooldown, one half-open probe must succeed before normal calls resume; restarting Pi also creates a fresh circuit.
 
 ---
 
@@ -166,4 +200,7 @@ Check drift at any time using `/advisor-status` or the agent tool `advisor_statu
 **Yes.** As long as you grant the ChatGPT GitHub Connector app read access to your private repository in GitHub's application settings.
 
 ### Q4: Which ChatGPT models are used for consultations?
-The extension uses the model associated with your active ChatGPT session (such as OpenAI o1, o3-mini, or GPT-4o). You can select your preferred default model in the ChatGPT Project settings.
+The extension resolves its ranked model preference against the live ChatGPT picker and uses the first selectable model. You can select your preferred default model in the ChatGPT Project settings.
+
+### Q5: Does asynchronous consultation wake the worker model?
+No. Async jobs persist the result and notify the matching Pi session's UI, but the extension does not inject a message into or automatically resume a worker turn. The worker should call `advisor_status` or `advisor_read` explicitly.

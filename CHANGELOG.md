@@ -9,6 +9,16 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+### Added
+
+- Added the high-level `advisor_consult` worker tool with synchronous-by-default autonomous routing,
+  explicit `agentUse` policy (`off`, `explicit`, `proactive`), cancellation/progress propagation,
+  bounded asynchronous semantics, and a process-local adviser health circuit breaker.
+- Added consultation completion-sentinel and provenance integrity handling: incomplete or ambiguous
+  responses remain inspectable but never expose actionable action items.
+- Added whole-transaction browser watchdogs, abortable admission, generation barriers, emergency recovery,
+  and poisoned-runtime fail-fast behavior for hung or unrecoverable browser ownership.
+
 ### Fixed
 
 - Addressed the Round 2 audit: capability verification is now an authoritative production dispatch gate,
