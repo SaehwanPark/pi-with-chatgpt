@@ -21,6 +21,7 @@ import type { AdviserConfig } from "../config/schema.js";
 import { createGitExecutor, createNodeCommandRunner, type GitExecutor } from "../git/exec.js";
 import { ConsultationLedger } from "../ledger/ledger.js";
 import { ConsultationEngine } from "../jobs/engine.js";
+import { AdviserHealthCircuit } from "../jobs/health.js";
 import { ConsultationJobStore } from "../jobs/store.js";
 import { requireFullCommitSha } from "../protocol/sha.js";
 import { resolve } from "node:path";
@@ -62,6 +63,7 @@ export type ProductionServiceFactory = (cwd: string) => Promise<ProductionServic
 export function createProductionServiceFactory(options: ProductionServiceOptions): ProductionServiceFactory {
   const servicesByCwd = new Map<string, Promise<ProductionServices>>();
   const browserTransaction = options.browserTransaction ?? createBrowserTransactionScheduler();
+  const healthCircuit = new AdviserHealthCircuit();
   let browser: Promise<AdviserBrowserBundle> | undefined;
   let browserConfig: AdviserConfig | undefined;
   let browserConfigKey: string | undefined;
@@ -72,7 +74,7 @@ export function createProductionServiceFactory(options: ProductionServiceOptions
     const existing = servicesByCwd.get(workspace);
     if (existing !== undefined) return await existing;
 
-    const pending = createProductionServices(options, workspace, browserTransaction, (config) => {
+    const pending = createProductionServices(options, workspace, browserTransaction, healthCircuit, (config) => {
       const configKey = sharedBrowserConfigKey(config);
       if (browser !== undefined) {
         // A single tracked browser cannot honor two different browser-level configurations. Reusing the
@@ -113,6 +115,7 @@ async function createProductionServices(
   options: ProductionServiceOptions,
   cwd: string,
   browserTransaction: BrowserTransactionScheduler,
+  healthCircuit: AdviserHealthCircuit,
   getBrowser: (config: AdviserConfig) => Promise<AdviserBrowserBundle>,
   getLoginPort: (bundle: AdviserBrowserBundle) => AdviserLoginPort,
 ): Promise<ProductionServices> {
@@ -137,6 +140,7 @@ async function createProductionServices(
     ledger,
     browserTransaction,
     capabilityGate,
+    healthCircuit,
     // The engine records both dispatch and receipt HEAD.  This remains read-only and deliberately uses
     // the same workspace that produced the immutable checkpoint passed by the manager.
     getHeadCommit: async () => requireFullCommitSha(await git.run(["rev-parse", "--verify", "HEAD^{commit}"], cwd)),

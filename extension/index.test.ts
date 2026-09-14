@@ -44,14 +44,14 @@ function mockPi(): MockPi {
 }
 
 describe("extension activation (M8)", () => {
-  it("activates and registers all 11 slash commands and 8 agent tools", () => {
+  it("activates and registers all 11 slash commands and 9 agent tools", () => {
     const pi = mockPi();
     const activation = activateExtension(pi);
     expect(activation.config).toEqual(DEFAULT_CONFIG);
     expect(activation.registeredCommands.length).toBe(11);
-    expect(activation.registeredTools.length).toBe(8);
+    expect(activation.registeredTools.length).toBe(9);
     expect(pi.registerCalls.length).toBe(11);
-    expect(pi.registerToolCalls.length).toBe(8);
+    expect(pi.registerToolCalls.length).toBe(9);
   });
 
   it("accepts an injected configuration without validating the environment", () => {

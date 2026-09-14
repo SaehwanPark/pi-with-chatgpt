@@ -24,6 +24,8 @@ import {
   type ConsultationRequest,
   type ModelOption,
   type RuntimePhase,
+  type RuntimeRecoveryReason,
+  type RuntimeRecoveryResult,
   type RuntimeRejection,
   type RuntimeStartOptions,
   type RuntimeStatus,
@@ -54,11 +56,14 @@ export interface AdviserRuntimeOptions {
   readonly launchBackoffMs?: number;
   /** Default bounded wait for one assistant turn. */
   readonly defaultTurnTimeoutMs?: number;
+  /** Grace period for out-of-band context close after a transaction watchdog fires. */
+  readonly recoveryGraceMs?: number;
 }
 
 const DEFAULT_MAX_LAUNCH_FAILURES = 2;
 const DEFAULT_LAUNCH_BACKOFF_MS = 750;
 const DEFAULT_TURN_TIMEOUT_MS = 180_000;
+const DEFAULT_RECOVERY_GRACE_MS = 5_000;
 
 export type RuntimeEvent =
   | { readonly type: "launched"; readonly launchCount: number; readonly chromeVersion: string }
@@ -67,7 +72,9 @@ export type RuntimeEvent =
   | { readonly type: "needs-human"; readonly explanation: string }
   /** A previously latched human gate cleared itself: someone signed in or solved a challenge. */
   | { readonly type: "human-cleared"; readonly state: SurfaceState }
-  | { readonly type: "turn-failed"; readonly failure: ConsultationFailure };
+  | { readonly type: "turn-failed"; readonly failure: ConsultationFailure }
+  | { readonly type: "recovering"; readonly reason: RuntimeRecoveryReason }
+  | { readonly type: "poisoned"; readonly reason: RuntimeRecoveryReason };
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
@@ -79,6 +86,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   #chromeVersion: string | undefined;
   #lastFailure: RuntimeRejection | ConsultationFailure | undefined;
   #humanAttentionRequired = false;
+  #poisoned = false;
   /**
    * One launch at a time. Without this, three concurrent consultations each see `phase === "stopped"` and
    * launch three browsers against one profile — the second and third fail with a profile lock, and the
@@ -97,6 +105,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   readonly #maxLaunchFailures: number;
   readonly #launchBackoffMs: number;
   readonly #defaultTurnTimeoutMs: number;
+  readonly #recoveryGraceMs: number;
 
   constructor(options: AdviserRuntimeOptions) {
     this.#driver = options.driver;
@@ -105,6 +114,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     this.#maxLaunchFailures = options.maxConsecutiveLaunchFailures ?? DEFAULT_MAX_LAUNCH_FAILURES;
     this.#launchBackoffMs = options.launchBackoffMs ?? DEFAULT_LAUNCH_BACKOFF_MS;
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    this.#recoveryGraceMs = options.recoveryGraceMs ?? DEFAULT_RECOVERY_GRACE_MS;
   }
 
   /** Events exist for the status line and the ledger; a listener must never break the runtime. */
@@ -114,18 +124,10 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }
 
   async status(): Promise<RuntimeStatus> {
+    if (this.#poisoned) return this.#statusSnapshot(false);
     return await this.#driver.runExclusive(async () => {
       const processAlive = this.#phase === "ready" || this.#phase === "degraded" ? await this.#safeHealth() : false;
-      return {
-        phase: this.#phase,
-        processAlive,
-        headed: this.#headed,
-        profileDir: this.#profileDir,
-        ...(this.#chromeVersion === undefined ? {} : { chromeVersion: this.#chromeVersion }),
-        launchCount: this.#launchCount,
-        ...(this.#lastFailure === undefined ? {} : { lastFailure: this.#lastFailure }),
-        humanAttentionRequired: this.#humanAttentionRequired,
-      };
+      return this.#statusSnapshot(processAlive);
     });
   }
 
@@ -133,6 +135,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     readonly ok: boolean;
     readonly rejection?: RuntimeRejection;
   }> {
+    if (this.#poisoned) return { ok: false, rejection: "browser-poisoned" };
     return await this.#driver.runExclusive(() => this.#ensureReady(options));
   }
 
@@ -171,6 +174,9 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     readonly ok: boolean;
     readonly rejection?: RuntimeRejection;
   }> {
+    if (this.#poisoned || this.#phase === "poisoned") {
+      return { ok: false, rejection: "browser-poisoned" };
+    }
     if (this.#phase === "failed") {
       // Launch retries are exhausted. This is the only latch that refuses a launch attempt: it is a
       // proven transport failure, unlike the human gate, which is only an expectation about the page.
@@ -202,16 +208,29 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
    * "the model refused" from "we timed out": a caller must know whether retrying could help.
    */
   async consult(request: ConsultationRequest): Promise<ConsultationOutcome> {
+    if (this.#poisoned) return { ok: false, failure: "browser-poisoned" };
+    if (request.signal?.aborted) return { ok: false, failure: "cancelled" };
+
     const generation = this.#turnGeneration;
-    const run = this.#turnQueue.then(() => {
-      if (generation !== this.#turnGeneration) return { ok: false as const, failure: "browser-lost" as const };
-      return this.#driver.runExclusive(() => this.#runTurn(request));
-    });
+    const previous = this.#turnQueue;
+    const run = (async (): Promise<ConsultationOutcome> => {
+      try {
+        await waitForTurnAdmission(previous, request.signal);
+      } catch {
+        return { ok: false, failure: "cancelled" };
+      }
+      if (request.signal?.aborted) return { ok: false, failure: "cancelled" };
+      if (generation !== this.#turnGeneration) {
+        return { ok: false, failure: this.#poisoned ? "browser-poisoned" : "browser-lost" };
+      }
+      return await this.#driver.runExclusive(() => this.#runTurn(request, generation));
+    })();
     // Keep the queue alive regardless of how this turn ends; a rejected promise here would poison it.
-    this.#turnQueue = run.then(
+    const queued = run.then(
       () => undefined,
       () => undefined,
     );
+    this.#turnQueue = queued;
     return await run;
   }
 
@@ -219,8 +238,9 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     // Invalidate queued turns before waiting for the driver lock. The active turn is allowed to unwind;
     // turns behind it must not observe `stopped` and relaunch a browser after shutdown completes.
     this.#turnGeneration += 1;
+    this.#turnQueue = Promise.resolve();
     await this.#driver.runExclusive(async () => {
-      if (this.#phase === "stopped") return;
+      if (this.#phase === "stopped" || this.#phase === "poisoned") return;
       this.#phase = "stopping";
       try {
         await this.#driver.shutdown();
@@ -231,21 +251,58 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     });
   }
 
-  async #runTurn(request: ConsultationRequest): Promise<ConsultationOutcome> {
-    if (request.signal?.aborted) return { ok: false, failure: "generation-timeout" };
+  async emergencyRecover(reason: RuntimeRecoveryReason): Promise<RuntimeRecoveryResult> {
+    if (this.#poisoned) return { ok: false, reusable: false, generation: this.#turnGeneration };
+    this.#turnGeneration += 1;
+    this.#turnQueue = Promise.resolve();
+    this.#phase = "degraded";
+    this.#lastFailure = reason === "transaction-timeout" ? "transaction-timeout" : "browser-unresponsive";
+    this.#emit({ type: "recovering", reason });
+
+    let close: Promise<void>;
+    try {
+      close = this.#driver.emergencyClose?.() ?? this.#driver.shutdown();
+    } catch {
+      close = Promise.reject(new Error("emergency close failed"));
+    }
+    const settled = await settleWithin(close, this.#recoveryGraceMs);
+    if (!settled) {
+      this.#poisoned = true;
+      this.#phase = "poisoned";
+      this.#lastFailure = "browser-poisoned";
+      this.#emit({ type: "poisoned", reason });
+      return { ok: false, reusable: false, generation: this.#turnGeneration };
+    }
+
+    this.#poisoned = false;
+    this.#phase = "stopped";
+    this.#chromeVersion = undefined;
+    this.#lastFailure = undefined;
+    this.#emit({ type: "recovered", reason: "stale-tab" });
+    return { ok: true, reusable: true, generation: this.#turnGeneration };
+  }
+
+  async #runTurn(request: ConsultationRequest, generation: number): Promise<ConsultationOutcome> {
+    if (request.signal?.aborted) return { ok: false, failure: "cancelled" };
 
     const ready = await this.#ensureReady({ purpose: "consultation" });
     if (!ready.ok) {
       // Report the reason the browser could not start. A remembered human gate is not the cause here,
       // and reporting it would send the user to fix a login while Chrome is what is actually missing.
       const failure: ConsultationFailure =
-        ready.rejection === "needs-human" ? "needs-human" : "browser-lost";
+        ready.rejection === "needs-human"
+          ? "needs-human"
+          : ready.rejection === "browser-poisoned"
+            ? "browser-poisoned"
+            : "browser-lost";
       this.#lastFailure = failure;
       this.#emit({ type: "turn-failed", failure });
       return { ok: false, failure };
     }
+    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
 
     const surface = await this.#surface();
+    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
     if (!surface.actionable) {
       this.#lastFailure = "needs-human";
       this.#emit({ type: "turn-failed", failure: "needs-human" });
@@ -258,7 +315,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       return { ok: false, failure: "model-unavailable" };
     }
 
-    if (request.signal?.aborted) return { ok: false, failure: "generation-timeout" };
+    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
 
     const startedAt = this.#clock.now();
     let outcome: ConsultationOutcome;
@@ -275,6 +332,8 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       return { ok: false, failure: "browser-lost" };
     }
 
+    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
+
     if (!outcome.ok) {
       this.#lastFailure = outcome.failure;
       this.#emit({ type: "turn-failed", failure: outcome.failure });
@@ -287,6 +346,29 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       return { ...outcome, elapsedMs: this.#clock.now() - startedAt };
     }
     return outcome;
+  }
+
+  #stale(generation: number, signal: AbortSignal | undefined): boolean {
+    return signal?.aborted === true || generation !== this.#turnGeneration || this.#poisoned;
+  }
+
+  #staleFailure(generation: number): ConsultationFailure {
+    if (this.#poisoned) return "browser-poisoned";
+    if (generation !== this.#turnGeneration) return "browser-lost";
+    return "cancelled";
+  }
+
+  #statusSnapshot(processAlive: boolean): RuntimeStatus {
+    return {
+      phase: this.#phase,
+      processAlive,
+      headed: this.#headed,
+      profileDir: this.#profileDir,
+      ...(this.#chromeVersion === undefined ? {} : { chromeVersion: this.#chromeVersion }),
+      launchCount: this.#launchCount,
+      ...(this.#lastFailure === undefined ? {} : { lastFailure: this.#lastFailure }),
+      humanAttentionRequired: this.#humanAttentionRequired,
+    };
   }
 
   async #launchOrReuse(options: RuntimeStartOptions): Promise<{ ok: boolean; rejection?: RuntimeRejection }> {
@@ -383,6 +465,38 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
         // A broken listener must not take the runtime down with it.
       }
     }
+  }
+}
+
+async function waitForTurnAdmission(previous: Promise<unknown>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) {
+    await previous.catch(() => undefined);
+    return;
+  }
+  if (signal.aborted) throw new Error("cancelled");
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new Error("cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([previous.catch(() => undefined), aborted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function settleWithin(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true, () => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

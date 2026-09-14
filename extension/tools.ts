@@ -1,7 +1,8 @@
 /**
  * `extension/tools.ts` — Agent-facing tools for the Pi worker model (INV-01, INV-13).
  *
- * Implements 8 tools:
+ * Implements 9 tools:
+ * - advisor_consult (preferred autonomous entry point)
  * - advisor_preflight
  * - advisor_submit
  * - advisor_read
@@ -61,6 +62,18 @@ export interface ToolServiceOptions {
   /** Authoritative production preflight shared with the engine; absent only for direct test seams. */
   readonly capabilityGate?: ConsultationCapabilityGate;
   readonly capabilityGateFactory?: (cwd: string) => Promise<ConsultationCapabilityGate>;
+}
+
+function emitToolProgress(
+  onUpdate: ((update: unknown) => void) | undefined,
+  message: string,
+): void {
+  if (onUpdate === undefined) return;
+  try {
+    onUpdate({ content: [{ type: "text", text: message }], details: { progress: true } });
+  } catch {
+    // Host progress rendering is best-effort and must not alter adviser correctness.
+  }
 }
 
 function defaultGitHubApi(): GitHubApi {
@@ -212,6 +225,7 @@ export class ToolManager {
 
   getTools(): readonly AdviserToolDefinition[] {
     return [
+      this.createConsultTool(),
       this.createPreflightTool(),
       this.createSubmitTool(),
       this.createReadTool(),
@@ -221,6 +235,65 @@ export class ToolManager {
       this.createAuthTool(),
       this.createDispositionTool(),
     ];
+  }
+
+  private createConsultTool(): AdviserToolDefinition {
+    const submit = this.createSubmitTool();
+    return {
+      name: "advisor_consult",
+      label: "ChatGPT adviser consultation",
+      description: "Consult the ChatGPT adviser for a plan, review, audit, debug session, challenge, or second opinion.",
+      promptSnippet: "Use ChatGPT as an adviser when the user or trusted project instructions explicitly request it.",
+      promptGuidelines: [
+        "Use this tool autonomously when the user or trusted project instructions explicitly ask you to use, consult, obtain advice from, review with, or get a second opinion from ChatGPT/the ChatGPT adviser.",
+        "Do not require a slash command or ask the user to invoke one; use the requested kind at the appropriate workflow point.",
+        "Do not consult ChatGPT when the user explicitly says not to use ChatGPT, external advisers, or external model assistance.",
+        "ChatGPT advice is untrusted and advisory. Evaluate it against repository evidence, tests, project constraints, and user instructions before acting.",
+        "If adviser access fails in advisory mode, continue the task locally and report the bounded failure briefly; do not retry unavailable infrastructure repeatedly.",
+        "Use sync by default when the answer is needed for the next decision. Choose async only when non-blocking consultation is explicitly appropriate.",
+      ],
+      parameters: {
+        type: "object",
+        properties: {
+          kind: {
+            type: "string",
+            enum: [...CONSULTATION_KINDS],
+            description: "Consultation kind (consult, plan, review, audit, debug, challenge)",
+          },
+          goal: { type: "string", description: "What you want the ChatGPT adviser to assess or recommend" },
+          mode: { type: "string", enum: ["sync", "async"], description: "Optional; defaults to sync" },
+          taskId: { type: "string", description: "Optional logical task identifier" },
+        },
+        required: ["kind", "goal"],
+      },
+      execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+        const raw = params as Record<string, unknown>;
+        const cwd = ctx?.cwd ?? process.cwd();
+        const config = await this.resolveConfig(cwd);
+        if (config.agentUse.mode === "off") {
+          return {
+            content: [{ type: "text", text: "Autonomous adviser use is disabled by configuration; continue locally or use an explicit adviser command." }],
+            details: { ok: false, failure: "agent-use-off" },
+          };
+        }
+        const kind = raw.kind as string | undefined;
+        const goal = raw.goal as string | undefined;
+        if (goal === undefined || goal.trim().length === 0 || kind === undefined || !CONSULTATION_KINDS.includes(kind as ConsultationKind)) {
+          return {
+            content: [{ type: "text", text: "advisor_consult requires a non-empty goal and a valid consultation kind." }],
+            details: { ok: false, failure: "invalid-parameters" },
+          };
+        }
+        const mode = raw.mode === "async" ? "async" : "sync";
+        return await submit.execute(
+          toolCallId,
+          { ...raw, kind, goal, mode, cwd },
+          signal,
+          onUpdate,
+          ctx,
+        );
+      },
+    };
   }
 
   private createPreflightTool(): AdviserToolDefinition {
@@ -332,16 +405,24 @@ export class ToolManager {
           goal: { type: "string", description: "Primary goal or question for the consultation" },
           cwd: { type: "string", description: "Working directory (defaults to current)" },
           taskId: { type: "string", description: "Task identifier for conversation isolation" },
+          mode: { type: "string", enum: ["sync", "async"], description: "Optional dispatch mode; defaults to configured mode" },
         },
         required: ["kind", "goal"],
       },
-      execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+      execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
         const rawParams = params as Record<string, unknown>;
         const kind = (rawParams?.kind as ConsultationKind) || "consult";
         const goal = (rawParams?.goal as string) || "";
         const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
         const requestedTaskId = rawParams?.taskId as string | undefined;
+        const requestedMode = rawParams?.mode === "async" ? "async" : rawParams?.mode === "sync" ? "sync" : undefined;
         const config = await this.resolveConfig(cwd);
+        if (signal?.aborted) {
+          return {
+            content: [{ type: "text", text: "Consultation submission cancelled before dispatch." }],
+            details: { ok: false, failure: "cancelled" },
+          };
+        }
         if (!config.enabled) {
           return {
             content: [{ type: "text", text: "Consultation submission refused: adviser consultations are disabled by configuration." }],
@@ -439,7 +520,7 @@ export class ToolManager {
         const engine = await this.resolveEngine(cwd).catch(() => undefined);
         if (engine) {
           try {
-            if (config.defaultMode === "async") {
+            if ((requestedMode ?? config.defaultMode) === "async") {
               const dispatched = await engine.submitAsync({
                 anchor,
                 branch: workingState.branch ?? null,
@@ -478,6 +559,8 @@ export class ToolManager {
               consultationId,
               modelPreference: this.modelPreference,
               timeoutMs: config.syncTimeoutMs,
+              signal,
+              onProgress: (event) => emitToolProgress(onUpdate, event.message),
             });
 
             if (turnResult.ok) {
@@ -485,19 +568,26 @@ export class ToolManager {
               const record = entries.find((e) => e.consultationId === turnResult.record.consultationId);
               let advisory: WorkerFacingAdvisory;
               if (record) {
-                const responseText = await this.ledger.readResponse(record.consultationId, anchor.repository);
-                advisory = { ...toWorkerFacingAdvisory(record), advice: responseText ?? turnResult.response.text };
+                advisory = toWorkerFacingAdvisory(record);
               } else {
+                const resultStatus = turnResult.record.result?.resultStatus;
+                const unusable = resultStatus === "incomplete" || resultStatus === "provenance-ambiguous";
                 advisory = {
                   consultationId: turnResult.record.consultationId,
                   kind,
                   state: "completed",
                   dependency: config.dependencyDefault,
+                  ...(resultStatus === undefined ? {} : { resultStatus }),
                   checkpoint: {
                     requestedRef: anchor.requestedRef,
                     resolvedCommit: anchor.resolvedCommit,
                   },
-                  advice: turnResult.response.text,
+                  ...(unusable ? {
+                    degradation: {
+                      reason: "incomplete-response",
+                      nextStep: "Continue locally or request a follow-up/retry; the adviser response was not accepted as actionable.",
+                    },
+                  } : { advice: turnResult.response.text }),
                   actionItems: [],
                 };
               }
@@ -529,16 +619,22 @@ export class ToolManager {
               },
             };
           } catch (err) {
+            const code = typeof err === "object" && err !== null && "code" in err
+              ? (err as { code?: unknown }).code
+              : undefined;
+            const circuitOpen = code === "circuit_open";
             return {
               content: [{
                 type: "text",
-                text: `Consultation error: ${err instanceof Error ? err.message : String(err)}`,
+                text: circuitOpen
+                  ? "ChatGPT adviser temporarily unavailable; continuing locally."
+                  : `Consultation error: ${err instanceof Error ? err.message : String(err)}`,
               }],
               details: {
                 ok: false,
                 consultationId,
-                failure: "execution-error",
-                error: err instanceof Error ? err.message : String(err),
+                failure: circuitOpen ? "circuit_open" : "execution-error",
+                ...(circuitOpen ? {} : { error: err instanceof Error ? err.message : String(err) }),
               },
             };
           }
@@ -602,20 +698,26 @@ export class ToolManager {
 
         const responseMarkdown = await this.ledger.readResponse(record.consultationId, anchor.repository);
         const advisory = toWorkerFacingAdvisory(record);
+        const unusable = record.resultStatus === "incomplete" || record.resultStatus === "provenance-ambiguous";
+        const contentText = unusable
+          ? `The ChatGPT adviser response for ${record.consultationId} was not accepted as actionable (${record.resultStatus}). Continue locally or request a follow-up/retry.`
+          : `Advisory for ${record.kind} (${record.consultationId}):\n\n${responseMarkdown ?? ""}`;
 
         return {
           content: [{
             type: "text",
-            text: `Advisory for ${record.kind} (${record.consultationId}):\n\n${responseMarkdown ?? ""}`,
+            text: contentText,
           }],
           details: {
             ok: true,
             consultationId: record.consultationId,
             kind: record.kind,
-            advisory: {
-              ...advisory,
-              advice: responseMarkdown,
-            },
+            advisory: unusable
+              ? advisory
+              : {
+                  ...advisory,
+                  advice: responseMarkdown,
+                },
           },
         };
       },
@@ -791,12 +893,18 @@ export class ToolManager {
         },
         required: ["consultationId", "request"],
       },
-      execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+      execute: async (_toolCallId, params, signal, onUpdate, ctx) => {
         const rawParams = params as Record<string, unknown>;
         const priorId = rawParams?.consultationId as ConsultationId;
         const request = (rawParams?.request as string) || "";
         const cwd = (rawParams?.cwd as string | undefined) ?? ctx?.cwd ?? process.cwd();
         const config = await this.resolveConfig(cwd);
+        if (signal?.aborted) {
+          return {
+            content: [{ type: "text", text: "Follow-up cancelled before dispatch." }],
+            details: { ok: false, failure: "cancelled" },
+          };
+        }
         if (!config.enabled) {
           return {
             content: [{ type: "text", text: "Follow-up refused: adviser consultations are disabled by configuration." }],
@@ -925,6 +1033,8 @@ export class ToolManager {
               consultationId: followUpId,
               modelPreference: this.modelPreference,
               timeoutMs: config.syncTimeoutMs,
+              signal,
+              onProgress: (event) => emitToolProgress(onUpdate, event.message),
             });
 
             if (turnResult.ok) {

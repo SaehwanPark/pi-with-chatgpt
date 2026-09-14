@@ -140,7 +140,7 @@ async function createHarness(maxConcurrentJobs = 2): Promise<TestHarness> {
       }
       return {
         ok: true,
-        text: `ADVISOR\nconsultation: ${request.consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser guidance for ${request.consultationId}.`,
+        text: `ADVISOR\nconsultation: ${request.consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser guidance for ${request.consultationId}.\n\nconsultation_complete: ${request.consultationId}`,
         elapsedMs: 25,
       };
     },

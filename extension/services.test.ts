@@ -52,7 +52,7 @@ function fakeRuntime(): AdviserBrowserRuntime {
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
       return {
         ok: true,
-        text: `ADVISOR\nconsultation: ${request.consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser answer: serialized.`,
+        text: `ADVISOR\nconsultation: ${request.consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser answer: serialized.\n\nconsultation_complete: ${request.consultationId}`,
         elapsedMs: 5,
       };
     },

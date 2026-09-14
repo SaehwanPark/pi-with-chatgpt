@@ -29,6 +29,7 @@ export interface WorkerFacingAdvisory {
   readonly kind: LedgerRecord["kind"];
   readonly state: string;
   readonly dependency: LedgerRecord["dependency"];
+  readonly resultStatus?: "complete" | "degraded" | "incomplete" | "provenance-ambiguous";
   readonly checkpoint: WorkerFacingCheckpoint;
   readonly drift?: { readonly verdict: DriftVerdict; readonly currency: AdviceCurrency };
   readonly advice?: string;
@@ -48,8 +49,10 @@ export function toWorkerFacingAdvisory(
 ): WorkerFacingAdvisory {
   const isEntry = "schemaVersion" in record;
   const state = isEntry ? record.status : record.state;
-  const advice = "adviserAnswer" in record ? record.adviserAnswer : undefined;
-  const actionItems: WorkerFacingActionItem[] = record.actionItems.map((item, index) => {
+  const resultStatus = isEntry ? record.resultStatus : undefined;
+  const unusable = resultStatus === "incomplete" || resultStatus === "provenance-ambiguous";
+  const advice = !unusable && "adviserAnswer" in record ? record.adviserAnswer : undefined;
+  const actionItems: WorkerFacingActionItem[] = unusable ? [] : record.actionItems.map((item, index) => {
     const ordinal = "ordinal" in item ? item.ordinal : (parseInt(item.id.replace(/\D/gu, ""), 10) || index + 1);
     return {
       ordinal,
@@ -63,11 +66,19 @@ export function toWorkerFacingAdvisory(
     kind: record.kind,
     state,
     dependency: record.dependency,
+    ...(resultStatus === undefined ? {} : { resultStatus }),
     checkpoint: { requestedRef: record.requestedRef, resolvedCommit: record.resolvedCommit },
     ...(options.drift === undefined ? {} : { drift: options.drift }),
     ...(advice === undefined ? {} : { advice }),
     actionItems,
-    ...(options.degradation === undefined ? {} : { degradation: options.degradation }),
+    ...(unusable
+      ? {
+          degradation: {
+            reason: "incomplete-response",
+            nextStep: "Continue locally or request a follow-up/retry; the adviser response was not accepted as actionable.",
+          },
+        }
+      : options.degradation === undefined ? {} : { degradation: options.degradation }),
   };
 }
 

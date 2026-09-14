@@ -187,7 +187,7 @@ describe("PlaywrightAdviserDriver.askAndAwaitTurn", () => {
 
     await expect(driver.askAndAwaitTurn({ ...TURN, signal: controller.signal })).resolves.toEqual({
       ok: false,
-      failure: "generation-timeout",
+      failure: "cancelled",
     });
     expect(clicked).toEqual([]);
     expect(typed).toEqual([]);

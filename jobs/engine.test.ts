@@ -40,7 +40,7 @@ const VALID_ANCHOR: ConsultationAnchor = {
 };
 
 const adviserTextFor = (consultationId: string): string =>
-  `ADVISOR\nconsultation: ${consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser answer: consider pattern X.`;
+  `ADVISOR\nconsultation: ${consultationId}\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nAdviser answer: consider pattern X.\n\nconsultation_complete: ${consultationId}`;
 
 describe("ConsultationEngine (M5)", () => {
   it("keeps a caller-provided consultation ID and resolves the live model preference", async () => {
@@ -507,6 +507,71 @@ describe("ConsultationEngine (M5)", () => {
     }
   });
 
+  it("bounds a hung browser transaction and permits the next consultation after recovery", async () => {
+    let hanging = true;
+    let recoveries = 0;
+    const fixture = await createEngineFixture({
+      transactionRecoveryAllowanceMs: 5,
+      emergencyRecovery: () => {
+        hanging = false;
+        recoveries += 1;
+        return Promise.resolve({ ok: true, reusable: true, generation: recoveries + 1 });
+      },
+    });
+    try {
+      fixture.setTurnDelay(0, undefined, undefined, () => hanging ? new Promise<void>(() => undefined) : Promise.resolve());
+      const request = (taskId: string): EngineConsultationRequest => ({
+        anchor: VALID_ANCHOR,
+        branch: "main",
+        taskId,
+        deliveryKey: `delivery-${taskId}`,
+        kind: "consult",
+        prompt: "Bound this browser transaction.",
+        modelId: "gpt-5",
+        timeoutMs: 5,
+      });
+      const first = await resolvesBefore(fixture.engine.submitSync(request("hung")), 500);
+      expect(first.ok).toBe(false);
+      if (!first.ok) expect(first.failure).toBe("transaction_timeout");
+      expect(recoveries).toBe(1);
+
+      const second = await resolvesBefore(fixture.engine.submitSync({ ...request("fresh"), timeoutMs: 500 }), 500);
+      expect(second.ok).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("fails fast with browser-poisoned after recovery cannot prove ownership is safe", async () => {
+    const fixture = await createEngineFixture({
+      transactionRecoveryAllowanceMs: 5,
+      emergencyRecovery: () => Promise.resolve({ ok: false, reusable: false, generation: 2 }),
+    });
+    try {
+      fixture.setTurnDelay(0, undefined, undefined, () => new Promise<void>(() => undefined));
+      const request: EngineConsultationRequest = {
+        anchor: VALID_ANCHOR,
+        branch: "main",
+        taskId: "poisoned",
+        deliveryKey: "delivery-poisoned",
+        kind: "consult",
+        prompt: "Poison the browser.",
+        modelId: "gpt-5",
+        timeoutMs: 5,
+      };
+      const first = await resolvesBefore(fixture.engine.submitSync(request), 500);
+      expect(first.ok).toBe(false);
+      if (!first.ok) expect(first.failure).toBe("browser_poisoned");
+      const consulted = fixture.consultedRequests.length;
+      const second = await resolvesBefore(fixture.engine.submitSync({ ...request, taskId: "after-poison", deliveryKey: "delivery-after-poison" }), 500);
+      expect(second.ok).toBe(false);
+      if (!second.ok) expect(second.failure).toBe("browser_poisoned");
+      expect(fixture.consultedRequests.length).toBe(consulted);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("handles browser failure and distinguishes advisory vs required dependency (INV-07)", async () => {
     const fixture = await createEngineFixture();
     try {
@@ -569,7 +634,7 @@ describe("ConsultationEngine (M5)", () => {
     try {
       fixture.setNextTurnOutcome({
         ok: true,
-        text: `ADVISOR\nconsultation: adv-foreign\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nThis answer belongs to another consultation.`,
+        text: `ADVISOR\nconsultation: adv-foreign\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nThis answer belongs to another consultation.\n\nconsultation_complete: adv-foreign`,
         elapsedMs: 10,
         degraded: "model-fallback",
       });
@@ -606,7 +671,7 @@ describe("ConsultationEngine (M5)", () => {
     try {
       fixture.setNextTurnOutcome({
         ok: true,
-        text: `ADVISOR\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nThe fixture mentions ghp_1234567890123456; keep the recovery guidance.`,
+        text: `ADVISOR\nconsultation: adv-redaction\nreviewed_commit: ${VALID_COMMIT}\nstatus: actionable\n\nThe fixture mentions ghp_1234567890123456; keep the recovery guidance.\n\nconsultation_complete: adv-redaction`,
         elapsedMs: 10,
       });
 
@@ -638,7 +703,10 @@ describe("ConsultationEngine (M5)", () => {
 
 // --- Test Fixture Helpers ---
 
-async function createEngineFixture(): Promise<{
+async function createEngineFixture(options: {
+  readonly transactionRecoveryAllowanceMs?: number;
+  readonly emergencyRecovery?: () => Promise<{ readonly ok: boolean; readonly reusable: boolean; readonly generation: number }>;
+} = {}): Promise<{
   engine: ConsultationEngine;
   store: ConsultationJobStore;
   consultedRequests: ConsultationRequest[];
@@ -716,6 +784,7 @@ async function createEngineFixture(): Promise<{
         elapsedMs: 50,
       };
     },
+    ...(options.emergencyRecovery === undefined ? {} : { emergencyRecover: options.emergencyRecovery }),
     shutdown(): Promise<void> {
       return Promise.resolve();
     },
@@ -731,6 +800,9 @@ async function createEngineFixture(): Promise<{
     capabilityGate: createConsultationCapabilityGate({
       runtime,
       githubConnectorProbe: () => Promise.resolve("verified"),
+    }),
+    ...(options.transactionRecoveryAllowanceMs === undefined ? {} : {
+      transactionRecoveryAllowanceMs: options.transactionRecoveryAllowanceMs,
     }),
   });
 

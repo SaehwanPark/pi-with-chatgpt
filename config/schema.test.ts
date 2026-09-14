@@ -13,6 +13,7 @@ describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
       enabled: true,
       dependencyDefault: "advisory",
       defaultMode: "sync",
+      agentUse: { mode: "explicit" },
       autoConsult: { enabled: false, confirmBeforeDispatch: true },
     });
     expect(parseAdviserConfig({})).toEqual(DEFAULT_CONFIG);
@@ -47,11 +48,13 @@ describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
       pollIntervalMs: 10_000,
       logLevel: "verbose",
       autoConsult: { enabled: true, confirmBeforeDispatch: false },
+      agentUse: { mode: "proactive" },
       browserExecutablePath: "/usr/bin/google-chrome",
     });
     expect(config.dependencyDefault).toBe("required");
     expect(config.defaultMode).toBe("async");
     expect(config.autoConsult).toEqual({ enabled: true, confirmBeforeDispatch: false });
+    expect(config.agentUse).toEqual({ mode: "proactive" });
   });
 
   it("keeps a second provider out of reach of configuration", () => {
@@ -63,6 +66,7 @@ describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
     expect(() => parseAdviserConfig({ enabled: "yes" })).toThrow(/must be a boolean/u);
     expect(() => parseAdviserConfig({ logLevel: "trace" })).toThrow(/logLevel/u);
     expect(() => parseAdviserConfig({ autoConsult: true })).toThrow(/autoConsult must be an object/u);
+    expect(() => parseAdviserConfig({ agentUse: { mode: "unknown" } })).toThrow(/agentUse.mode/u);
   });
 
   it("gives project-scope configuration no runtime authority", () => {
@@ -73,12 +77,35 @@ describe("configuration safety (INV-07, INV-11, INV-12, INV-16)", () => {
     expect(() => parseAdviserConfig({ autoConsult: { enabled: true } }, "project")).toThrow(
       /a project cannot enable auto-consultation/u,
     );
+    expect(() => parseAdviserConfig({ agentUse: { mode: "proactive" } }, "project")).toThrow(
+      /a project cannot enable proactive adviser use/u,
+    );
   });
 
   it("refuses a browser executable that points at the user's profile", () => {
     expect(() =>
       parseAdviserConfig({ browserExecutablePath: "/home/dev/.config/google-chrome/Default" }),
     ).toThrow(/must not point at the user's browser profile/u);
+  });
+
+  it("narrows global agent-use policy without allowing project broadening", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pwc-config-agent-use-"));
+    const globalPath = join(dir, "settings.json");
+    const projectPath = join(dir, "agent.json");
+    await writeFile(globalPath, JSON.stringify({ "pi-with-chatgpt": { agentUse: { mode: "proactive" } } }));
+    await writeFile(projectPath, JSON.stringify({ "pi-with-chatgpt": { agentUse: { mode: "explicit" } } }));
+    try {
+      await expect(loadAdviserConfig({ globalPath, projectPath, environment: {} })).resolves.toMatchObject({
+        agentUse: { mode: "explicit" },
+      });
+      await writeFile(globalPath, JSON.stringify({ "pi-with-chatgpt": { agentUse: { mode: "off" } } }));
+      await writeFile(projectPath, JSON.stringify({ "pi-with-chatgpt": { agentUse: { mode: "explicit" } } }));
+      await expect(loadAdviserConfig({ globalPath, projectPath, environment: {} })).resolves.toMatchObject({
+        agentUse: { mode: "off" },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("loads global and project settings without resetting omitted global values", async () => {

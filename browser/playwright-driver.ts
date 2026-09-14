@@ -304,7 +304,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
 
   async askAndAwaitTurn(request: ConsultationRequest): Promise<ConsultationOutcome> {
     const started = Date.now();
-    if (request.signal?.aborted) return { ok: false, failure: "generation-timeout" };
+    if (request.signal?.aborted) return { ok: false, failure: "cancelled" };
     const page = await this.#requirePage();
 
     const composer = await firstVisible(page, CHATGPT_SELECTORS.composer);
@@ -379,7 +379,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   /** Cancelled turns must leave no live generation behind on the shared page. */
   async #cancelledTurn(turnTouched: boolean): Promise<ConsultationOutcome> {
     if (turnTouched) await this.resetTab().catch(async () => this.shutdown().catch(() => undefined));
-    return { ok: false, failure: "generation-timeout" };
+    return { ok: false, failure: "cancelled" };
   }
 
   /**
@@ -407,6 +407,27 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     const profileLock = this.#profileLock;
     this.#profileLock = undefined;
     await profileLock?.release();
+  }
+
+  /**
+   * Emergency close deliberately bypasses `#operationTail`. It is called only after an outer transaction
+   * watchdog has decided that waiting for the normal queue is unsafe. Clearing references before awaiting
+   * close prevents a late continuation from publishing a fresh page through this driver.
+   */
+  async emergencyClose(): Promise<void> {
+    const context = this.#context;
+    this.#context = undefined;
+    this.#page = undefined;
+    const profileLock = this.#profileLock;
+    this.#profileLock = undefined;
+    try {
+      if (context) await context.close();
+      // The context is proven closed, so the old queue no longer owns a live browser. Resetting it here is
+      // the only safe way to let the next generation acquire the driver without waiting on a stale promise.
+      this.#operationTail = Promise.resolve();
+    } finally {
+      await profileLock?.release();
+    }
   }
 
   async #requirePage(): Promise<TrackedPage> {
