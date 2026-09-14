@@ -9,6 +9,10 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [1.0.1] - 2026-09-14
+
 ### Added
 
 - Added the high-level `advisor_consult` worker tool with synchronous-by-default autonomous routing,

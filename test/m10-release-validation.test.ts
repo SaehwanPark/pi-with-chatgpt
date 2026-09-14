@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -132,6 +132,13 @@ function makeMockEngine(ledger?: ConsultationLedger): ConsultationEngine {
 }
 
 describe("Milestone 10: Release Validation & Pi Integration", () => {
+  describe("0. Release metadata", () => {
+    it("publishes the 1.0.1 package metadata", () => {
+      const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { version?: unknown };
+      expect(packageJson.version).toBe("1.0.1");
+    });
+  });
+
   describe("1. Live Pi Integration & Activation", () => {
     it("activates cleanly against Pi API registering 11 commands and 9 tools", () => {
       const registeredCommands = new Map<string, unknown>();
