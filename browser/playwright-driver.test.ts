@@ -289,6 +289,46 @@ describe("PlaywrightAdviserDriver.openChatGPT", () => {
 });
 
 describe("PlaywrightAdviserDriver.runExclusive", () => {
+  it("rejects a late old-generation callback instead of using a fresh page", async () => {
+    const old = fakePage({ [COMPOSER]: [], [SEND]: [] }, "https://chatgpt.com/");
+    const fresh = fakePage({ [COMPOSER]: [], [SEND]: [] }, "https://chatgpt.com/");
+    let launchCount = 0;
+    const launch: PlaywrightLauncher = () => {
+      const page = launchCount === 0 ? old.page : fresh.page;
+      launchCount += 1;
+      const context = {
+        pages: () => [page],
+        newPage: () => Promise.resolve(page),
+        close: () => Promise.resolve(),
+      };
+      const result: PlaywrightLaunchResult = { context, chromeVersion: "152.0.0.0" };
+      return Promise.resolve(result);
+    };
+    const driver = new PlaywrightAdviserDriver({ profile: PROFILE, launch });
+    await driver.start({ purpose: "consultation" });
+
+    let enterOld: () => void = () => undefined;
+    const oldEntered = new Promise<void>((resolve) => {
+      enterOld = resolve;
+    });
+    let releaseOld: () => void = () => undefined;
+    const oldMayContinue = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const oldOperation = driver.runExclusive(async () => {
+      enterOld();
+      await oldMayContinue;
+      await driver.selectModel("gpt-5.5");
+    });
+    await oldEntered;
+
+    await expect(driver.emergencyClose()).resolves.toBeUndefined();
+    await expect(driver.start({ purpose: "consultation" })).resolves.toMatchObject({ chromeVersion: "152.0.0.0" });
+    releaseOld();
+    await expect(oldOperation).rejects.toThrow("browser generation invalidated");
+    await expect(driver.runExclusive(() => driver.selectModel("gpt-5.5"))).resolves.toBe(false);
+  });
+
   it("serializes operations that share the tracked browser tab", async () => {
     const { driver } = await startedDriver({ thread: {} });
     let active = 0;

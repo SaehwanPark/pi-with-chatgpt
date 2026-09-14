@@ -136,12 +136,14 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     readonly rejection?: RuntimeRejection;
   }> {
     if (this.#poisoned) return { ok: false, rejection: "browser-poisoned" };
-    return await this.#driver.runExclusive(() => this.#ensureReady(options));
+    const generation = this.#turnGeneration;
+    return await this.#driver.runExclusive(() => this.#ensureReady(options, generation));
   }
 
   async probeSurface(): Promise<SurfaceObservation> {
+    const generation = this.#turnGeneration;
     return await this.#driver.runExclusive(async () => {
-      const ready = await this.#ensureReady({ purpose: "capability-probe" });
+      const ready = await this.#ensureReady({ purpose: "capability-probe" }, generation);
       if (!ready.ok) {
         return {
           state: "unknown",
@@ -160,8 +162,9 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     readonly models?: readonly ModelOption[];
     readonly rejection?: RuntimeRejection;
   }> {
+    const generation = this.#turnGeneration;
     return await this.#driver.runExclusive(async () => {
-      const ready = await this.#ensureReady({ purpose: "model-discovery" });
+      const ready = await this.#ensureReady({ purpose: "model-discovery" }, generation);
       if (!ready.ok) return { ok: false, rejection: ready.rejection ?? "launch-failed" };
       const surface = await this.#surface();
       if (!surface.actionable) return { ok: false, rejection: "needs-human" };
@@ -170,10 +173,13 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
   }
 
   /** Internal form: callers that already own the driver operation lock use this to avoid a nested lock. */
-  async #ensureReady(options: RuntimeStartOptions): Promise<{
+  async #ensureReady(options: RuntimeStartOptions, generation = this.#turnGeneration): Promise<{
     readonly ok: boolean;
     readonly rejection?: RuntimeRejection;
   }> {
+    if (!this.#generationIsCurrent(generation)) {
+      return { ok: false, rejection: this.#staleRejection() };
+    }
     if (this.#poisoned || this.#phase === "poisoned") {
       return { ok: false, rejection: "browser-poisoned" };
     }
@@ -184,21 +190,25 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     }
     let contextDiscarded = false;
     if (this.#phase === "ready") {
-      if (await this.#driver.isHealthy()) return { ok: true };
+      const healthy = await this.#driver.isHealthy();
+      if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
+      if (healthy) return { ok: true };
       // The common production surprise: the process is gone but the object graph still says "ready".
       this.#phase = "degraded";
       this.#emit({ type: "recovered", reason: "unhealthy" });
       // Do not let start() reuse a renderer that answered the health check as unhealthy. Discard the
       // complete context first; the driver owns the profile lock and will reacquire it on relaunch.
       await this.#driver.shutdown().catch(() => undefined);
+      if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
       contextDiscarded = true;
     }
     if (this.#phase === "degraded" && !contextDiscarded) {
       // A turn can mark the runtime degraded after a driver exception without a preceding health check.
       // The next attempt must not hand that potentially hung context back to start().
       await this.#driver.shutdown().catch(() => undefined);
+      if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
     }
-    return await this.#launchOrReuse(options);
+    return await this.#launchOrReuse(options, generation);
   }
 
   /**
@@ -286,6 +296,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     if (request.signal?.aborted) return { ok: false, failure: "cancelled" };
 
     const ready = await this.#ensureReady({ purpose: "consultation" });
+    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
     if (!ready.ok) {
       // Report the reason the browser could not start. A remembered human gate is not the cause here,
       // and reporting it would send the user to fix a login while Chrome is what is actually missing.
@@ -299,7 +310,6 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       this.#emit({ type: "turn-failed", failure });
       return { ok: false, failure };
     }
-    if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
 
     const surface = await this.#surface();
     if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
@@ -325,6 +335,10 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
         timeoutMs: request.timeoutMs ?? this.#defaultTurnTimeoutMs,
       });
     } catch {
+      // A timed-out generation may throw after emergency recovery has already started a fresh one. Check
+      // the barrier before mutating shared runtime state, otherwise a late old turn could mark the new
+      // browser degraded after it was proven ready.
+      if (this.#stale(generation, request.signal)) return { ok: false, failure: this.#staleFailure(generation) };
       // A driver throw means the browser or page died under us, not that the adviser said no.
       this.#phase = "degraded";
       this.#lastFailure = "browser-lost";
@@ -348,8 +362,16 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     return outcome;
   }
 
+  #generationIsCurrent(generation: number): boolean {
+    return generation === this.#turnGeneration && !this.#poisoned;
+  }
+
+  #staleRejection(): RuntimeRejection {
+    return this.#poisoned ? "browser-poisoned" : "launch-failed";
+  }
+
   #stale(generation: number, signal: AbortSignal | undefined): boolean {
-    return signal?.aborted === true || generation !== this.#turnGeneration || this.#poisoned;
+    return signal?.aborted === true || !this.#generationIsCurrent(generation);
   }
 
   #staleFailure(generation: number): ConsultationFailure {
@@ -371,19 +393,31 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     };
   }
 
-  async #launchOrReuse(options: RuntimeStartOptions): Promise<{ ok: boolean; rejection?: RuntimeRejection }> {
-    if (this.#launchInFlight) return await this.#launchInFlight;
+  async #launchOrReuse(
+    options: RuntimeStartOptions,
+    generation = this.#turnGeneration,
+  ): Promise<{ ok: boolean; rejection?: RuntimeRejection }> {
+    if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
+    if (this.#launchInFlight) {
+      const result = await this.#launchInFlight;
+      return this.#generationIsCurrent(generation) ? result : { ok: false, rejection: this.#staleRejection() };
+    }
 
-    const launch = this.#launch(options);
+    const launch = this.#launch(options, generation);
     this.#launchInFlight = launch;
     try {
-      return await launch;
+      const result = await launch;
+      return this.#generationIsCurrent(generation) ? result : { ok: false, rejection: this.#staleRejection() };
     } finally {
       this.#launchInFlight = undefined;
     }
   }
 
-  async #launch(options: RuntimeStartOptions): Promise<{ ok: boolean; rejection?: RuntimeRejection }> {
+  async #launch(
+    options: RuntimeStartOptions,
+    generation = this.#turnGeneration,
+  ): Promise<{ ok: boolean; rejection?: RuntimeRejection }> {
+    if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
     if (this.#consecutiveLaunchFailures >= this.#maxLaunchFailures) {
       this.#phase = "failed";
       this.#lastFailure = "launch-failed";
@@ -394,6 +428,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     this.#headed = options.headed === true;
     try {
       const { chromeVersion } = await this.#driver.start({ ...options, headed: this.#headed });
+      if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
       this.#launchCount += 1;
       this.#consecutiveLaunchFailures = 0;
       this.#chromeVersion = chromeVersion;
@@ -402,6 +437,7 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
       this.#emit({ type: "launched", launchCount: this.#launchCount, chromeVersion });
       return { ok: true };
     } catch (error) {
+      if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
       this.#consecutiveLaunchFailures += 1;
       const rejection = rejectionFromError(error);
       this.#phase = this.#consecutiveLaunchFailures >= this.#maxLaunchFailures ? "failed" : "stopped";

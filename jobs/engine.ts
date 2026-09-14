@@ -496,13 +496,7 @@ export class ConsultationEngine {
         const capability = await this.#ensureCapability(request);
         if (!capability.ok) {
           const failedRecord = await this.#failJob(address, "capability");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "capability",
-            blocked: dependency === "required",
-            explanation: capability.explanation,
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "capability", capability.explanation);
         }
 
         // 1. Ensure ChatGPT Project exists and is bound to this repository (INV-08).
@@ -520,13 +514,7 @@ export class ConsultationEngine {
       if (!projectResult.ok) {
         const failure = mapProjectFailure(projectResult.reason);
         const failedRecord = await this.#failJob(address, failure);
-        return {
-          ok: false,
-          record: failedRecord,
-          failure,
-          blocked: dependency === "required",
-          explanation: projectResult.explanation,
-        };
+        return await this.#terminalOutcome(failedRecord, dependency, failure, projectResult.explanation);
       }
 
       const projectId = projectResult.mapping.projectId;
@@ -553,13 +541,7 @@ export class ConsultationEngine {
       if (!conversationResult.ok) {
         const failure = mapConversationFailure(conversationResult.reason);
         const failedRecord = await this.#failJob(address, failure);
-        return {
-          ok: false,
-          record: failedRecord,
-          failure,
-          blocked: dependency === "required",
-          explanation: conversationResult.explanation,
-        };
+        return await this.#terminalOutcome(failedRecord, dependency, failure, conversationResult.explanation);
       }
 
       const conversationId = conversationResult.record.conversationId;
@@ -599,23 +581,11 @@ export class ConsultationEngine {
         if (inspect.state !== "live") {
           if (inspect.state === "gone") {
             const failedRecord = await this.#failJob(address, "project");
-            return {
-              ok: false,
-              record: failedRecord,
-              failure: "project",
-              blocked: dependency === "required",
-              explanation: "Conversation was deleted or not found.",
-            };
+            return await this.#terminalOutcome(failedRecord, dependency, "project", "Conversation was deleted or not found.");
           }
           if (inspect.state === "unknown" && inspect.reason === "needs-human") {
             const failedRecord = await this.#failJob(address, "challenge");
-            return {
-              ok: false,
-              record: failedRecord,
-              failure: "challenge",
-              blocked: dependency === "required",
-              explanation: "Human verification required on ChatGPT.",
-            };
+            return await this.#terminalOutcome(failedRecord, dependency, "challenge", "Human verification required on ChatGPT.");
           }
         }
 
@@ -628,13 +598,7 @@ export class ConsultationEngine {
         const modelSelection = await this.#resolveModel(request);
         if (!modelSelection.ok) {
           const failedRecord = await this.#failJob(address, "capability");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "capability",
-            blocked: dependency === "required",
-            explanation: modelSelection.explanation,
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "capability", modelSelection.explanation);
         }
 
         let outcome: ConsultationOutcome;
@@ -651,13 +615,7 @@ export class ConsultationEngine {
           });
         } catch {
           const failedRecord = await this.#failJob(address, "browser");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "browser",
-            blocked: dependency === "required",
-            explanation: "Browser runtime encountered an unexpected error.",
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "browser", "Browser runtime encountered an unexpected error.");
         }
 
         if (abortController.signal.aborted) {
@@ -674,13 +632,7 @@ export class ConsultationEngine {
         if (!outcome.ok) {
           const failure = mapTurnFailure(outcome.failure);
           const failedRecord = await this.#failJob(address, failure);
-          return {
-            ok: false,
-            record: failedRecord,
-            failure,
-            blocked: dependency === "required",
-            explanation: `Consultation turn failed: ${outcome.failure}`,
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, failure, `Consultation turn failed: ${outcome.failure}`);
         }
 
         // 7. Success: sanitize repository-derived examples before persistence. The adviser may quote
@@ -773,13 +725,7 @@ export class ConsultationEngine {
         const persistedResponse = await this.#store.readPersistedResponse(address);
         if (!persistedResponse) {
           const failedRecord = await this.#failJob(address, "browser");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "browser",
-            blocked: dependency === "required",
-            explanation: "Response failed to persist cleanly.",
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "browser", "Response failed to persist cleanly.");
         }
 
         this.#healthCircuit.recordSuccess();
@@ -871,8 +817,14 @@ export class ConsultationEngine {
 
   async #failJob(address: JobAddress, failure: JobFailureCode): Promise<JobRecord> {
     const failed = await this.#store.fail(address, failure);
-    if (isTransportFailure(failure)) this.#healthCircuit.recordTransportFailure();
-    else this.#healthCircuit.releaseProbe();
+    // A late failure can lose the terminal race to completion or cancellation. Do not penalize the health
+    // circuit or release a probe on behalf of a terminal winner that this failure did not commit.
+    if (failed.state === "failed") {
+      if (isTransportFailure(failure)) this.#healthCircuit.recordTransportFailure();
+      else this.#healthCircuit.releaseProbe();
+    } else if (failed.state === "cancelled") {
+      this.#healthCircuit.releaseProbe();
+    }
     await this.#recordTerminalLedger(failed);
     return failed;
   }
@@ -886,6 +838,28 @@ export class ConsultationEngine {
     return cancelled;
   }
 
+  async #terminalOutcome(
+    record: JobRecord,
+    dependency: DependencyMode,
+    failure: JobFailureCode,
+    explanation?: string,
+  ): Promise<EngineConsultationOutcome> {
+    if (record.state === "completed") {
+      const response = await this.#store.readPersistedResponse(jobAddress(record)).catch(() => undefined);
+      if (response !== undefined) return { ok: true, record, response };
+    }
+    if (record.state === "cancelled") {
+      return { ok: false, record, failure: "cancelled", blocked: false, ...(explanation === undefined ? {} : { explanation }) };
+    }
+    return {
+      ok: false,
+      record,
+      failure: record.state === "failed" ? record.failure ?? failure : failure,
+      blocked: dependency === "required",
+      ...(explanation === undefined ? {} : { explanation }),
+    };
+  }
+
   async #failureOutcome(
     address: JobAddress,
     dependency: DependencyMode,
@@ -893,17 +867,7 @@ export class ConsultationEngine {
     explanation: string,
   ): Promise<EngineConsultationOutcome> {
     const record = await this.#failJob(address, failure);
-    if (record.state === "completed") {
-      const response = await this.#store.readPersistedResponse(address).catch(() => undefined);
-      if (response !== undefined) return { ok: true, record, response };
-    }
-    return {
-      ok: false,
-      record,
-      failure: record.state === "failed" ? record.failure ?? failure : failure,
-      blocked: dependency === "required",
-      explanation,
-    };
+    return await this.#terminalOutcome(record, dependency, failure, explanation);
   }
 
   async #cancelOutcome(

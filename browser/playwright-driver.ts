@@ -15,6 +15,8 @@
  * already refuses the user's own Chrome profile. This driver trusts that and refuses to invent a directory
  * of its own.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import {
   CHATGPT_SELECTORS,
   CHATGPT_URLS,
@@ -126,6 +128,9 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   #profileLock: StateLock | undefined;
   /** One queue for every operation that can touch the tracked tab, including M4's Project surface. */
   #operationTail: Promise<void> = Promise.resolve();
+  /** Emergency recovery epoch carried through each async driver operation. */
+  readonly #operationEpoch = new AsyncLocalStorage<number>();
+  #recoveryEpoch = 0;
 
   constructor(options: PlaywrightDriverOptions) {
     this.#profile = options.profile;
@@ -140,6 +145,7 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
 
   async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.#operationTail;
+    const operationEpoch = this.#recoveryEpoch;
     let release: () => void = () => undefined;
     const current = new Promise<void>((resolve) => {
       release = resolve;
@@ -148,7 +154,8 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     this.#operationTail = tail;
     await previous.catch(() => undefined);
     try {
-      return await operation();
+      if (operationEpoch !== this.#recoveryEpoch) throw new Error("browser generation invalidated");
+      return await this.#operationEpoch.run(operationEpoch, operation);
     } finally {
       release();
       if (this.#operationTail === tail) this.#operationTail = Promise.resolve();
@@ -156,19 +163,27 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   }
 
   async start(options: RuntimeStartOptions): Promise<{ readonly chromeVersion: string }> {
+    this.#assertOperationCurrent();
     if (this.#context && this.#page && !this.#page.isClosed()) {
       return { chromeVersion: this.#chromeVersion };
     }
     if (this.#context) {
       // The tracked page can be closed by Chromium while the persistent context is still healthy. Reuse
       // that context (and its already-held profile lock) instead of trying to launch a second one.
+      const context = this.#context;
       try {
-        this.#page = await this.#context.newPage();
+        const page = await context.newPage();
+        this.#assertOperationCurrent();
+        if (this.#context !== context) {
+          await page.close().catch(() => undefined);
+          throw new Error("browser generation invalidated");
+        }
+        this.#page = page;
         return { chromeVersion: this.#chromeVersion };
       } catch (error) {
         // A dead context is no longer a safe owner of the profile. Tear it down before releasing the
         // lock so a retry cannot leave a half-live Chromium process behind.
-        const context = this.#context;
+        if (this.#context !== context) throw error;
         this.#context = undefined;
         this.#page = undefined;
         await context.close().catch(() => undefined);
@@ -184,6 +199,12 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     const profileLock = this.#profileLockPath === undefined
       ? undefined
       : await acquireStateLock({ path: this.#profileLockPath, timeoutMs: 0 });
+    try {
+      this.#assertOperationCurrent();
+    } catch (error) {
+      await profileLock?.release();
+      throw error;
+    }
     // One tab, reused. launchPersistentContext is what keeps every cookie the adviser gains inside the
     // extension-owned directory (INV-11/INV-12); there is no code path here that touches the user profile.
     // `headless` follows the caller's `headed` flag: a manual login MUST show a window (INV-11 needs a
@@ -199,10 +220,12 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
       });
       context = launchResult.context;
       const { chromeVersion } = launchResult;
+      const existing = context.pages()[0];
+      const page = existing ?? (await context.newPage());
+      this.#assertOperationCurrent();
       this.#context = context;
       this.#chromeVersion = chromeVersion;
-      const existing = context.pages()[0];
-      this.#page = existing ?? (await context.newPage());
+      this.#page = page;
       this.#profileLock = profileLock;
       return { chromeVersion };
     } catch (error) {
@@ -211,14 +234,18 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
       // tracked handles before the next retry. Otherwise the released profile lock would be paired with
       // a still-live context, allowing another process to open the same user-data directory.
       if (context !== undefined) await context.close().catch(() => undefined);
-      if (this.#context === context) this.#context = undefined;
-      this.#page = undefined;
+      if (this.#context === context) {
+        this.#context = undefined;
+        this.#page = undefined;
+        if (this.#profileLock === profileLock) this.#profileLock = undefined;
+      }
       await profileLock?.release();
       throw error;
     }
   }
 
   async isHealthy(): Promise<boolean> {
+    if (!this.#operationIsCurrent()) return false;
     if (!this.#context || !this.#page || this.#page.isClosed()) return false;
     try {
       // A cheap round-trip: a hung renderer passes isClosed() but fails to answer a title read.
@@ -226,13 +253,14 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
       const result = await Promise.race([this.#page.title(), this.#sleep(3_000).then(() => timeout)]);
       // Promise.race resolves successfully for the timer as well as for title(). Checking only for
       // rejection therefore reported a hung renderer as healthy indefinitely.
-      return result !== timeout;
+      return this.#operationIsCurrent() && result !== timeout;
     } catch {
       return false;
     }
   }
 
   async resetTab(): Promise<void> {
+    if (!this.#operationIsCurrent()) return;
     const context = this.#context;
     if (!context) return;
     const tracked = this.#page;
@@ -244,7 +272,12 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     for (const page of context.pages()) {
       if (!page.url().startsWith("chrome://")) await page.close().catch(() => undefined);
     }
-    this.#page = await context.newPage();
+    const fresh = await context.newPage();
+    if (!this.#operationIsCurrent() || this.#context !== context) {
+      await fresh.close().catch(() => undefined);
+      return;
+    }
+    this.#page = fresh;
   }
 
   async observeSurface(): Promise<SurfaceObservation> {
@@ -400,13 +433,17 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   }
 
   async shutdown(): Promise<void> {
+    if (!this.#operationIsCurrent()) return;
     const context = this.#context;
+    const profileLock = this.#profileLock;
+    if (context) await context.close().catch(() => undefined);
+    if (this.#context !== context) return;
     this.#context = undefined;
     this.#page = undefined;
-    if (context) await context.close().catch(() => undefined);
-    const profileLock = this.#profileLock;
-    this.#profileLock = undefined;
-    await profileLock?.release();
+    if (this.#profileLock === profileLock) {
+      this.#profileLock = undefined;
+      await profileLock?.release();
+    }
   }
 
   /**
@@ -415,6 +452,10 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
    * close prevents a late continuation from publishing a fresh page through this driver.
    */
   async emergencyClose(): Promise<void> {
+    // Invalidate every async operation that captured the old context before clearing references. A late
+    // Project-surface callback must fail instead of asking #requirePage() to create a page in a fresh
+    // generation that another consultation now owns.
+    this.#recoveryEpoch += 1;
     const context = this.#context;
     this.#context = undefined;
     this.#page = undefined;
@@ -431,11 +472,21 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
   }
 
   async #requirePage(): Promise<TrackedPage> {
+    if (!this.#operationIsCurrent()) throw new Error("browser generation invalidated");
     if (!this.#page || this.#page.isClosed()) {
       if (!this.#context) throw new Error("browser not started");
       this.#page = await this.#context.newPage();
     }
     return this.#page;
+  }
+
+  #operationIsCurrent(): boolean {
+    const operationEpoch = this.#operationEpoch.getStore();
+    return operationEpoch === undefined || operationEpoch === this.#recoveryEpoch;
+  }
+
+  #assertOperationCurrent(): void {
+    if (!this.#operationIsCurrent()) throw new Error("browser generation invalidated");
   }
 
   /**

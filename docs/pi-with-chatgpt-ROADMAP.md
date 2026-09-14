@@ -1190,7 +1190,7 @@ Verify that adviser auth is independent from active worker provider.
 ## Exit Criteria
 
 - [x] Publish a documented V1 that can be installed and used without manual internal setup.
-      — Verified: package installs cleanly via `pi install`, activates with zero side effects, and provides 11 slash commands, 8 agent tools, and full documentation.
+      — Verified: package installs cleanly via `pi install`, activates with zero side effects, and provides 11 slash commands, 9 agent tools, and full documentation.
 
 ---
 
