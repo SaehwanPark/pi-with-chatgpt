@@ -61,7 +61,7 @@ const mockPi = {
 
 const activation = module.default(mockPi);
 check("activation registers 11 slash commands", commandCount === 11, `registered ${commandCount} commands`);
-check("activation registers 8 agent tools", toolCount === 8, `registered ${toolCount} tools`);
+check("activation registers 9 agent tools", toolCount === 9, `registered ${toolCount} tools`);
 check("activation returns its configuration", activation?.config?.dependencyDefault === "advisory");
 
 // 2 + 3. Real Pi installation, isolated from the developer's configuration.

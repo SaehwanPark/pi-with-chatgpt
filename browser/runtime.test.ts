@@ -93,7 +93,7 @@ function runtime(script: DriverScript = {}, overrides: RuntimeOverrides = {}) {
     ...overrides,
   });
   instance.subscribe((event) => events.push(event));
-  return { instance, calls, events };
+  return { instance, calls, events, driver };
 }
 
 const REQUEST: ConsultationRequest = {
@@ -233,6 +233,18 @@ describe("AdviserRuntime turns", () => {
     expect(seen).toBe(1234);
   });
 
+  it("cancels a turn while it waits behind a hung earlier turn", async () => {
+    const { instance } = runtime({ turn: () => new Promise<ConsultationOutcome>(() => undefined) });
+    const first = instance.consult(REQUEST);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const controller = new AbortController();
+    const second = instance.consult({ ...REQUEST, consultationId: "queued", signal: controller.signal });
+    controller.abort();
+    await expect(second).resolves.toEqual({ ok: false, failure: "cancelled" });
+    await instance.emergencyRecover?.("transaction-timeout");
+    void first;
+  });
+
   it("keeps the turn queue usable after a failed turn", async () => {
     let attempts = 0;
     const { instance } = runtime({
@@ -296,6 +308,48 @@ describe("AdviserRuntime human gate", () => {
     });
     const outcome = await instance.consult(REQUEST);
     expect(outcome).toMatchObject({ ok: false, failure: "needs-human" });
+  });
+});
+
+describe("AdviserRuntime emergency recovery", () => {
+  it("proves a fresh generation after emergency close", async () => {
+    const { instance, calls } = runtime();
+    await instance.consult(REQUEST);
+    await expect(instance.emergencyRecover?.("transaction-timeout")).resolves.toMatchObject({ ok: true, reusable: true });
+    expect((await instance.status()).phase).toBe("stopped");
+    await expect(instance.consult({ ...REQUEST, consultationId: "fresh-generation" })).resolves.toMatchObject({ ok: true });
+    expect(calls.filter((call) => call.startsWith("start:")).length).toBe(2);
+  });
+
+  it("does not let a late old turn degrade a fresh generation", async () => {
+    let rejectOldTurn: (error: Error) => void = () => undefined;
+    let oldTurn = true;
+    const { instance } = runtime({
+      turn: () => oldTurn
+        ? new Promise<ConsultationOutcome>((_resolve, reject) => {
+            rejectOldTurn = reject;
+          })
+        : Promise.resolve({ ok: true as const, text: "fresh advice", elapsedMs: 1 }),
+    });
+
+    const first = instance.consult(REQUEST);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(instance.emergencyRecover?.("transaction-timeout")).resolves.toMatchObject({ ok: true, reusable: true });
+    oldTurn = false;
+    await expect(instance.consult({ ...REQUEST, consultationId: "fresh" })).resolves.toMatchObject({ ok: true });
+
+    rejectOldTurn(new Error("old page closed"));
+    await expect(first).resolves.toMatchObject({ ok: false, failure: "browser-lost" });
+    expect((await instance.status()).phase).toBe("ready");
+  });
+
+  it("poisons the runtime when emergency close does not settle", async () => {
+    const { instance, driver } = runtime({}, { recoveryGraceMs: 5 });
+    driver.emergencyClose = () => new Promise<void>(() => undefined);
+    const recovery = instance.emergencyRecover?.("browser-unresponsive");
+    await expect(recovery).resolves.toMatchObject({ ok: false, reusable: false });
+    expect((await instance.status()).phase).toBe("poisoned");
+    await expect(instance.ensureReady()).resolves.toEqual({ ok: false, rejection: "browser-poisoned" });
   });
 });
 

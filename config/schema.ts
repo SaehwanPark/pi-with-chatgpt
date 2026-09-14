@@ -20,12 +20,15 @@ import { DEFAULT_ADVISER_PROVIDER, type AdviserProvider } from "../protocol/prov
 import { isLikelyUserBrowserProfile } from "../browser/profile.js";
 
 export type ConfigScope = "global" | "project";
+export type AgentUseMode = "off" | "explicit" | "proactive";
 
 export interface AdviserConfig {
   readonly provider: AdviserProvider;
   readonly enabled: boolean;
   readonly dependencyDefault: DependencyMode;
   readonly defaultMode: "sync" | "async";
+  /** Worker-facing adviser routing policy; project scope may only narrow this value. */
+  readonly agentUse: { readonly mode: AgentUseMode };
   /** Milliseconds a synchronous consultation waits before it is treated as failed. */
   readonly syncTimeoutMs: number;
   /** Polling cadence for asynchronous jobs; kept coarse to avoid hammering the browser runtime. */
@@ -45,6 +48,7 @@ export const DEFAULT_CONFIG: AdviserConfig = {
   enabled: true,
   dependencyDefault: DEFAULT_DEPENDENCY_MODE,
   defaultMode: "sync",
+  agentUse: { mode: "explicit" },
   syncTimeoutMs: 240_000,
   pollIntervalMs: 5_000,
   autoConsult: { enabled: false, confirmBeforeDispatch: true },
@@ -129,6 +133,11 @@ function applyConfigOverrides(
 ): AdviserConfig {
   const merged = { ...global, autoConsult: { ...global.autoConsult } };
   for (const key of Object.keys(projectRaw)) {
+    if (key === "agentUse") {
+      const projectMode = project.agentUse.mode;
+      merged.agentUse = { mode: narrowAgentUseMode(merged.agentUse.mode, projectMode) };
+      continue;
+    }
     if (key === "autoConsult") {
       const rawAutoConsult = projectRaw.autoConsult;
       const parsedAutoConsult = project.autoConsult;
@@ -179,6 +188,9 @@ export function parseAdviserConfig(raw: Record<string, unknown>, scope: ConfigSc
         assertBoolean(key, value);
         config.enabled = value;
         break;
+      case "agentUse":
+        config.agentUse = parseAgentUse(value, scope);
+        break;
       case "autoConsult":
         config.autoConsult = parseAutoConsult(value, scope);
         break;
@@ -221,6 +233,26 @@ export function parseAdviserConfig(raw: Record<string, unknown>, scope: ConfigSc
   }
 
   return config as unknown as AdviserConfig;
+}
+
+function parseAgentUse(value: unknown, scope: ConfigScope): AdviserConfig["agentUse"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ConfigError("agentUse must be an object");
+  }
+  const mode = (value as Record<string, unknown>).mode ?? "explicit";
+  if (mode !== "off" && mode !== "explicit" && mode !== "proactive") {
+    throw new ConfigError('agentUse.mode must be "off", "explicit", or "proactive"');
+  }
+  if (scope === "project" && mode === "proactive") {
+    throw new ConfigError("a project cannot enable proactive adviser use; that is a user-level decision");
+  }
+  return { mode };
+}
+
+function narrowAgentUseMode(globalMode: AgentUseMode, projectMode: AgentUseMode): AgentUseMode {
+  if (globalMode === "off") return "off";
+  if (globalMode === "explicit") return projectMode === "off" ? "off" : "explicit";
+  return projectMode;
 }
 
 function parseAutoConsult(value: unknown, scope: ConfigScope): AdviserConfig["autoConsult"] {

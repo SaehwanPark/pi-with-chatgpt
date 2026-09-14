@@ -148,7 +148,20 @@ Pi may continue working while the consultation runs.
 
 ---
 
-## 5. What Happens Next: Drift & Disposition
+## 5. Autonomous Worker Consultations
+
+Pi workers have a high-level `advisor_consult` tool for the normal adviser workflow. When the user or trusted project instructions explicitly request ChatGPT advice, the worker can call it directly with a consultation kind and goal; no slash command is required.
+
+```json
+{
+  "kind": "plan",
+  "goal": "Review the scheduler design before implementation"
+}
+```
+
+The tool waits synchronously by default so the worker can use the answer for its next decision. An explicit `mode: "async"` is available when advice is not needed immediately. Adviser output remains untrusted: the worker evaluates it against repository evidence and tests, and incomplete or provenance-ambiguous responses are not actionable.
+
+## 6. What Happens Next: Drift & Disposition
 
 While the adviser was thinking, did you commit more code? No problem!
 
@@ -164,7 +177,7 @@ Each piece of advice includes structured action items (`A1`, `A2`, etc.). Your l
 
 ---
 
-## 6. Next Steps
+## 7. Next Steps
 
 - Explore all 11 user commands in the [**User Guide (Slash Commands)**](./user-guide).
 - Learn how Pi workers use tools automatically in the [**Agent Tools Reference**](./agent-tools).

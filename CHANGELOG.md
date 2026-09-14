@@ -9,6 +9,20 @@ change invalidates (see `AGENTS.md`).
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [1.0.1] - 2026-09-14
+
+### Added
+
+- Added the high-level `advisor_consult` worker tool with synchronous-by-default autonomous routing,
+  explicit `agentUse` policy (`off`, `explicit`, `proactive`), cancellation/progress propagation,
+  bounded asynchronous semantics, and a process-local adviser health circuit breaker.
+- Added consultation completion-sentinel and provenance integrity handling: incomplete or ambiguous
+  responses remain inspectable but never expose actionable action items.
+- Added whole-transaction browser watchdogs, abortable admission, generation barriers, emergency recovery,
+  and poisoned-runtime fail-fast behavior for hung or unrecoverable browser ownership.
+
 ### Fixed
 
 - Addressed the Round 2 audit: capability verification is now an authoritative production dispatch gate,
@@ -44,7 +58,7 @@ change invalidates (see `AGENTS.md`).
 - Package version bumped to `1.0.0` for official V1 release.
 - `test/m10-release-validation.test.ts` provides release validation test suite covering live Pi installation, end-to-end slash command dispatch, agent tool execution, configuration parsing, worker model independence, and platform path isolation.
 - Real `pi` CLI verification: tested `pi install` and `pi list` against isolated agent directories on Pi 0.85.1.
-- Public-facing documentation suite expanded and published to GitHub Pages (`https://saehwanpark.github.io/pi-with-chatgpt/`) with dedicated guides: `getting-started.md`, `user-guide.md` (11 slash commands), `agent-tools.md` (8 worker tools), `configuration.md`, `drift-and-disposition.md`, `troubleshooting.md`, `architecture-and-safety.md` (16 safety invariants), and `_config.yml`.
+- Public-facing documentation suite expanded and published to GitHub Pages (`https://saehwanpark.github.io/pi-with-chatgpt/`) with dedicated guides: `getting-started.md`, `user-guide.md` (11 slash commands), `agent-tools.md` (8 worker tools at the M8 baseline; 9 in the current release), `configuration.md`, `drift-and-disposition.md`, `troubleshooting.md`, `architecture-and-safety.md` (16 safety invariants), and `_config.yml`.
 - `docs/TROUBLESHOOTING.md` / `docs/troubleshooting.md` enriched with FAQs, diagnostic procedures, and navigation headers.
 - `README.md` refactored into a slim, thin, concise portal focusing on the core value proposition, 30-second quickstart, and direct links to GitHub Pages.
 - Verified all 19 criteria of the V1 Definition of Done across the runtime.

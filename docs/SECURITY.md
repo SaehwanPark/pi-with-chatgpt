@@ -112,7 +112,8 @@ named in a table.
   to ask "has the person finished?" is not automating the challenge and must stay possible — latching the gate
   as a blanket refusal would deadlock manual login, because opening the window is itself a `signed-out`
   observation. Only the launch-retry circuit breaker refuses `ensureReady`, and it trips on a proven transport
-  failure rather than on a page the human may still be fixing.
+  failure rather than on a page the human may still be fixing. The separate engine health circuit only
+  short-circuits repeated browser/provider transport failures; it never retries a human gate.
 
 - **Diagnostics refuse to capture a login screen.** Screenshots are written only for surface states past
   login; DOM dumps redact credential-shaped attribute values; everything is `0600` inside the git-ignored
@@ -151,6 +152,14 @@ identifiers and ChatGPT credentials are absent from job records; internal delive
 and conversation identifiers, and paths must also stay out of worker-facing output. All stored text
 passes the existing credential scan. Raw filesystem exceptions are replaced with fixed storage codes.
 The store refuses managed directory/file symlinks and never submits, wakes, executes, or publishes.
+
+The response envelope records result validity separately from transport job state. `protocol/response.ts`
+requires both the anchored SHA and the consultation-specific completion sentinel; missing, malformed, or
+mismatched completion proof is retained only as diagnostic evidence, and `ui/worker-facing.ts` suppresses
+its action items. A timed-out browser transaction invalidates its runtime generation before recovery; if
+emergency closure cannot be proven, the runtime is `poisoned` and later calls fail fast rather than
+sharing a stale browser owner. Repeated qualifying transport failures also trip a process-local circuit
+breaker; it never treats human verification or provenance ambiguity as a reason to retry automatically.
 
 ## Prompt injection posture
 

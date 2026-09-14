@@ -3,7 +3,7 @@
  *
  * Verifies:
  * 1. Live Pi Integration: Pi package metadata, extension activation, slash command registration, tool registration.
- * 2. End-to-End Agent Tools: Execution of all 8 tools with opacity and invariant containment.
+ * 2. End-to-End Agent Tools: Execution of all 9 tools with opacity and invariant containment.
  * 3. End-to-End Slash Commands: Execution of all 11 slash commands with TUI formatting and error handling.
  * 4. Configuration Matrix: Strict schema validation, sensible defaults, and environment/file overrides.
  * 5. Worker Independence Matrix: Worker provider independence (OpenAI, local Qwen/Ollama, Anthropic).
@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -132,8 +132,15 @@ function makeMockEngine(ledger?: ConsultationLedger): ConsultationEngine {
 }
 
 describe("Milestone 10: Release Validation & Pi Integration", () => {
+  describe("0. Release metadata", () => {
+    it("publishes the 1.0.1 package metadata", () => {
+      const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { version?: unknown };
+      expect(packageJson.version).toBe("1.0.1");
+    });
+  });
+
   describe("1. Live Pi Integration & Activation", () => {
-    it("activates cleanly against Pi API registering 11 commands and 8 tools", () => {
+    it("activates cleanly against Pi API registering 11 commands and 9 tools", () => {
       const registeredCommands = new Map<string, unknown>();
       const registeredTools = new Map<string, unknown>();
       const mockPi = {
@@ -148,7 +155,7 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
 
       const activation = defaultActivation(mockPi);
       expect(registeredCommands.size).toBe(11);
-      expect(registeredTools.size).toBe(8);
+      expect(registeredTools.size).toBe(9);
       expect(activation.config.dependencyDefault).toBe("advisory");
       expect(activation.config.autoConsult.enabled).toBe(false);
 
@@ -172,6 +179,7 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
 
       // Verify tool names
       const expectedTools = [
+        "advisor_consult",
         "advisor_preflight",
         "advisor_submit",
         "advisor_read",
@@ -217,7 +225,7 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
   });
 
   describe("2. End-to-End Agent Tools Execution (INV-01, INV-12, INV-13)", () => {
-    it("executes all 8 agent tools under simulated agent environment", async () => {
+    it("executes all 9 agent tools under simulated agent environment", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "pwc-m10-tools-"));
       const layout = adviserStateLayout(tempDir);
       const ledger = new ConsultationLedger({ layout });
@@ -245,7 +253,18 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
       expect(preflightRes.content[0]!.text).toContain("Preflight");
       expect(preflightRes.details).toBeDefined();
 
-      // 2. advisor_submit
+      // 2. advisor_consult
+      const consultTool = toolMap.get("advisor_consult")!;
+      const consultRes = await consultTool.execute(
+        "call-consult",
+        { kind: "plan", goal: "Review the release plan" },
+        undefined,
+        undefined,
+        mockCtx,
+      );
+      expect(consultRes.content[0]!.text).toContain("submitted and recorded");
+
+      // 3. advisor_submit
       const submitTool = toolMap.get("advisor_submit")!;
       const submitRes = await submitTool.execute(
         "call-2",
@@ -263,20 +282,20 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
       expect(submitDetails.consultationId).toBeDefined();
       const consultationId = submitDetails.consultationId;
 
-      // 3. advisor_read
+      // 4. advisor_read
       const readTool = toolMap.get("advisor_read")!;
       const readRes = await readTool.execute("call-3", { consultationId, cwd: tempDir }, undefined, undefined, mockCtx);
       expect(readRes.content[0]!.text).toContain("Advisory for review");
       const readDetails = readRes.details as { consultationId: string };
       expect(readDetails.consultationId).toBe(consultationId);
 
-      // 4. advisor_status
+      // 5. advisor_status
       const statusTool = toolMap.get("advisor_status")!;
       const statusRes = await statusTool.execute("call-4", { consultationId, cwd: tempDir }, undefined, undefined, mockCtx);
       expect(statusRes.content[0]!.text).toContain("drift=current");
       expect(statusRes.details).toBeDefined();
 
-      // 5. advisor_disposition
+      // 6. advisor_disposition
       const dispTool = toolMap.get("advisor_disposition")!;
       const dispRes = await dispTool.execute(
         "call-5",
@@ -292,7 +311,7 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
       );
       expect(dispRes.content[0]!.text).toContain("Action item A1 updated to implemented");
 
-      // 6. advisor_followup
+      // 7. advisor_followup
       const followupTool = toolMap.get("advisor_followup")!;
       const followupRes = await followupTool.execute(
         "call-6",
@@ -307,12 +326,12 @@ describe("Milestone 10: Release Validation & Pi Integration", () => {
       );
       expect(followupRes.content[0]!.text).toContain("completed for");
 
-      // 7. advisor_cancel
+      // 8. advisor_cancel
       const cancelTool = toolMap.get("advisor_cancel")!;
       const cancelRes = await cancelTool.execute("call-7", { consultationId, cwd: tempDir }, undefined, undefined, mockCtx);
       expect(cancelRes.content[0]!.text).toContain("cancelled.");
 
-      // 8. advisor_auth
+      // 9. advisor_auth
       const authTool = toolMap.get("advisor_auth")!;
       const authRes = await authTool.execute("call-8", { cwd: tempDir }, undefined, undefined, mockCtx);
       expect(authRes.content[0]!.text).toContain("Adviser authentication:");

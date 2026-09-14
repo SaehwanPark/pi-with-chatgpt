@@ -15,7 +15,11 @@
 import type { AdviserProjectSurface, AdviserBrowserRuntime, ConsultationOutcome } from "../browser/runtime-types.js";
 import { DEFAULT_MODEL_PREFERENCE, resolveModelPreference } from "../browser/model-selection.js";
 import type { ConsultationCapabilityGate } from "../browser/consultation-capability.js";
-import { createBrowserTransactionScheduler, type BrowserTransactionScheduler } from "../browser/transaction.js";
+import {
+  BrowserTransactionError,
+  createBrowserTransactionScheduler,
+  type BrowserTransactionScheduler,
+} from "../browser/transaction.js";
 import type { AdviserStateLayout } from "../config/state-layout.js";
 import { assertCredentialFreeValue } from "../ledger/record.js";
 import { redactSensitiveText } from "../protocol/masking.js";
@@ -27,6 +31,7 @@ import type { FullCommitSha } from "../protocol/sha.js";
 import { parseAdviserResponse } from "../protocol/response.js";
 import { ConsultationLedger } from "../ledger/ledger.js";
 import { buildProjectInstructions } from "../chatgpt/project-instructions.js";
+import { AdviserCircuitOpenError, AdviserHealthCircuit } from "./health.js";
 import { ensureProjectForRepository, type EnsureProjectResult } from "../chatgpt/project-mapping.js";
 import { ensureConversationForTask, type EnsureConversationResult } from "../chatgpt/conversation-recovery.js";
 import { conversationKeyForTask, type ChatGptConversationKey, type ConsultationKind } from "../chatgpt/scope.js";
@@ -44,6 +49,24 @@ import {
   type JobRecord,
   type JobResultStatus,
 } from "./record.js";
+
+export type ConsultationProgressPhase =
+  | "preflight"
+  | "waiting-for-browser"
+  | "browser-ready"
+  | "resolving-project"
+  | "resolving-conversation"
+  | "selecting-model"
+  | "submitted"
+  | "generating"
+  | "recovering"
+  | "completed"
+  | "failed";
+
+export interface ConsultationProgress {
+  readonly phase: ConsultationProgressPhase;
+  readonly message: string;
+}
 
 export interface EngineConsultationRequest {
   readonly anchor: ConsultationAnchor;
@@ -66,6 +89,8 @@ export interface EngineConsultationRequest {
   readonly modelPreference?: readonly string[];
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  /** Best-effort worker progress; callback failures never affect job correctness. */
+  readonly onProgress?: (event: ConsultationProgress) => void;
 }
 
 export type EngineConsultationOutcome =
@@ -98,6 +123,11 @@ export interface WakeUpNotification {
 
 export type WakeUpListener = (notification: WakeUpNotification) => void;
 
+interface ExecutionControl {
+  readonly abortController: AbortController;
+  deadlineExpired: boolean;
+}
+
 export interface ConsultationEngineDependencies {
   readonly layout: AdviserStateLayout;
   readonly store: ConsultationJobStore;
@@ -112,6 +142,10 @@ export interface ConsultationEngineDependencies {
   readonly browserTransaction?: BrowserTransactionScheduler;
   /** Production dispatch preflight. Every engine must carry the authoritative fail-closed gate. */
   readonly capabilityGate: ConsultationCapabilityGate;
+  /** Internal recovery allowance added to the generation timeout for navigation/persistence overhead. */
+  readonly transactionRecoveryAllowanceMs?: number;
+  /** Process-local health state shared by production engines that share one browser runtime. */
+  readonly healthCircuit?: AdviserHealthCircuit;
 }
 
 /**
@@ -120,7 +154,8 @@ export interface ConsultationEngineDependencies {
  * the browser transaction serial until the runtime grows a conversation-scoped page/atomic operation.
  */
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
-const DEFAULT_BROWSER_TRANSACTION = createBrowserTransactionScheduler();
+const DEFAULT_TRANSACTION_RECOVERY_ALLOWANCE_MS = 60_000;
+const DEFAULT_ENGINE_TURN_TIMEOUT_MS = 180_000;
 
 export class ConsultationEngine {
   readonly #layout: AdviserStateLayout;
@@ -134,6 +169,8 @@ export class ConsultationEngine {
   readonly #browserTransaction: BrowserTransactionScheduler;
   readonly #now: () => Date;
   readonly #capabilityGate: ConsultationCapabilityGate;
+  readonly #transactionRecoveryAllowanceMs: number;
+  readonly #healthCircuit: AdviserHealthCircuit;
 
   /** Keyed mutex per conversation thread so turns to the same conversation run in sequence (INV-09). */
   readonly #conversationQueues = new Map<ChatGptConversationKey, Promise<void>>();
@@ -162,11 +199,13 @@ export class ConsultationEngine {
       1,
       Math.min(dependencies.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS, DEFAULT_MAX_CONCURRENT_JOBS),
     );
-    // Even direct engine callers share the process-wide default; production composition may inject the
-    // activation-owned scheduler so its capability gate and login port use the exact same queue.
-    this.#browserTransaction = dependencies.browserTransaction ?? DEFAULT_BROWSER_TRANSACTION;
+    // Production composition injects the activation-owned scheduler so its capability gate and login port
+    // use the exact same queue. Direct test/embedded callers get an isolated scheduler.
+    this.#browserTransaction = dependencies.browserTransaction ?? createBrowserTransactionScheduler();
     this.#now = dependencies.now ?? (() => new Date());
     this.#capabilityGate = dependencies.capabilityGate;
+    this.#transactionRecoveryAllowanceMs = dependencies.transactionRecoveryAllowanceMs ?? DEFAULT_TRANSACTION_RECOVERY_ALLOWANCE_MS;
+    this.#healthCircuit = dependencies.healthCircuit ?? new AdviserHealthCircuit();
     this.#ledger =
       dependencies.ledger ??
       new ConsultationLedger({
@@ -210,6 +249,18 @@ export class ConsultationEngine {
     const dependency = request.dependency ?? "advisory";
     const mode = "sync";
     const deliveryKey = resolveDeliveryKey(request);
+    if (request.signal?.aborted) {
+      return { ok: false, failure: "cancelled", blocked: false, explanation: "Consultation cancelled before dispatch." };
+    }
+    const admission = this.#healthCircuit.admit();
+    if (!admission.allowed) {
+      return {
+        ok: false,
+        failure: "circuit_open",
+        blocked: dependency === "required",
+        explanation: `ChatGPT adviser temporarily unavailable; retry after ${Math.ceil((admission.retryAfterMs ?? 0) / 1000)} seconds.`,
+      };
+    }
 
     // 1. Create durable queued job before touching the browser (INV-15).
     let record: JobRecord;
@@ -225,6 +276,7 @@ export class ConsultationEngine {
         mode,
       });
     } catch {
+      this.#healthCircuit.releaseProbe();
       return {
         ok: false,
         failure: "browser",
@@ -252,9 +304,14 @@ export class ConsultationEngine {
     const dependency = request.dependency ?? "advisory";
     const mode = "async";
     const deliveryKey = resolveDeliveryKey(request);
+    if (request.signal?.aborted) throw new Error("Consultation cancelled before asynchronous dispatch.");
+    const admission = this.#healthCircuit.admit();
+    if (!admission.allowed) throw new AdviserCircuitOpenError(admission.retryAfterMs ?? 0);
 
     // 1. Create durable queued job before detached dispatch (INV-15).
-    const record = await this.#store.create({
+    let record: JobRecord;
+    try {
+      record = await this.#store.create({
       anchor: request.anchor,
       branch: request.branch,
       taskId: request.taskId,
@@ -263,13 +320,19 @@ export class ConsultationEngine {
       kind: request.kind,
       dependency,
       mode,
-    });
+      });
+    } catch (error) {
+      this.#healthCircuit.releaseProbe();
+      throw error;
+    }
 
     const address = jobAddress(record);
 
-    // 2. Launch background execution detached from caller await. Keep the promise indexed so a cancel
-    // request can wait for the runner to observe the abort and release its lock/slot before returning.
-    const execution = this.#executeJob(record, address, request);
+    // 2. Launch background execution detached from caller await. Once the queued job is durable, the
+    // caller's tool lifecycle no longer owns it: an abort after this method returns is handled by the
+    // explicit advisor_cancel path rather than cancelling a consultation that was already dispatched.
+    const { signal: _callerSignal, ...detachedRequest } = request;
+    const execution = this.#executeJob(record, address, detachedRequest);
     this.#inFlightExecutions.set(address.consultationId, execution);
     void execution.then(
       (outcome) => {
@@ -388,6 +451,7 @@ export class ConsultationEngine {
   ): Promise<EngineConsultationOutcome> {
     const dependency = record.dependency;
     const abortController = new AbortController();
+    const control: ExecutionControl = { abortController, deadlineExpired: false };
     this.#inFlightAbortControllers.set(address.consultationId, abortController);
 
     // Chain caller-provided signal if present.
@@ -401,6 +465,7 @@ export class ConsultationEngine {
 
     let concurrencySlotAcquired = false;
     try {
+      this.#emitProgress(request, "waiting-for-browser", "Waiting for the adviser browser...");
       // Acquire global concurrency slot before starting browser work. Cancellation while waiting
       // must settle as cancelled, not as an unrelated browser failure.
       try {
@@ -408,36 +473,34 @@ export class ConsultationEngine {
         concurrencySlotAcquired = true;
       } catch (error) {
         if (!abortController.signal.aborted) throw error;
-        return await this.#cancelOutcome(address, dependency);
+        return await this.#cancelOutcome(address, dependency, control);
       }
       if (abortController.signal.aborted) {
-        return await this.#cancelOutcome(address, dependency);
+        return await this.#cancelOutcome(address, dependency, control);
       }
+      this.#emitProgress(request, "browser-ready", "Adviser browser ready.");
 
       // A driver lock only protects one DOM call. Hold the process-wide transaction lock over the entire
       // project/conversation selection, model resolution, send, and receipt sequence so another CWD's
       // engine cannot navigate the shared tracked tab between inspection and submission.
-      return await this.#browserTransaction.runExclusive(async () => {
+      try {
+        return await this.#browserTransaction.runExclusive(async () => {
         if (abortController.signal.aborted) {
-          return await this.#cancelOutcome(address, dependency);
+          return await this.#cancelOutcome(address, dependency, control);
         }
 
         // Capability probing navigates the same tracked tab as the rest of this sequence. Keeping the
         // final gate inside this transaction closes the gap between a preflight result and dispatch, while
         // still allowing commands/tools to run an earlier user-facing preflight.
+        this.#emitProgress(request, "preflight", "Verifying adviser prerequisites...");
         const capability = await this.#ensureCapability(request);
         if (!capability.ok) {
           const failedRecord = await this.#failJob(address, "capability");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "capability",
-            blocked: dependency === "required",
-            explanation: capability.explanation,
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "capability", capability.explanation);
         }
 
         // 1. Ensure ChatGPT Project exists and is bound to this repository (INV-08).
+        this.#emitProgress(request, "resolving-project", "Resolving the adviser Project...");
         const instructions = buildProjectInstructions({ repository: request.anchor.repository });
         const projectResult: EnsureProjectResult = await ensureProjectForRepository({
           layout: this.#layout,
@@ -451,18 +514,13 @@ export class ConsultationEngine {
       if (!projectResult.ok) {
         const failure = mapProjectFailure(projectResult.reason);
         const failedRecord = await this.#failJob(address, failure);
-        return {
-          ok: false,
-          record: failedRecord,
-          failure,
-          blocked: dependency === "required",
-          explanation: projectResult.explanation,
-        };
+        return await this.#terminalOutcome(failedRecord, dependency, failure, projectResult.explanation);
       }
 
       const projectId = projectResult.mapping.projectId;
 
       // 2. Ensure task conversation exists inside this Project (INV-09).
+      this.#emitProgress(request, "resolving-conversation", "Resolving the adviser conversation...");
       const conversationScope = {
         repository: request.anchor.repository,
         taskId: request.taskId,
@@ -483,13 +541,7 @@ export class ConsultationEngine {
       if (!conversationResult.ok) {
         const failure = mapConversationFailure(conversationResult.reason);
         const failedRecord = await this.#failJob(address, failure);
-        return {
-          ok: false,
-          record: failedRecord,
-          failure,
-          blocked: dependency === "required",
-          explanation: conversationResult.explanation,
-        };
+        return await this.#terminalOutcome(failedRecord, dependency, failure, conversationResult.explanation);
       }
 
       const conversationId = conversationResult.record.conversationId;
@@ -497,7 +549,7 @@ export class ConsultationEngine {
       // 3. Serialize execution within the same conversation key (INV-09).
       return await this.#runInConversationQueue(conversationKey, async () => {
         if (abortController.signal.aborted) {
-          return await this.#cancelOutcome(address, dependency);
+          return await this.#cancelOutcome(address, dependency, control);
         }
 
         // 4. Claim job: transitions queued -> running with Project/conversation and HEAD binding.
@@ -529,44 +581,29 @@ export class ConsultationEngine {
         if (inspect.state !== "live") {
           if (inspect.state === "gone") {
             const failedRecord = await this.#failJob(address, "project");
-            return {
-              ok: false,
-              record: failedRecord,
-              failure: "project",
-              blocked: dependency === "required",
-              explanation: "Conversation was deleted or not found.",
-            };
+            return await this.#terminalOutcome(failedRecord, dependency, "project", "Conversation was deleted or not found.");
           }
           if (inspect.state === "unknown" && inspect.reason === "needs-human") {
             const failedRecord = await this.#failJob(address, "challenge");
-            return {
-              ok: false,
-              record: failedRecord,
-              failure: "challenge",
-              blocked: dependency === "required",
-              explanation: "Human verification required on ChatGPT.",
-            };
+            return await this.#terminalOutcome(failedRecord, dependency, "challenge", "Human verification required on ChatGPT.");
           }
         }
 
         // 6. Submit brief and await turn on browser runtime.
         if (abortController.signal.aborted) {
-          return await this.#cancelOutcome(address, dependency);
+          return await this.#cancelOutcome(address, dependency, control);
         }
 
+        this.#emitProgress(request, "selecting-model", "Selecting the requested adviser model...");
         const modelSelection = await this.#resolveModel(request);
         if (!modelSelection.ok) {
           const failedRecord = await this.#failJob(address, "capability");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "capability",
-            blocked: dependency === "required",
-            explanation: modelSelection.explanation,
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "capability", modelSelection.explanation);
         }
 
         let outcome: ConsultationOutcome;
+        this.#emitProgress(request, "submitted", "ChatGPT consultation submitted.");
+        this.#emitProgress(request, "generating", "ChatGPT is generating advice.");
         try {
           outcome = await this.#runtime.consult({
             consultationId: record.consultationId,
@@ -578,17 +615,11 @@ export class ConsultationEngine {
           });
         } catch {
           const failedRecord = await this.#failJob(address, "browser");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "browser",
-            blocked: dependency === "required",
-            explanation: "Browser runtime encountered an unexpected error.",
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "browser", "Browser runtime encountered an unexpected error.");
         }
 
         if (abortController.signal.aborted) {
-          return await this.#cancelOutcome(address, dependency);
+          return await this.#cancelOutcome(address, dependency, control);
         }
 
         if (outcome.ok && modelSelection.degraded) {
@@ -601,13 +632,7 @@ export class ConsultationEngine {
         if (!outcome.ok) {
           const failure = mapTurnFailure(outcome.failure);
           const failedRecord = await this.#failJob(address, failure);
-          return {
-            ok: false,
-            record: failedRecord,
-            failure,
-            blocked: dependency === "required",
-            explanation: `Consultation turn failed: ${outcome.failure}`,
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, failure, `Consultation turn failed: ${outcome.failure}`);
         }
 
         // 7. Success: sanitize repository-derived examples before persistence. The adviser may quote
@@ -700,22 +725,37 @@ export class ConsultationEngine {
         const persistedResponse = await this.#store.readPersistedResponse(address);
         if (!persistedResponse) {
           const failedRecord = await this.#failJob(address, "browser");
-          return {
-            ok: false,
-            record: failedRecord,
-            failure: "browser",
-            blocked: dependency === "required",
-            explanation: "Response failed to persist cleanly.",
-          };
+          return await this.#terminalOutcome(failedRecord, dependency, "browser", "Response failed to persist cleanly.");
         }
 
+        this.#healthCircuit.recordSuccess();
+        this.#emitProgress(request, "completed", "ChatGPT adviser response recorded.");
         return {
           ok: true,
           record: completedRecord,
           response: persistedResponse,
         };
       });
-      });
+        }, {
+          signal: abortController.signal,
+          timeoutMs: (request.timeoutMs ?? DEFAULT_ENGINE_TURN_TIMEOUT_MS) + this.#transactionRecoveryAllowanceMs,
+          onTimeout: async () => {
+            this.#emitProgress(request, "recovering", "Adviser browser became unresponsive; attempting recovery...");
+            control.deadlineExpired = true;
+            abortController.abort();
+            if (this.#runtime.emergencyRecover === undefined) return false;
+            const result = await this.#runtime.emergencyRecover("transaction-timeout");
+            return result.ok && result.reusable;
+          },
+        });
+      } catch (error) {
+        if (error instanceof BrowserTransactionError) {
+          if (error.code === "cancelled") return await this.#cancelOutcome(address, dependency, control);
+          const failure: JobFailureCode = error.code === "browser-poisoned" ? "browser_poisoned" : "transaction_timeout";
+          return await this.#failureOutcome(address, dependency, failure, `Consultation transaction ${error.code}.`);
+        }
+        throw error;
+      }
     } catch {
       // Any unexpected project/conversation/receipt exception still gets a durable terminal
       // outcome. Do not expose provider or filesystem exception text to the worker.
@@ -745,6 +785,15 @@ export class ConsultationEngine {
     }
   }
 
+  #emitProgress(request: EngineConsultationRequest, phase: ConsultationProgressPhase, message: string): void {
+    if (request.onProgress === undefined) return;
+    try {
+      request.onProgress({ phase, message });
+    } catch {
+      // Progress is observational only. A host callback must never alter consultation correctness.
+    }
+  }
+
   /**
    * The engine is the last production boundary before a job is persisted/dispatched. Managers may run
    * preflight for user feedback, but they cannot bypass this gate.
@@ -768,6 +817,14 @@ export class ConsultationEngine {
 
   async #failJob(address: JobAddress, failure: JobFailureCode): Promise<JobRecord> {
     const failed = await this.#store.fail(address, failure);
+    // A late failure can lose the terminal race to completion or cancellation. Do not penalize the health
+    // circuit or release a probe on behalf of a terminal winner that this failure did not commit.
+    if (failed.state === "failed") {
+      if (isTransportFailure(failure)) this.#healthCircuit.recordTransportFailure();
+      else this.#healthCircuit.releaseProbe();
+    } else if (failed.state === "cancelled") {
+      this.#healthCircuit.releaseProbe();
+    }
     await this.#recordTerminalLedger(failed);
     return failed;
   }
@@ -777,10 +834,50 @@ export class ConsultationEngine {
     // A completion that won the terminal race already has its detailed ledger entry. Recording a
     // cancellation projection here would append a duplicate, metadata-poor completed entry.
     if (cancelled.state !== "completed") await this.#recordTerminalLedger(cancelled);
+    this.#healthCircuit.releaseProbe();
     return cancelled;
   }
 
-  async #cancelOutcome(address: JobAddress, dependency: DependencyMode): Promise<EngineConsultationOutcome> {
+  async #terminalOutcome(
+    record: JobRecord,
+    dependency: DependencyMode,
+    failure: JobFailureCode,
+    explanation?: string,
+  ): Promise<EngineConsultationOutcome> {
+    if (record.state === "completed") {
+      const response = await this.#store.readPersistedResponse(jobAddress(record)).catch(() => undefined);
+      if (response !== undefined) return { ok: true, record, response };
+    }
+    if (record.state === "cancelled") {
+      return { ok: false, record, failure: "cancelled", blocked: false, ...(explanation === undefined ? {} : { explanation }) };
+    }
+    return {
+      ok: false,
+      record,
+      failure: record.state === "failed" ? record.failure ?? failure : failure,
+      blocked: dependency === "required",
+      ...(explanation === undefined ? {} : { explanation }),
+    };
+  }
+
+  async #failureOutcome(
+    address: JobAddress,
+    dependency: DependencyMode,
+    failure: JobFailureCode,
+    explanation: string,
+  ): Promise<EngineConsultationOutcome> {
+    const record = await this.#failJob(address, failure);
+    return await this.#terminalOutcome(record, dependency, failure, explanation);
+  }
+
+  async #cancelOutcome(
+    address: JobAddress,
+    dependency: DependencyMode,
+    control?: ExecutionControl,
+  ): Promise<EngineConsultationOutcome> {
+    if (control?.deadlineExpired) {
+      return await this.#failureOutcome(address, dependency, "transaction_timeout", "Consultation transaction deadline exceeded.");
+    }
     const record = await this.#cancelJob(address);
     // If completion won the terminal race, preserve that durable result rather than reporting a
     // cancellation that did not take effect.
@@ -944,6 +1041,11 @@ function mapConversationFailure(reason: string): JobFailureCode {
   }
 }
 
+function isTransportFailure(failure: JobFailureCode): boolean {
+  return failure === "browser" || failure === "browser_unresponsive" || failure === "browser_poisoned" ||
+    failure === "timeout" || failure === "transaction_timeout" || failure === "response_unreadable" || failure === "quota";
+}
+
 function mapTurnFailure(failure: string): JobFailureCode {
   switch (failure) {
     case "needs-human":
@@ -952,13 +1054,23 @@ function mapTurnFailure(failure: string): JobFailureCode {
       return "capability";
     case "generation-timeout":
       return "timeout";
+    case "transaction-timeout":
+      return "transaction_timeout";
+    case "browser-unresponsive":
+      return "browser_unresponsive";
+    case "browser-poisoned":
+      return "browser_poisoned";
     case "browser-lost":
       return "browser";
     case "provider-error":
       return "quota";
+    case "cancelled":
+      return "cancelled";
     case "composer-missing":
     case "response-unreadable":
-      return "browser";
+      return "response_unreadable";
+    case "incomplete-response":
+      return "incomplete_response";
     default:
       return "browser";
   }

@@ -118,3 +118,13 @@ All requests, responses, and action items (`A1`, `A2`, …) persist in an append
 ### 16. INV-16: Privacy & Local Persistence
 **No automatic public posting.**
 Consultation advice and worker dispositions remain on your local disk. The extension never automatically publishes comments to GitHub issues, PRs, or public channels without explicit user action.
+
+---
+
+## Resilience and response-integrity guarantees
+
+- **Whole-transaction deadlines:** The browser watchdog covers capability checks, Project/conversation selection, model selection, submission, generation, receipt, and persistence—not only token polling.
+- **Safe recovery:** Cancellation resets a touched turn. A timed-out transaction invalidates the browser generation and attempts emergency context closure outside the normal DOM queue. If closure cannot be proven, the runtime enters `poisoned` and future calls fail fast rather than racing a stale tab.
+- **Completion provenance:** A response is actionable only when its reviewed commit and consultation ID match the request and its final non-empty line is `consultation_complete: <consultation-id>`. Missing or ambiguous proof is retained only as non-actionable evidence.
+- **Process-local circuit breaker:** Repeated browser/provider transport failures open a short cooldown circuit. Human verification, capability, provenance, and cancellation outcomes require user/caller action and do not trigger automatic retries.
+- **Async honesty:** Asynchronous jobs persist durable results and emit matching-session UI notifications. They do not inject adviser text into or automatically resume a worker turn.

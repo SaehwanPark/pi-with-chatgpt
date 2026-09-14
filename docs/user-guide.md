@@ -210,9 +210,15 @@ ChatGPT session; without a fresh browser probe, readiness is `unverified`.
 
 ---
 
+## Autonomous Worker Consultations
+
+Pi workers can call the high-level `advisor_consult` tool when the user or trusted project instructions explicitly ask for ChatGPT/adviser help. It accepts a consultation `kind` and `goal`, performs the normal checkpoint/auth/capability checks, and returns a worker-facing advisory. The tool defaults to synchronous behavior so the worker can use the answer for its next decision. `agentUse.mode` (`off`, `explicit`, or `proactive`) controls whether autonomous use is allowed; the extension does not classify natural-language prompts itself.
+
 ## Pro-Tip: Synchronous vs Asynchronous Workflow
 
 You can set your default preference in configuration or override it per request:
 
-- **Need advice right now?** By default (`defaultMode: "sync"`), Pi pauses and waits up to `syncTimeoutMs` (default 4 minutes) for the adviser's turn to finish.
-- **Want to keep hacking?** Configure `"defaultMode": "async"`. Dispatched consultations run in the background. Pi immediately returns to your prompt and shows a session-scoped completion notification when the adviser finishes. The notification does not resume or inject a message into the worker model; use `/advisor-status <id>` or `/advisor-read <id>` to retrieve the result.
+- **Need advice right now?** By default (`defaultMode: "sync"`), Pi waits up to `syncTimeoutMs` (default 4 minutes), plus a bounded internal recovery allowance for browser navigation and persistence.
+- **Want to keep hacking?** Configure `"defaultMode": "async"` for slash commands and low-level submission, or pass `mode: "async"` explicitly to `advisor_consult`. The job is durable and Pi shows a matching-session completion notification when it finishes. The notification does not resume or inject a message into the worker model; use `/advisor-status <id>` or `/advisor-read <id>` to retrieve the result.
+
+If ChatGPT output lacks its consultation-specific completion sentinel or has mismatched provenance, it is marked incomplete/ambiguous and is not actionable until you explicitly retry or follow up.

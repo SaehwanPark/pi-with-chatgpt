@@ -33,7 +33,9 @@ export type RuntimePhase =
   /** A shutdown is in flight. */
   | "stopping"
   /** Startup failed hard enough that retrying without human help is pointless. */
-  | "failed";
+  | "failed"
+  /** Recovery could not prove the old browser owner was gone; reuse is forbidden. */
+  | "poisoned";
 
 export type RuntimeRejection =
   /** No system Chrome (or the configured channel) was found. */
@@ -47,7 +49,9 @@ export type RuntimeRejection =
   /** The page never reached a state the runtime recognised. */
   | "surface-unrecognised"
   /** A required interaction was blocked by a login or challenge page. */
-  | "needs-human";
+  | "needs-human"
+  /** Emergency recovery could not prove the tracked browser was safe to reuse. */
+  | "browser-poisoned";
 
 /** Why the runtime is asking for a browser: affects how eagerly it recovers. */
 export type RuntimePurpose = "capability-probe" | "consultation" | "manual-login" | "model-discovery";
@@ -105,8 +109,12 @@ export type ConsultationOutcome =
 export type ConsultationFailure =
   /** The composer or send control was never found: the UI changed or the page is not ChatGPT. */
   | "composer-missing"
-  /** No assistant turn completed within the bounded wait. */
+  /** No assistant turn completed within the bounded generation wait. */
   | "generation-timeout"
+  /** The complete browser transaction exceeded its outer deadline. */
+  | "transaction-timeout"
+  /** Browser heartbeat probes stopped settling while the page operation was active. */
+  | "browser-unresponsive"
   /** The page showed a provider-side error (quota, server error, model unavailable). */
   | "provider-error"
   /** Login or human verification is required before the question can be asked. */
@@ -115,8 +123,14 @@ export type ConsultationFailure =
   | "model-unavailable"
   /** The browser died mid-turn; the caller may retry after recovery. */
   | "browser-lost"
+  /** Emergency recovery could not prove the tracked browser safe to reuse. */
+  | "browser-poisoned"
   /** The response was produced but could not be read reliably. */
-  | "response-unreadable";
+  | "response-unreadable"
+  /** The page stopped before the consultation-specific completion marker. */
+  | "incomplete-response"
+  /** The owning Pi tool or job was cancelled. */
+  | "cancelled";
 
 /** Structured snapshot for the status surface. Never contains page content. */
 export interface RuntimeStatus {
@@ -197,6 +211,21 @@ export interface AdviserPageDriver {
   askAndAwaitTurn(request: ConsultationRequest): Promise<ConsultationOutcome>;
   /** Flush and close everything owned by this driver. */
   shutdown(): Promise<void>;
+  /**
+   * Close the tracked context without waiting for the normal DOM-operation queue. This is used only by
+   * the bounded transaction watchdog; a normal `resetTab()` would deadlock behind the operation it is
+   * trying to recover.
+   */
+  emergencyClose?(): Promise<void>;
+}
+
+export type RuntimeRecoveryReason = "transaction-timeout" | "browser-unresponsive" | "cancelled";
+
+export interface RuntimeRecoveryResult {
+  readonly ok: boolean;
+  /** True only when the previous context was proven closed and a fresh one may be launched. */
+  readonly reusable: boolean;
+  readonly generation: number;
 }
 
 /** The object the rest of the extension holds. */
@@ -206,6 +235,8 @@ export interface AdviserBrowserRuntime {
   probeSurface(): Promise<SurfaceObservation>;
   discoverModels(): Promise<{ readonly ok: boolean; readonly models?: readonly ModelOption[]; readonly rejection?: RuntimeRejection }>;
   consult(request: ConsultationRequest): Promise<ConsultationOutcome>;
+  /** Bounded, out-of-band recovery used after an outer transaction deadline. */
+  emergencyRecover?(reason: RuntimeRecoveryReason): Promise<RuntimeRecoveryResult>;
   shutdown(): Promise<void>;
 }
 

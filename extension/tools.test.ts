@@ -45,13 +45,14 @@ function makeTestDirectory(prefix = "pwc-tools-"): string {
 }
 
 describe("extension/tools (M8)", () => {
-  it("defines all 8 agent-facing tools", () => {
+  it("defines all 9 agent-facing tools", () => {
     const manager = new ToolManager({ github: mockGitHub });
     const tools = manager.getTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       "advisor_auth",
       "advisor_cancel",
+      "advisor_consult",
       "advisor_disposition",
       "advisor_followup",
       "advisor_preflight",
@@ -59,6 +60,66 @@ describe("extension/tools (M8)", () => {
       "advisor_status",
       "advisor_submit",
     ]);
+  });
+
+  it("advertises explicit adviser routing guidance on advisor_consult", () => {
+    const manager = new ToolManager({ github: mockGitHub });
+    const tool = manager.getTools().find((candidate) => candidate.name === "advisor_consult")!;
+    expect(tool.promptSnippet).toContain("Use ChatGPT as an adviser");
+    expect(tool.promptGuidelines).toEqual(expect.arrayContaining([
+      expect.stringContaining("explicitly ask"),
+      expect.stringContaining("Do not consult ChatGPT"),
+    ]));
+  });
+
+  it("defaults advisor_consult to sync and propagates cancellation/progress", async () => {
+    const dir = makeTestDirectory("pwc-tools-consult-");
+    const submitSync = vi.fn().mockResolvedValue({
+      ok: false,
+      failure: "browser",
+      blocked: false,
+      explanation: "unavailable",
+    });
+    const submitAsync = vi.fn();
+    const engine = { submitSync, submitAsync } as unknown as ConsultationEngine;
+    const manager = new ToolManager({ git: makeGit(), github: mockGitHub, engine });
+    const tool = manager.getTools().find((candidate) => candidate.name === "advisor_consult")!;
+    const controller = new AbortController();
+    const updates: unknown[] = [];
+    await tool.execute(
+      "call-consult",
+      { kind: "plan", goal: "Design the scheduler" },
+      controller.signal,
+      (update) => updates.push(update),
+      { cwd: dir, sessionManager: { getSessionId: () => "consult-session" }, isProjectTrusted: () => true },
+    );
+    expect(submitSync).toHaveBeenCalledOnce();
+    expect(submitAsync).not.toHaveBeenCalled();
+    expect(submitSync.mock.calls[0]?.[0]).toMatchObject({ mode: "sync", signal: controller.signal });
+    expect(submitSync.mock.calls[0]?.[0].onProgress).toEqual(expect.any(Function));
+  });
+
+  it("refuses autonomous advisor_consult when agent use is off", async () => {
+    const submitSync = vi.fn();
+    const manager = new ToolManager({
+      config: { ...DEFAULT_CONFIG, agentUse: { mode: "off" } },
+      git: makeGit(),
+      github: mockGitHub,
+      engine: { submitSync, submitAsync: vi.fn() } as unknown as ConsultationEngine,
+    });
+    const context = {
+      cwd: makeTestDirectory("pwc-tools-off-"),
+      isProjectTrusted: () => true,
+      sessionManager: { getSessionId: () => "off-session" },
+    };
+    const tool = manager.getTools().find((candidate) => candidate.name === "advisor_consult")!;
+    const result = await tool.execute("call-off", { kind: "consult", goal: "Should not dispatch" }, undefined, undefined, context);
+    expect(result.details).toMatchObject({ ok: false, failure: "agent-use-off" });
+
+    const submitTool = manager.getTools().find((candidate) => candidate.name === "advisor_submit")!;
+    const submitResult = await submitTool.execute("call-submit-off", { kind: "consult", goal: "Still should not dispatch" }, undefined, undefined, context);
+    expect(submitResult.details).toMatchObject({ ok: false, failure: "agent-use-off" });
+    expect(submitSync).not.toHaveBeenCalled();
   });
 
   it("executes advisor_preflight tool cleanly", async () => {

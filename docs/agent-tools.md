@@ -10,7 +10,7 @@ permalink: /agent-tools/
 
 ---
 
-In addition to user-facing slash commands, `pi-with-chatgpt` registers **8 agent-facing tools** into the Pi environment. These tools allow inexpensive or local Pi worker models (e.g. Qwen 2.5 Coder, Llama 3.3, Claude 3.5 Haiku, GPT-4o-mini) to consult the senior ChatGPT model programmatically during autonomous coding loops.
+In addition to user-facing slash commands, `pi-with-chatgpt` registers **9 agent-facing tools** into the Pi environment. `advisor_consult` is the preferred high-level entry point for normal autonomous use; the remaining tools are lower-level primitives for preflight, lifecycle, authentication, and disposition workflows.
 
 ---
 
@@ -18,18 +18,39 @@ In addition to user-facing slash commands, `pi-with-chatgpt` registers **8 agent
 
 | Tool Name | Purpose | Primary Invariants |
 | --- | --- | --- |
-| [`advisor_preflight`](#1-advisor_preflight) | Verify git anchor, remote reachability, live ChatGPT access/model, GitHub connector, and target repository | INV-03, INV-04, INV-09, INV-10 |
-| [`advisor_submit`](#2-advisor_submit) | Submit new consultation and persist to ledger | INV-01, INV-06, INV-13 |
-| [`advisor_read`](#3-advisor_read) | Fetch full markdown advice and action items | INV-13, INV-15 |
-| [`advisor_status`](#4-advisor_status) | Inspect status, graph drift, and file drift | INV-01, INV-05 |
-| [`advisor_followup`](#5-advisor_followup) | Continue conversation thread with prior context | INV-01, INV-09 |
-| [`advisor_cancel`](#6-advisor_cancel) | Abort in-flight consultation safely | INV-07 |
-| [`advisor_auth`](#7-advisor_auth) | Safe non-leaking credential & profile status | INV-11, INV-12 |
-| [`advisor_disposition`](#8-advisor_disposition) | Record worker disposition with mandatory rationale | INV-01, INV-15 |
+| [`advisor_consult`](#1-advisor_consult) | High-level synchronous-by-default consultation entry point | INV-01, INV-07, INV-13 |
+| [`advisor_preflight`](#2-advisor_preflight) | Verify git anchor, remote reachability, live ChatGPT access/model, GitHub connector, and target repository | INV-03, INV-04, INV-09, INV-10 |
+| [`advisor_submit`](#3-advisor_submit) | Submit new consultation and persist to ledger | INV-01, INV-06, INV-13 |
+| [`advisor_read`](#4-advisor_read) | Fetch full markdown advice and action items | INV-13, INV-15 |
+| [`advisor_status`](#5-advisor_status) | Inspect status, graph drift, and file drift | INV-01, INV-05 |
+| [`advisor_followup`](#6-advisor_followup) | Continue conversation thread with prior context | INV-01, INV-09 |
+| [`advisor_cancel`](#7-advisor_cancel) | Abort in-flight consultation safely | INV-07 |
+| [`advisor_auth`](#8-advisor_auth) | Safe non-leaking credential & profile status | INV-11, INV-12 |
+| [`advisor_disposition`](#9-advisor_disposition) | Record worker disposition with mandatory rationale | INV-01, INV-15 |
 
 ---
 
-## 1. `advisor_preflight`
+## 1. `advisor_consult`
+
+The preferred worker-facing entry point for a normal adviser consultation. It orchestrates checkpoint resolution, trusted-project and session checks, live authentication/capability verification, durable submission, completion/provenance validation, and the worker-facing result. Workers do not need to call `advisor_preflight` first.
+
+### Schema
+- **Parameters**:
+  - `kind` *(string, required)*: `consult`, `plan`, `review`, `audit`, `debug`, or `challenge`.
+  - `goal` *(string, required)*: The question or decision to send to the adviser.
+  - `mode` *(string, optional)*: `sync` (default) or explicit `async`.
+  - `taskId` *(string, optional)*: Logical task label; it is namespaced by the Pi session.
+- **Returns**: A synchronous call returns a compact worker-facing advisory with checkpoint, result status, advice, and actionable items. An asynchronous call returns a consultation ID and queued state; use `advisor_status` and `advisor_read` for the durable result.
+
+### Routing policy
+Use this tool when the user or trusted project instructions explicitly ask for ChatGPT/adviser help, a plan, review, audit, debugging help, or a second opinion. Do not use it when the user explicitly says not to use external advisers. `agentUse.mode` controls whether autonomous submission is allowed (`off`, `explicit`, or `proactive`); with `off`, `advisor_consult`, `advisor_submit`, and `advisor_followup` refuse dispatch while read-only lifecycle tools remain available. The extension does not regex-classify user prompts.
+
+### Completion integrity
+The adviser response must match the anchored full SHA and end with `consultation_complete: <consultation-id>`. Missing or malformed completion proof produces an `incomplete` or `provenance-ambiguous` result, retains only safe diagnostic evidence, and exposes no actionable items.
+
+---
+
+## 2. `advisor_preflight`
 
 Performs a read-only preflight verification of the current git checkpoint and confirms that the commit is reachable on the configured GitHub remote. It then runs the live, fail-closed capability gate: ChatGPT access, the selected adviser model, the exact GitHub connector repository/checkpoint, and target repository availability. The result is dispatchable only when all four capability checks pass and the browser account identity is verified.
 
@@ -71,9 +92,9 @@ Call `advisor_preflight` before committing large changes or dispatching a consul
 
 ---
 
-## 2. `advisor_submit`
+## 3. `advisor_submit`
 
-Submits a new consultation to the senior adviser, anchoring it to the verified commit SHA and logging the request into the local ledger.
+Submits a new consultation to the senior adviser, anchoring it to the verified commit SHA and logging the request into the local ledger. Prefer `advisor_consult` unless a low-level submission primitive is specifically needed.
 
 ### Schema
 - **Parameters**:
@@ -111,9 +132,9 @@ Submits a new consultation to the senior adviser, anchoring it to the verified c
 
 ---
 
-## 3. `advisor_read`
+## 4. `advisor_read`
 
-Reads the complete markdown advice, action items, and metadata for a previously recorded consultation.
+Reads the complete markdown advice, action items, and metadata for a previously recorded consultation. If the result status is `incomplete` or `provenance-ambiguous`, the tool explicitly marks the response unusable and returns no actionable action items.
 
 ### Schema
 - **Parameters**:
@@ -138,9 +159,9 @@ Reads the complete markdown advice, action items, and metadata for a previously 
 
 ---
 
-## 4. `advisor_status`
+## 5. `advisor_status`
 
-Inspects consultation progress and calculates **graph and file drift** between the reviewed commit and current `HEAD`.
+Inspects consultation progress and calculates **graph and file drift** between the reviewed commit and current `HEAD`. Live jobs may be `queued` or `running`; terminal results also expose completion validity such as `complete`, `degraded`, `incomplete`, or `provenance-ambiguous`.
 
 ### Schema
 - **Parameters**:
@@ -170,7 +191,7 @@ Inspects consultation progress and calculates **graph and file drift** between t
 
 ---
 
-## 5. `advisor_followup`
+## 6. `advisor_followup`
 
 Sends a follow-up query to ChatGPT within the existing task conversation, carrying forward prior advice, previous action items, and latest drift information.
 
@@ -193,7 +214,7 @@ Sends a follow-up query to ChatGPT within the existing task conversation, carryi
 
 ---
 
-## 6. `advisor_cancel`
+## 7. `advisor_cancel`
 
 Gracefully terminates an in-flight consultation.
 
@@ -211,7 +232,7 @@ Gracefully terminates an in-flight consultation.
 
 ---
 
-## 7. `advisor_auth`
+## 8. `advisor_auth`
 
 Inspects OpenAI authentication and Playwright browser profile health without exposing secret tokens or private cookies.
 
@@ -235,7 +256,7 @@ Inspects OpenAI authentication and Playwright browser profile health without exp
 
 ---
 
-## 8. `advisor_disposition`
+## 9. `advisor_disposition`
 
 Records the worker or user's decision on a specific action item (`A1`, `A2`, etc.).
 
@@ -277,9 +298,9 @@ Records the worker or user's decision on a specific action item (`A1`, `A2`, etc
 When building agentic loops in Pi, worker models should follow these recommended patterns:
 
 ### Pattern 1: Pre-Implementation Planning
-1. Worker calls `advisor_preflight` to confirm commit status.
-2. Worker calls `advisor_submit(kind: "plan", goal: "...")`.
-3. Worker reads action items (`A1`, `A2`, `A3`).
+1. Worker calls `advisor_consult(kind: "plan", goal: "...")`; it performs the common preflight and submission path.
+2. Worker evaluates the returned advice and reads action items (`A1`, `A2`, `A3`) when the result is complete or degraded.
+3. If a low-level diagnostic is needed, worker may call `advisor_preflight` to inspect commit/capability readiness.
 4. For each action item:
    - Worker implements code and writes tests.
    - Worker runs tests to verify.
@@ -287,7 +308,10 @@ When building agentic loops in Pi, worker models should follow these recommended
 
 ### Pattern 2: Adversarial Audit Gate
 1. After completing a critical security or concurrency feature, worker commits and pushes to branch.
-2. Worker calls `advisor_submit(kind: "audit", goal: "Audit lock acquisition order and failure recovery")`.
+2. Worker calls `advisor_consult(kind: "audit", goal: "Audit lock acquisition order and failure recovery")`.
 3. If the adviser identifies critical vulnerabilities, worker implements fixes.
 4. If an adviser recommendation is inapplicable (e.g. contradicted by project constraints), worker records:
    `advisor_disposition(actionItemId: "A2", disposition: "rejected_with_reason", reason: "Contradicts zero-dependency constraint in ADR-04")`.
+
+### Pattern 3: Explicit asynchronous review
+Use `advisor_consult(..., mode: "async")` only when the answer is not needed for the worker's immediate decision. The job is durable and a matching-session UI notification is best-effort; it does not inject or resume a worker turn. Call `advisor_status`/`advisor_read` before acting on the result.

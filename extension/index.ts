@@ -99,13 +99,15 @@ function notifyAsyncCompletion(ctx: AdviserExtensionContext, notification: WakeU
       ordinal: index + 1,
       summary: item.summary,
     }));
+    const resultStatus = record.result?.resultStatus ?? "complete";
+    const usable = resultStatus === "complete" || resultStatus === "degraded";
     ctx.ui.notify(
       formatCompletionNotification({
         consultationId: address.consultationId,
         kind: record.kind,
-        actionItems,
+        ...(usable ? { actionItems } : { degradedReason: resultStatus }),
       }),
-      "info",
+      usable ? "info" : "warning",
     );
     return;
   }
