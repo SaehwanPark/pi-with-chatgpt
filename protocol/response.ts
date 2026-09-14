@@ -15,7 +15,7 @@
 import { isConsultationId, type ConsultationId } from "./checkpoint.js";
 import { isFullCommitSha, type FullCommitSha } from "./sha.js";
 
-export const JOB_RESULT_STATUSES = ["complete", "degraded", "provenance-ambiguous"] as const;
+export const JOB_RESULT_STATUSES = ["complete", "degraded", "incomplete", "provenance-ambiguous"] as const;
 export type JobResultStatus = (typeof JOB_RESULT_STATUSES)[number];
 
 export const ADVISER_RESPONSE_STATUSES = ["actionable", "inconclusive", "blocked", "unknown"] as const;
@@ -23,6 +23,10 @@ export type AdviserResponseStatus = (typeof ADVISER_RESPONSE_STATUSES)[number];
 
 export const PROVENANCE_STATUSES = ["verified", "mismatched", "missing", "malformed"] as const;
 export type ProvenanceStatus = (typeof PROVENANCE_STATUSES)[number];
+
+/** Provenance of the consultation-specific terminal marker. */
+export const COMPLETION_STATUSES = ["verified", "mismatched", "missing", "malformed"] as const;
+export type CompletionStatus = (typeof COMPLETION_STATUSES)[number];
 
 export interface ParsedActionItem {
   readonly id: string;
@@ -40,6 +44,8 @@ export interface ParsedAdviserResponse {
   readonly risks?: string;
   readonly optionalIdeas?: string;
   readonly provenance: ProvenanceStatus;
+  /** Whether the response ended with the expected consultation-specific completion marker. */
+  readonly completion: CompletionStatus;
   readonly resultStatus: JobResultStatus;
   readonly parsingNotes: readonly string[];
 }
@@ -67,10 +73,12 @@ export function parseAdviserResponse(
       status: "unknown",
       actionItems: [],
       provenance: "missing",
-      resultStatus: hasExpectedConsultationId ? "provenance-ambiguous" : "degraded",
+      completion: "missing",
+      resultStatus: "incomplete",
       parsingNotes: [
         "Response was empty",
         ...(hasExpectedConsultationId ? ["Missing consultation ID in adviser response."] : []),
+        "Missing consultation completion sentinel.",
       ],
     };
   }
@@ -113,23 +121,39 @@ export function parseAdviserResponse(
     : commitProvenance;
 
   const status = extractStatus(trimmed, parsingNotes);
+  const completion = extractCompletion(trimmed, options.expectedConsultationId, parsingNotes);
+  // Keep the terminal marker out of section bodies (otherwise it can be swallowed as part of the
+  // preceding section), while retaining it verbatim in `raw` for diagnostics.
+  const responseBody = trimmed.replace(/\n\s*consultation_complete:\s*[^\s\r\n]+\s*$/u, "");
 
   // 2. Extract sections
-  const assessment = extractSection(trimmed, "ASSESSMENT");
-  const recommendation = extractSection(trimmed, "RECOMMENDATION");
-  const risks = extractSection(trimmed, "RISKS");
-  const optionalIdeas = extractSection(trimmed, "OPTIONAL IDEAS");
+  const assessment = extractSection(responseBody, "ASSESSMENT");
+  const recommendation = extractSection(responseBody, "RECOMMENDATION");
+  const risks = extractSection(responseBody, "RISKS");
+  const optionalIdeas = extractSection(responseBody, "OPTIONAL IDEAS");
 
   // 3. Extract action items
-  const actionItems = extractActionItems(trimmed, parsingNotes);
+  // Incomplete or provenance-ambiguous text is retained as raw evidence, but its parsed action items
+  // must never be promoted to normal worker-facing recommendations.
+  const parsedActionItems = extractActionItems(responseBody, parsingNotes);
 
-  // 4. Determine overall resultStatus
+  // 4. Determine overall resultStatus. Identity failures remain stronger than completion failures;
+  // a missing terminal marker is an incomplete answer, while a malformed/mismatched marker is an
+  // ambiguous provenance claim.
   let resultStatus: JobResultStatus = "complete";
   if (provenance === "mismatched" || provenance === "missing" || provenance === "malformed") {
     resultStatus = "provenance-ambiguous";
+  } else if (completion === "mismatched" || completion === "malformed") {
+    resultStatus = "provenance-ambiguous";
+  } else if (completion !== "verified") {
+    resultStatus = "incomplete";
   } else if (status === "inconclusive" || status === "blocked") {
     resultStatus = "degraded";
   }
+
+  const actionItems = resultStatus === "complete" || resultStatus === "degraded"
+    ? parsedActionItems
+    : [];
 
   return {
     raw,
@@ -142,6 +166,7 @@ export function parseAdviserResponse(
     risks,
     optionalIdeas,
     provenance,
+    completion,
     resultStatus,
     parsingNotes,
   };
@@ -159,6 +184,48 @@ function extractConsultationId(text: string): ConsultationIdExtraction {
   return isConsultationId(candidate)
     ? { status: "verified", value: candidate }
     : { status: "malformed", raw: candidate };
+}
+
+function extractCompletion(
+  text: string,
+  expectedConsultationId: ConsultationId | undefined,
+  notes: string[],
+): CompletionStatus {
+  // The marker is only valid as the final non-empty line. This prevents an old marker near the
+  // beginning of a truncated answer from being mistaken for proof that the turn finished.
+  const terminalPattern = /(?:^|\n)\s*consultation_complete:\s*([^\s\r\n]+)\s*$/u;
+  const terminalMatch = terminalPattern.exec(text);
+  const markerPattern = /^\s*consultation_complete:\s*([^\s\r\n]+)\s*$/u;
+  const markerLines = text.split("\n").filter((line) => markerPattern.test(line));
+
+  if (!terminalMatch || !terminalMatch[1]) {
+    if (markerLines.length > 0) {
+      notes.push("Completion sentinel was present but was not the final non-empty line.");
+    } else {
+      notes.push("Missing consultation completion sentinel.");
+    }
+    return "missing";
+  }
+
+  if (markerLines.length !== 1) {
+    notes.push("Duplicate consultation completion sentinel; completion provenance is ambiguous.");
+    return "malformed";
+  }
+
+  const candidate = terminalMatch[1].trim();
+  if (!isConsultationId(candidate)) {
+    notes.push(`Malformed consultation completion sentinel: "${candidate}".`);
+    return "malformed";
+  }
+
+  if (expectedConsultationId !== undefined && candidate !== expectedConsultationId) {
+    notes.push(
+      `Completion consultation ID "${candidate}" does not match expected "${expectedConsultationId}".`,
+    );
+    return "mismatched";
+  }
+
+  return "verified";
 }
 
 function extractAndVerifyCommit(

@@ -31,6 +31,8 @@ High memory usage if concurrency limit is too high.
 
 OPTIONAL IDEAS
 Consider LRU cache for conversation tokens.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, {
@@ -51,6 +53,7 @@ Consider LRU cache for conversation tokens.
     expect(parsed.risks).toBe("High memory usage if concurrency limit is too high.");
     expect(parsed.optionalIdeas).toBe("Consider LRU cache for conversation tokens.");
     expect(parsed.provenance).toBe("verified");
+    expect(parsed.completion).toBe("verified");
     expect(parsed.resultStatus).toBe("complete");
     expect(parsed.parsingNotes).toEqual([]);
   });
@@ -71,6 +74,8 @@ Merge the changes.
 ## ACTION ITEMS
 [A1] Verify backward compatibility.
 (A2): Check documentation.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, { expectedCommitSha: ANCHOR_SHA });
@@ -93,6 +98,8 @@ status: actionable
 
 ASSESSMENT
 I looked at a newer commit.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, { expectedCommitSha: ANCHOR_SHA });
@@ -113,6 +120,8 @@ status: actionable
 
 ASSESSMENT
 The response came from a different adviser thread.
+
+consultation_complete: adv-0099
 `.trim();
 
     const parsed = parseAdviserResponse(raw, {
@@ -137,6 +146,8 @@ status: actionable
 
 ASSESSMENT
 The response omitted its consultation identity.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, {
@@ -156,6 +167,8 @@ ADVISOR
 consultation: not-an-adviser-id
 reviewed_commit: ${ANCHOR_SHA}
 status: actionable
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, {
@@ -177,6 +190,8 @@ status: actionable
 
 ASSESSMENT
 General advice without mentioning SHA.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, { expectedCommitSha: ANCHOR_SHA });
@@ -192,6 +207,8 @@ ADVISOR
 consultation: adv-0014
 reviewed_commit: 8f731e2 (short sha)
 status: actionable
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, { expectedCommitSha: ANCHOR_SHA });
@@ -210,6 +227,8 @@ status: actionable
 ACTION ITEMS
 1. First task to complete.
 2. Second task to complete.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, { expectedCommitSha: ANCHOR_SHA });
@@ -230,6 +249,7 @@ ACTION ITEMS
     expect(parsed.status).toBe("unknown");
     expect(parsed.provenance).toBe("missing");
     expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.completion).toBe("missing");
     expect(parsed.actionItems).toEqual([]);
   });
 
@@ -238,19 +258,85 @@ ACTION ITEMS
 
     expect(parsed.raw).toBe("   ");
     expect(parsed.status).toBe("unknown");
-    expect(parsed.resultStatus).toBe("degraded");
+    expect(parsed.resultStatus).toBe("incomplete");
+    expect(parsed.completion).toBe("missing");
     expect(parsed.parsingNotes).toContain("Response was empty");
   });
 
-  it("treats an empty response as provenance-ambiguous when an ID was expected", () => {
+  it("treats an empty response as incomplete when an ID was expected", () => {
     const parsed = parseAdviserResponse("   ", {
       expectedCommitSha: ANCHOR_SHA,
       expectedConsultationId: VALID_ID,
     });
 
     expect(parsed.provenance).toBe("missing");
-    expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.resultStatus).toBe("incomplete");
+    expect(parsed.completion).toBe("missing");
     expect(parsed.parsingNotes).toContain("Missing consultation ID in adviser response.");
+  });
+
+  it("marks a response without a terminal marker incomplete and suppresses action items", () => {
+    const raw = `
+ADVISOR
+consultation: adv-0014
+reviewed_commit: ${ANCHOR_SHA}
+status: actionable
+
+ACTION ITEMS
+A1. Do not promote this truncated recommendation.
+`.trim();
+
+    const parsed = parseAdviserResponse(raw, {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.completion).toBe("missing");
+    expect(parsed.resultStatus).toBe("incomplete");
+    expect(parsed.actionItems).toEqual([]);
+  });
+
+  it("rejects a completion marker for another consultation", () => {
+    const raw = `
+ADVISOR
+consultation: adv-0014
+reviewed_commit: ${ANCHOR_SHA}
+status: actionable
+
+ACTION ITEMS
+A1. Keep this recommendation diagnostic only.
+
+consultation_complete: adv-0099
+`.trim();
+
+    const parsed = parseAdviserResponse(raw, {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.completion).toBe("mismatched");
+    expect(parsed.resultStatus).toBe("provenance-ambiguous");
+    expect(parsed.actionItems).toEqual([]);
+  });
+
+  it("rejects duplicate completion markers", () => {
+    const raw = `
+ADVISOR
+consultation: adv-0014
+reviewed_commit: ${ANCHOR_SHA}
+status: actionable
+
+consultation_complete: adv-0014
+consultation_complete: adv-0014
+`.trim();
+
+    const parsed = parseAdviserResponse(raw, {
+      expectedCommitSha: ANCHOR_SHA,
+      expectedConsultationId: VALID_ID,
+    });
+
+    expect(parsed.completion).toBe("malformed");
+    expect(parsed.resultStatus).toBe("provenance-ambiguous");
   });
 
   it("flags inconclusive or blocked status as degraded when provenance is verified", () => {
@@ -262,6 +348,8 @@ status: inconclusive
 
 ASSESSMENT
 Cannot determine correctness due to missing test fixtures.
+
+consultation_complete: adv-0014
 `.trim();
 
     const parsed = parseAdviserResponse(raw, { expectedCommitSha: ANCHOR_SHA });

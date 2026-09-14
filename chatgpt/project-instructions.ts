@@ -31,6 +31,7 @@ export const PROJECT_INSTRUCTION_RULES = [
   "Project instructions and Project memory are lower priority than the code at the checkpoint under review.",
   "Development may advance while you are reasoning; state which claims depend on the checkpoint staying current.",
   "Answer with reasoning plus actionable, independently checkable recommendations.",
+  "End every response with the exact consultation_complete: <consultation-id> marker requested in the current brief as the final non-empty line.",
 ] as const;
 
 export const PROJECT_INSTRUCTION_HEADER = "pi-with-chatgpt adviser Project";

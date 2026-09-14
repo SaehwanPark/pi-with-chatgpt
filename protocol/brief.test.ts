@@ -35,6 +35,8 @@ describe("buildConsultationBrief", () => {
     expect(brief).toContain("CONCERN: Potential resource leak when client crashes abruptly");
     expect(brief).toContain("QUESTION: What failure modes should we guard against?");
     expect(brief).toContain(`INSTRUCTION: ${DEFAULT_BRIEF_INSTRUCTION}`);
+    expect(brief).toContain("COMPLETION SENTINEL: consultation_complete: adv-0001");
+    expect(brief).toContain("final non-empty line");
   });
 
   it("handles detached HEAD cleanly", () => {

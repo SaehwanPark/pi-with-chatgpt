@@ -103,3 +103,18 @@ relax that limit, but no parallel browser turns are advertised today.
 Evidence: `jobs/record.test.ts`, `jobs/store.test.ts`, `jobs/state.test.ts`, `jobs/engine.test.ts`,
 `extension/index.test.ts`, and `test/m9-concurrency-recovery.test.ts`. Live ChatGPT round trips remain
 manual verification work.
+
+## Response completion integrity
+
+Every consultation brief asks ChatGPT to end with a consultation-specific terminal line:
+
+```text
+consultation_complete: <consultation-id>
+```
+
+The parser accepts advice as complete only when that marker is the final non-empty line and its ID
+matches the consultation. `completion` provenance is tracked separately from checkpoint/consultation
+identity (`verified`, `missing`, `mismatched`, or `malformed`). Missing markers produce an
+`incomplete` result; mismatched or malformed markers produce `provenance-ambiguous`. Raw text may be
+retained for diagnostics, but action items from either outcome are never exposed as actionable
+recommendations.

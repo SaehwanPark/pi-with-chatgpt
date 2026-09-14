@@ -27,6 +27,7 @@ describe("Project instructions (INV-08, INV-14)", () => {
     expect(text).toContain("Never ask Pi to paste, upload, or attach");
     expect(text).toContain("lower priority than the code at the checkpoint");
     expect(text).toContain("Development may advance while you are reasoning");
+    expect(text).toContain("consultation_complete: <consultation-id>");
     expect(text).toContain(REPOSITORY);
     expect(PROJECT_INSTRUCTION_RULES.length).toBeGreaterThanOrEqual(8);
   });

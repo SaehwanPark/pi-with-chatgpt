@@ -28,6 +28,9 @@ export const DEFAULT_BRIEF_INSTRUCTION =
   "repository state. Do not implement anything. Do not ask for pasted or uploaded files. " +
   "Development may advance while you reason. Provide reasoning and actionable recommendations.";
 
+const COMPLETION_SENTINEL_INSTRUCTION =
+  "End your response with the exact consultation completion sentinel requested below as the final non-empty line.";
+
 export interface BuildBriefOptions {
   readonly consultationId: ConsultationId;
   readonly kind: ConsultationKind;
@@ -131,10 +134,13 @@ export function buildConsultationBrief(options: BuildBriefOptions): string {
 
   lines.push(`QUESTION: ${question}`);
   lines.push("");
+  lines.push(`COMPLETION SENTINEL: consultation_complete: ${options.consultationId}`);
 
-  const instruction = options.customInstruction
-    ? `${DEFAULT_BRIEF_INSTRUCTION} ${options.customInstruction.trim()}`
-    : DEFAULT_BRIEF_INSTRUCTION;
+  const instruction = [
+    DEFAULT_BRIEF_INSTRUCTION,
+    COMPLETION_SENTINEL_INSTRUCTION,
+    options.customInstruction?.trim(),
+  ].filter((part): part is string => Boolean(part)).join(" ");
 
   lines.push(`INSTRUCTION: ${instruction}`);
 
