@@ -49,7 +49,7 @@ The full numbered invariant list (INV-01…INV-16) is in
 
 Toolchain is fixed (M0): **TypeScript + Node 22 (`>=22.19.0`) + npm + vitest**, Playwright over the
 system Chrome, ESLint flat config. Sources and tests live in the eleven module trees at the repo root
-(no `src/`), build to `dist/`, and Pi loads `dist/extension/index.js`. Linux and macOS are the V1
+(no `src/`), build to `dist/` for library exports, and Pi loads `extension/index.ts`. Linux and macOS are the V1
 platforms; Windows is post-V1.
 
 ```bash

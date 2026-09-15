@@ -1,6 +1,6 @@
 {
   "name": "pi-with-chatgpt",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Pi extension that lets an inexpensive or local worker model consult a stronger ChatGPT adviser, anchored to immutable git checkpoints and GitHub-only repository context.",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
   ],
   "pi": {
     "extensions": [
-      "./dist/extension/index.js"
+      "./extension/index.ts"
     ]
   },
   "main": "./dist/extension/index.js",
@@ -38,6 +38,17 @@
   "files": [
     "dist",
     "docs",
+    "auth",
+    "browser",
+    "chatgpt",
+    "config",
+    "drift",
+    "extension",
+    "git",
+    "jobs",
+    "ledger",
+    "protocol",
+    "ui",
     "CHANGELOG.md",
     "LICENSE",
     "README.md"

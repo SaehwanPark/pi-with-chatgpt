@@ -77,12 +77,12 @@ describe("module boundaries (M0)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the package manifest pointed at the built extension entry", () => {
+  it("keeps the package manifest pointed at the TypeScript extension entry", () => {
     const manifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
       pi: { extensions: string[] };
       keywords: string[];
     };
-    expect(manifest.pi.extensions).toEqual(["./dist/extension/index.js"]);
+    expect(manifest.pi.extensions).toEqual(["./extension/index.ts"]);
     expect(manifest.keywords).toContain("pi-package");
   });
 });
