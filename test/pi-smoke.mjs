@@ -17,10 +17,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const entry = join(packageRoot, "dist", "extension", "index.js");
@@ -36,15 +36,29 @@ function fail(name, detail) {
 }
 
 function command(name, args, env) {
-  return execFileSync(name, args, { encoding: "utf8", env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const isWindows = process.platform === "win32";
+  const cmd = isWindows && name === "pi" ? "pi.cmd" : name;
+  return execFileSync(cmd, args, {
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: isWindows,
+  });
 }
 
 console.log("pi-with-chatgpt Pi-load smoke test");
 
+const manifestPath = join(packageRoot, "package.json");
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+check("package manifest declares TypeScript extension entry", Array.isArray(manifest.pi?.extensions) && manifest.pi.extensions.includes("./extension/index.ts"));
+
+const tsEntry = join(packageRoot, "extension", "index.ts");
+check("declared TypeScript extension entry exists", existsSync(tsEntry));
+
 if (!existsSync(entry)) fail("built entry", `run "npm run build" first (expected ${entry})`);
 
-// 1. The built artifact, not the TypeScript source: this is what Pi actually imports.
-const module = await import(entry);
+// 1. The built artifact, not the TypeScript source: verify built ESM bundle remains loadable.
+const module = await import(pathToFileURL(entry).href);
 check("default export is an activation function", typeof module.default === "function");
 
 let commandCount = 0;

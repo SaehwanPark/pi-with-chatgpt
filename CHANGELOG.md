@@ -11,6 +11,20 @@ change invalidates (see `AGENTS.md`).
 
 No unreleased changes.
 
+## [1.0.2] - 2026-09-15
+
+### Fixed
+
+- Fixed Pi extension entry point discovery for Git-installed packages: updated `package.json`'s `pi.extensions`
+  manifest from `./dist/extension/index.js` to `./extension/index.ts`. Git clones omit `dist/` and `pi install`
+  runs `npm install --omit=dev` without a build step; Pi's embedded TypeScript loader (`jiti`) loads the
+  source extension entry directly.
+- Added source module directories (`auth`, `browser`, `chatgpt`, `config`, `drift`, `extension`, `git`,
+  `jobs`, `ledger`, `protocol`, `ui`) to `package.json` `files` to ensure complete package tarball packaging.
+- Fixed `test/pi-smoke.mjs` cross-platform dynamic ESM import by using `pathToFileURL` and Windows command
+  resolution.
+- Updated manifest boundary assertions in `test/module-boundaries.test.ts`.
+
 ## [1.0.1] - 2026-09-14
 
 ### Added
