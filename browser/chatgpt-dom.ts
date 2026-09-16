@@ -538,9 +538,9 @@ export function parseSessionIdentity(raw: unknown): AccountIdentityHint | undefi
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
   try {
     const parts = token.split(".");
-    if (parts.length < 2) return undefined;
+    if (parts.length < 2 || parts[1] === undefined) return undefined;
     const json = Buffer.from(parts[1], "base64url").toString("utf8");
-    const parsed = JSON.parse(json);
+    const parsed: unknown = JSON.parse(json);
     return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
   } catch {
     return undefined;

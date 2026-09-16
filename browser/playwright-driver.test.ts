@@ -59,7 +59,7 @@ function fakePage(
   thread: FakeThread,
   startUrl: string,
   title: () => Promise<string> = () => Promise.resolve("ChatGPT"),
-  evaluate?: <R>(pageFunction: any) => Promise<R>,
+  evaluate?: (pageFunction: unknown) => Promise<unknown>,
 ) {
   const navigations: string[] = [];
   const typed: string[] = [];
@@ -83,7 +83,8 @@ function fakePage(
       page.closed = true;
       return Promise.resolve();
     },
-    evaluate: evaluate ?? (() => Promise.resolve(undefined as any)),
+    evaluate: <R>(pageFunction: unknown): Promise<R> =>
+      evaluate ? (evaluate(pageFunction) as Promise<R>) : Promise.resolve(undefined as unknown as R),
     locator: (selector: string) => {
       // Read per call: a locator made before a DOM change must not see the thread as it was.
       const nodes = thread[selector] ?? [];
@@ -144,7 +145,7 @@ async function startedDriver(options: {
   readonly pollIntervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly title?: () => Promise<string>;
-  readonly evaluate?: <R>(pageFunction: any) => Promise<R>;
+  readonly evaluate?: (pageFunction: unknown) => Promise<unknown>;
   readonly profile?: typeof PROFILE;
 }) {
   const { clicked, navigations, page, typed } = fakePage(

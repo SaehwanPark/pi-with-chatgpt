@@ -93,7 +93,7 @@ export async function createAdviserBrowser(paths: StateStoragePaths, config?: Ad
   return {
     runtime,
     loginPort: loginPortFor(profile, runtime),
-    githubConnectorProbe: options.githubConnectorProbe ?? createDefaultGitHubConnectorProbe(runtime),
+    githubConnectorProbe: createDefaultGitHubConnectorProbe(runtime),
     projectSurface: driver.projectSurface(),
     profile,
   };

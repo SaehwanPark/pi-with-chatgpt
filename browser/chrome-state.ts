@@ -298,20 +298,25 @@ export async function readProfileIdentityHint(
   for (const candidate of candidates) {
     try {
       const text = await fileSystem.readFile(candidate);
-      const parsed = JSON.parse(text);
+      const parsed: unknown = JSON.parse(text);
       if (typeof parsed !== "object" || parsed === null) continue;
-      const accountInfo = (parsed as Record<string, unknown>).account_info;
+      const record = parsed as Record<string, unknown>;
+      const accountInfo = record["account_info"];
       if (Array.isArray(accountInfo) && accountInfo.length > 0) {
-        const first = accountInfo[0];
+        const first: unknown = accountInfo[0];
         if (typeof first === "object" && first !== null) {
-          const email = typeof first.email === "string" && first.email.includes("@") ? first.email : undefined;
+          const firstRecord = first as Record<string, unknown>;
+          const emailRaw = firstRecord["email"];
+          const email = typeof emailRaw === "string" && emailRaw.includes("@") ? emailRaw : undefined;
+          const accountIdRaw = firstRecord["account_id"];
+          const gaiaRaw = firstRecord["gaia"];
           const accountId =
-            typeof first.account_id === "string" && first.account_id.length > 0
-              ? first.account_id
-              : typeof first.gaia === "string" && first.gaia.length > 0
-                ? first.gaia
+            typeof accountIdRaw === "string" && accountIdRaw.length > 0
+              ? accountIdRaw
+              : typeof gaiaRaw === "string" && gaiaRaw.length > 0
+                ? gaiaRaw
                 : undefined;
-          if (email || accountId) {
+          if (email !== undefined || accountId !== undefined) {
             return {
               source: "chatgpt-browser",
               ...(accountId !== undefined

@@ -30,7 +30,7 @@ import {
   adviceCurrencyFor,
 } from "../drift/index.js";
 import { adviserStatus } from "../auth/status.js";
-import type { AdviserLoginPort } from "../auth/login-flow.js";
+import { writeSessionMarker, type AdviserLoginPort } from "../auth/login-flow.js";
 import { authDecisionAllowsConsultation, resolveLiveAdviserAuth, type AdviserAuthDecision } from "../auth/readiness.js";
 import { resolveCheckpoint } from "../git/checkpoint-resolution.js";
 import { createGitExecutor, createNodeCommandRunner, type GitExecutor } from "../git/exec.js";
@@ -1213,6 +1213,12 @@ export class ToolManager {
           status = await adviserStatus(profile, { browserSession });
         }
         const authDecision = await resolveLiveAdviserAuth({ profile, browserSession, requireBrowserIdentity: true });
+        if (status.browserSession.state === "signed-in" && loginPort) {
+          await loginPort.sealSession(profile).catch(() => undefined);
+          if (!status.profile.everSignedInHere) {
+            await writeSessionMarker(profile).catch(() => undefined);
+          }
+        }
         const authenticated: boolean | "unknown" =
           authDecision.action === "review-account-mismatch"
             ? false
