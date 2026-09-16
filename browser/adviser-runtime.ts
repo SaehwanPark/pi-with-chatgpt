@@ -37,9 +37,18 @@ const launchChrome: PlaywrightLauncher = async ({ userDataDir, headless, channel
     ...(executablePath === undefined ? { channel } : { executablePath }),
     headless,
     timeout: timeoutMs,
+    ignoreDefaultArgs: ["--enable-automation", "--enable-unsafe-swiftshader"],
+    args: [
+      "--disable-blink-features=AutomationControlled",
+    ],
     // A clean viewport with no automation markers: ChatGPT behaves the same as for a real window, and we
     // are not trying to evade a check — only to avoid a window that would confuse the user.
-    viewport: { width: 1280, height: 900 },
+    viewport: null,
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", {
+      get: () => undefined,
+    });
   });
   const version = context.browser()?.version() ?? "unknown";
   return { context: context as unknown as PlaywrightLaunchContext, chromeVersion: version };
