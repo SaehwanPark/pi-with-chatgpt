@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectBrowserStateSources,
   parseChromeLocalState,
+  readProfileIdentityHint,
   type BrowserStateSourceFileSystem,
 } from "./chrome-state.js";
 
@@ -194,3 +195,49 @@ describe("parseChromeLocalState", () => {
     expect(parsed?.["Default"]).toEqual({ gaiaIdMasked: "***" });
   });
 });
+
+describe("readProfileIdentityHint", () => {
+  it("returns undefined when Preferences file is absent", async () => {
+    const fs = fakeFs({});
+    const hint = await readProfileIdentityHint("/profile", fs);
+    expect(hint).toBeUndefined();
+  });
+
+  it("extracts masked email and gaia id from Preferences account_info", async () => {
+    const prefs = JSON.stringify({
+      account_info: [
+        {
+          email: "saehwan.simon.park@gmail.com",
+          account_id: "107381412552056717912",
+          gaia: "107381412552056717912",
+        },
+      ],
+    });
+    const fs = fakeFs({
+      files: {
+        "/profile/Default/Preferences": prefs,
+      },
+    });
+    const hint = await readProfileIdentityHint("/profile", fs);
+    expect(hint).toEqual({
+      source: "chatgpt-browser",
+      accountIdHint: "107381412552056717912",
+      accountIdNamespace: "google-gaia",
+      emailMasked: "s***@gmail.com",
+    });
+  });
+
+  it("returns undefined when account_info has no email or id", async () => {
+    const prefs = JSON.stringify({
+      account_info: [{}],
+    });
+    const fs = fakeFs({
+      files: {
+        "/profile/Default/Preferences": prefs,
+      },
+    });
+    const hint = await readProfileIdentityHint("/profile", fs);
+    expect(hint).toBeUndefined();
+  });
+});
+

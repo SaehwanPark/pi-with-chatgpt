@@ -24,9 +24,12 @@ import {
   classifySurface,
   classifyTurn,
   modelMatchesLabel,
+  parseSessionIdentity,
   scrubPageText,
   type SurfaceSnapshot,
 } from "./chatgpt-dom.js";
+import { readProfileIdentityHint } from "./chrome-state.js";
+import type { AccountIdentityHint } from "../auth/identity.js";
 import { acquireStateLock, type StateLock } from "../ledger/state-store.js";
 import type { AdviserProfile } from "./profile.js";
 import { createPlaywrightProjectSurface } from "./playwright-project-surface.js";
@@ -56,6 +59,7 @@ type AdviserPlaywrightPage = {
   keyboard: { press(key: string): Promise<void> };
   frames(): readonly { url(): string; locator(selector: string): AdviserLocator }[];
   close(): Promise<void>;
+  evaluate?<R>(pageFunction: string | ((...args: unknown[]) => R | Promise<R>)): Promise<R>;
 };
 type AdviserElement = {
   isVisible(): Promise<boolean>;
@@ -282,18 +286,23 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
 
   async observeSurface(): Promise<SurfaceObservation> {
     const snapshot = await this.#snapshot();
-    return toObservation(snapshot);
+    const identity = await this.#extractIdentity();
+    return toObservation(snapshot, identity);
   }
 
   async openChatGPT(): Promise<SurfaceObservation> {
     const page = await this.#requirePage();
     if (hostIsChatGpt(page.url())) {
       // Already on the surface: read what is there instead of reloading and losing a partial state.
-      return toObservation(await this.#snapshot());
+      const snapshot = await this.#snapshot();
+      const identity = await this.#extractIdentity();
+      return toObservation(snapshot, identity);
     }
     await page.goto(CHATGPT_URLS.home, { waitUntil: "domcontentloaded", timeout: this.#navigationTimeoutMs });
     await page.waitForLoadState("load", { timeout: this.#navigationTimeoutMs }).catch(() => undefined);
-    return toObservation(await this.#snapshot());
+    const snapshot = await this.#snapshot();
+    const identity = await this.#extractIdentity();
+    return toObservation(snapshot, identity);
   }
 
   async listModels(): Promise<readonly ModelOption[]> {
@@ -537,6 +546,39 @@ export class PlaywrightAdviserDriver implements AdviserPageDriver {
     const text = await safeText(assistant);
     return text.length > 0 ? text : undefined;
   }
+
+  async #extractIdentity(): Promise<AccountIdentityHint | undefined> {
+    try {
+      const page = this.#page;
+      if (page && !page.isClosed() && hostIsChatGpt(page.url()) && typeof page.evaluate === "function") {
+        const sessionRaw = await page.evaluate(async () => {
+          try {
+            const resp = await fetch("/api/auth/session", { credentials: "same-origin" });
+            if (!resp.ok) return null;
+            return await resp.json();
+          } catch {
+            return null;
+          }
+        }).catch(() => null);
+
+        if (sessionRaw !== null && sessionRaw !== undefined) {
+          const fromSession = parseSessionIdentity(sessionRaw);
+          if (fromSession !== undefined) return fromSession;
+        }
+      }
+    } catch {
+      // ignore in-page evaluation failure
+    }
+
+    try {
+      const fromProfile = await readProfileIdentityHint(this.#profile.userDataDir);
+      if (fromProfile !== undefined) return fromProfile;
+    } catch {
+      // ignore
+    }
+
+    return undefined;
+  }
 }
 
 /**
@@ -549,12 +591,17 @@ export function createPlaywrightDriverFactory(
   return (profile) => new PlaywrightAdviserDriver({ profile, launch });
 }
 
-function toObservation(snapshot: SurfaceSnapshot): SurfaceObservation {
+function toObservation(snapshot: SurfaceSnapshot, identity?: AccountIdentityHint): SurfaceObservation {
   const classified = classifySurface(snapshot);
+  const isUsable =
+    classified.state === "conversation-ready" ||
+    classified.state === "generating" ||
+    classified.state === "response-complete";
   return {
     state: classified.state,
     explanation: classified.explanation,
     actionable: classified.actionable,
+    ...(isUsable && identity !== undefined ? { identity } : {}),
   };
 }
 

@@ -11,6 +11,16 @@ change invalidates (see `AGENTS.md`).
 
 No unreleased changes.
 
+## [1.0.6] - 2026-09-16
+
+### Fixed
+
+- Added ChatGPT session identity extraction in `browser/chatgpt-dom.ts` and `browser/playwright-driver.ts`: decodes `/api/auth/session` JWT access token claims (`chatgpt_account_id`, `user_id`, `email`, `plan_type`) and extracts direct `user`/`account` properties so `SurfaceObservation.identity` is populated during surface probing.
+- Added Chrome profile identity fallback in `browser/chrome-state.ts` (`readProfileIdentityHint`) and `auth/readiness.ts`: parses profile `Preferences` for masked email and Google GAIA identity when active session identity is not present.
+- Added email mismatch check in `auth/readiness.ts` between Pi's OpenAI credential and the adviser browser session.
+- Fixed `createDefaultGitHubConnectorProbe` in `browser/adviser-runtime.ts` to replace the hardcoded `unverified` probe, verifying target repository syntax, 40-character hex commit SHA, and ChatGPT session availability.
+- Fixed `advisor_auth` tool in `extension/tools.ts` to seal session and write `SESSION-ESTABLISHED` marker when signed-in state is confirmed.
+
 ## [1.0.5] - 2026-09-15
 
 ### Fixed

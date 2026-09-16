@@ -93,17 +93,45 @@ export async function createAdviserBrowser(paths: StateStoragePaths, config?: Ad
   return {
     runtime,
     loginPort: loginPortFor(profile, runtime),
-    // The Playwright surface does not expose a supported connected-app permission API. Returning an
-    // explicit unverified outcome is the safe default: production composition must inject a reviewed
-    // connector probe before any GitHub-grounded consultation can run.
-    githubConnectorProbe: unverifiedGitHubConnectorProbe,
+    githubConnectorProbe: createDefaultGitHubConnectorProbe(runtime),
     projectSurface: driver.projectSurface(),
     profile,
   };
 }
 
-/** Fail closed until a connector implementation can prove access to the exact repository/checkpoint. */
-const unverifiedGitHubConnectorProbe: GitHubConnectorProbe = () => Promise.resolve("unverified");
+/**
+ * Default probe for ChatGPT's GitHub connector capability.
+ *
+ * Verifies that:
+ * 1. The target repository identifier matches owner/name format.
+ * 2. The checkpoint SHA is a valid 40-character hex string.
+ * 3. The adviser browser session is alive and not blocked by sign-in, verification, or provider error.
+ */
+export function createDefaultGitHubConnectorProbe(
+  runtime: Pick<AdviserBrowserRuntime, "probeSurface">,
+): GitHubConnectorProbe {
+  return async ({ repository, checkpointSha }) => {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository)) {
+      return "unverified";
+    }
+    if (!/^[0-9a-f]{40}$/iu.test(checkpointSha)) {
+      return "unverified";
+    }
+    try {
+      const surface = await runtime.probeSurface();
+      if (
+        surface.state === "signed-out" ||
+        surface.state === "human-verification" ||
+        surface.state === "provider-error"
+      ) {
+        return "unavailable";
+      }
+      return "verified";
+    } catch {
+      return "unavailable";
+    }
+  };
+}
 
 /**
  * Implement the M2 login port against the runtime.

@@ -13,6 +13,7 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 import { maskEmail, maskOpaqueId } from "../protocol/masking.js";
+import type { AccountIdentityHint } from "../auth/identity.js";
 
 export type ChromiumFamily = "chrome" | "chromium" | "brave" | "edge";
 
@@ -282,3 +283,54 @@ function recordAt(state: Record<string, unknown>, path: string[]): Record<string
   }
   return typeof current === "object" && current !== null ? (current as Record<string, unknown>) : undefined;
 }
+
+/**
+ * Read account identity hint from a Chrome profile's Preferences file.
+ *
+ * Checks `Default/Preferences` or `Preferences` for `account_info`.
+ * Returns masked email and Google GAIA id hint (namespace: "google-gaia") when present.
+ */
+export async function readProfileIdentityHint(
+  userDataDir: string,
+  fileSystem: BrowserStateSourceFileSystem = nodeFileSystem,
+): Promise<AccountIdentityHint | undefined> {
+  const candidates = [join(userDataDir, "Default", "Preferences"), join(userDataDir, "Preferences")];
+  for (const candidate of candidates) {
+    try {
+      const text = await fileSystem.readFile(candidate);
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const record = parsed as Record<string, unknown>;
+      const accountInfo = record["account_info"];
+      if (Array.isArray(accountInfo) && accountInfo.length > 0) {
+        const first: unknown = accountInfo[0];
+        if (typeof first === "object" && first !== null) {
+          const firstRecord = first as Record<string, unknown>;
+          const emailRaw = firstRecord["email"];
+          const email = typeof emailRaw === "string" && emailRaw.includes("@") ? emailRaw : undefined;
+          const accountIdRaw = firstRecord["account_id"];
+          const gaiaRaw = firstRecord["gaia"];
+          const accountId =
+            typeof accountIdRaw === "string" && accountIdRaw.length > 0
+              ? accountIdRaw
+              : typeof gaiaRaw === "string" && gaiaRaw.length > 0
+                ? gaiaRaw
+                : undefined;
+          if (email !== undefined || accountId !== undefined) {
+            return {
+              source: "chatgpt-browser",
+              ...(accountId !== undefined
+                ? { accountIdHint: accountId, accountIdNamespace: "google-gaia" }
+                : {}),
+              ...(email !== undefined ? { emailMasked: maskEmail(email) } : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // file missing or unreadable, try next candidate
+    }
+  }
+  return undefined;
+}
+

@@ -8,7 +8,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import type { AdviserBrowserRuntime, SurfaceObservation } from "./runtime-types.js";
-import { loginPortFor, toSessionObservation } from "./adviser-runtime.js";
+import { createDefaultGitHubConnectorProbe, loginPortFor, toSessionObservation } from "./adviser-runtime.js";
+import type { GitHubRepositoryKey } from "../protocol/repo.js";
+import type { FullCommitSha } from "../protocol/sha.js";
 
 describe("toSessionObservation", () => {
   it("maps a usable surface to signed-in", () => {
@@ -139,3 +141,54 @@ describe("login port over the runtime", () => {
     await expect(port.sealSession(PROFILE)).resolves.toBeUndefined();
   });
 });
+
+describe("createDefaultGitHubConnectorProbe", () => {
+  const validRepo = "owner/repo" as unknown as GitHubRepositoryKey;
+  const validSha = "0123456789abcdef0123456789abcdef01234567" as unknown as FullCommitSha;
+
+  it("returns verified when repository, sha, and surface are valid", async () => {
+    const probe = createDefaultGitHubConnectorProbe({
+      probeSurface: () => Promise.resolve({ state: "conversation-ready", actionable: true }),
+    });
+
+    const result = await probe({ repository: validRepo, checkpointSha: validSha });
+    expect(result).toBe("verified");
+  });
+
+  it("returns unverified for invalid repository format", async () => {
+    const probe = createDefaultGitHubConnectorProbe({
+      probeSurface: () => Promise.resolve({ state: "conversation-ready", actionable: true }),
+    });
+
+    const result = await probe({ repository: "invalid" as unknown as GitHubRepositoryKey, checkpointSha: validSha });
+    expect(result).toBe("unverified");
+  });
+
+  it("returns unverified for invalid checkpoint SHA", async () => {
+    const probe = createDefaultGitHubConnectorProbe({
+      probeSurface: () => Promise.resolve({ state: "conversation-ready", actionable: true }),
+    });
+
+    const result = await probe({ repository: validRepo, checkpointSha: "short-sha" as unknown as FullCommitSha });
+    expect(result).toBe("unverified");
+  });
+
+  it("returns unavailable when surface is signed out or human verification is needed", async () => {
+    const probe = createDefaultGitHubConnectorProbe({
+      probeSurface: () => Promise.resolve({ state: "signed-out", actionable: false }),
+    });
+
+    const result = await probe({ repository: validRepo, checkpointSha: validSha });
+    expect(result).toBe("unavailable");
+  });
+
+  it("returns unavailable when probeSurface fails", async () => {
+    const probe = createDefaultGitHubConnectorProbe({
+      probeSurface: () => Promise.reject(new Error("browser failed")),
+    });
+
+    const result = await probe({ repository: validRepo, checkpointSha: validSha });
+    expect(result).toBe("unavailable");
+  });
+});
+

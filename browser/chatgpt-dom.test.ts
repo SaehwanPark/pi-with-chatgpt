@@ -6,6 +6,7 @@ import {
   classifySurface,
   classifyTurn,
   modelMatchesLabel,
+  parseSessionIdentity,
   scrubPageText,
   type SurfaceSnapshot,
 } from "./chatgpt-dom.js";
@@ -195,3 +196,52 @@ describe("selector sets", () => {
     }
   });
 });
+
+describe("parseSessionIdentity", () => {
+  it("returns undefined on null or empty input", () => {
+    expect(parseSessionIdentity(null)).toBeUndefined();
+    expect(parseSessionIdentity(undefined)).toBeUndefined();
+    expect(parseSessionIdentity({})).toBeUndefined();
+    expect(parseSessionIdentity({ unrelated: true })).toBeUndefined();
+  });
+
+  it("extracts identity from direct user and account fields", () => {
+    const identity = parseSessionIdentity({
+      user: { id: "user-abc-123", email: "alice@example.com" },
+      account: { plan_type: "team" },
+    });
+    expect(identity).toEqual({
+      source: "chatgpt-browser",
+      accountIdHint: "user-abc-123",
+      accountIdNamespace: "chatgpt-account",
+      emailMasked: "a***@example.com",
+      planHint: "team",
+    });
+  });
+
+  it("decodes OpenAI auth claims from JWT accessToken", () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256" })).toString("base64url");
+    const payload = Buffer.from(
+      JSON.stringify({
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "49b60951-c324-4fcc-b5db-468644825232",
+          plan_type: "plus",
+        },
+        "https://api.openai.com/profile": {
+          email: "saehwan.simon.park@gmail.com",
+        },
+      }),
+    ).toString("base64url");
+    const token = `${header}.${payload}.mock-signature`;
+
+    const identity = parseSessionIdentity({ accessToken: token });
+    expect(identity).toEqual({
+      source: "chatgpt-browser",
+      accountIdHint: "49b60951-c324-4fcc-b5db-468644825232",
+      accountIdNamespace: "chatgpt-account",
+      emailMasked: "s***@gmail.com",
+      planHint: "plus",
+    });
+  });
+});
+

@@ -133,9 +133,15 @@ function makeMockEngine(ledger?: ConsultationLedger): ConsultationEngine {
 
 describe("Milestone 10: Release Validation & Pi Integration", () => {
   describe("0. Release metadata", () => {
-    it("publishes the 1.0.5 package metadata", () => {
-      const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { version?: unknown };
-      expect(packageJson.version).toBe("1.0.5");
+    it("publishes the 1.0.6 package metadata", () => {
+      const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+        name: string;
+        version: string;
+        keywords: string[];
+        pi: { extensions: string[] };
+      };
+      expect(packageJson.name).toBe("pi-with-chatgpt");
+      expect(packageJson.version).toBe("1.0.6");
     });
   });
 

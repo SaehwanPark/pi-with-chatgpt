@@ -16,6 +16,7 @@ import {
   type CapabilityObservation,
   type CapabilityRecord,
 } from "../browser/capability.js";
+import { readProfileIdentityHint } from "../browser/chrome-state.js";
 import type { SessionObservation } from "./login-flow.js";
 import { sessionMarkerPath } from "./login-flow.js";
 import {
@@ -68,6 +69,12 @@ export async function resolveLiveAdviserAuth(input: LiveAdviserAuthInput): Promi
   const profileInitialized = profilePresent && (await pathExists(sessionMarkerPath(input.profile)));
   const capability = input.capability ?? capabilityForSession(input.browserSession);
 
+  let browserIdentity =
+    input.browserSession?.kind === "signed-in" ? input.browserSession.identity : undefined;
+  if (browserIdentity === undefined && profilePresent) {
+    browserIdentity = await readProfileIdentityHint(input.profile.userDataDir).catch(() => undefined);
+  }
+
   const decision = resolveAdviserAuth({
     piCredentialPresent,
     piCredentialIsApiKey,
@@ -77,13 +84,32 @@ export async function resolveLiveAdviserAuth(input: LiveAdviserAuthInput): Promi
     profileInitialized,
     chromeImportAvailable: input.chromeImportAvailable ?? false,
     capability,
-    browserIdentity: input.browserSession?.kind === "signed-in" ? input.browserSession.identity : undefined,
+    browserIdentity,
     mismatchDecision: input.mismatchDecision,
   });
+
+  if (
+    piIdentity?.emailMasked !== undefined &&
+    browserIdentity?.emailMasked !== undefined &&
+    piIdentity.emailMasked !== browserIdentity.emailMasked &&
+    decision.action === "consult" &&
+    input.mismatchDecision === undefined
+  ) {
+    return {
+      ...decision,
+      state: "account-mismatch",
+      action: "review-account-mismatch",
+      explanation: "The adviser browser is signed into a different account than Pi.",
+      requiresManualIntervention: true,
+      identityComparison: "mismatch",
+      warnings: [...decision.warnings, "Adviser browser email does not match Pi OpenAI account email."],
+    };
+  }
+
   if (
     (input.requireBrowserIdentity ?? true) &&
     input.browserSession?.kind === "signed-in" &&
-    input.browserSession.identity === undefined &&
+    browserIdentity === undefined &&
     decision.action === "consult"
   ) {
     return {
