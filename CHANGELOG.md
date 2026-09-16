@@ -11,6 +11,20 @@ change invalidates (see `AGENTS.md`).
 
 No unreleased changes.
 
+## [1.0.3] - 2026-09-15
+
+### Fixed
+
+- Fixed isolated adviser browser runtime initialization and login flow on Windows: bypassed POSIX permission bit
+  checks (`directoryMode` returns `undefined` on `process.platform === "win32"`) in `browser/state-storage.ts` and
+  `ledger/state-store.ts`, preventing false `directory-not-private` (due to NTFS ACL / dummy `0666` mode) and
+  subsequent `state-tree-not-owned` refusals.
+- Added symlink inspection in `writePrivateFileNoFollow` before overwriting existing files when `O_NOFOLLOW` is not
+  supported (such as on Windows).
+- Fixed cross-platform `responsePath` path separator consistency in `ledger/ledger.ts`: responses now consistently
+  use forward slashes (`responses/${fileName}`) and `normalizeLedgerEntry` tolerates normalized backslashes when validating
+  against `responses/<consultation-id>.md`.
+
 ## [1.0.2] - 2026-09-15
 
 ### Fixed
