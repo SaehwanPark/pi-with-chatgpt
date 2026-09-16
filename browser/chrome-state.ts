@@ -13,6 +13,7 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
 import { maskEmail, maskOpaqueId } from "../protocol/masking.js";
+import type { AccountIdentityHint } from "../auth/identity.js";
 
 export type ChromiumFamily = "chrome" | "chromium" | "brave" | "edge";
 
@@ -282,3 +283,49 @@ function recordAt(state: Record<string, unknown>, path: string[]): Record<string
   }
   return typeof current === "object" && current !== null ? (current as Record<string, unknown>) : undefined;
 }
+
+/**
+ * Read account identity hint from a Chrome profile's Preferences file.
+ *
+ * Checks `Default/Preferences` or `Preferences` for `account_info`.
+ * Returns masked email and Google GAIA id hint (namespace: "google-gaia") when present.
+ */
+export async function readProfileIdentityHint(
+  userDataDir: string,
+  fileSystem: BrowserStateSourceFileSystem = nodeFileSystem,
+): Promise<AccountIdentityHint | undefined> {
+  const candidates = [join(userDataDir, "Default", "Preferences"), join(userDataDir, "Preferences")];
+  for (const candidate of candidates) {
+    try {
+      const text = await fileSystem.readFile(candidate);
+      const parsed = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const accountInfo = (parsed as Record<string, unknown>).account_info;
+      if (Array.isArray(accountInfo) && accountInfo.length > 0) {
+        const first = accountInfo[0];
+        if (typeof first === "object" && first !== null) {
+          const email = typeof first.email === "string" && first.email.includes("@") ? first.email : undefined;
+          const accountId =
+            typeof first.account_id === "string" && first.account_id.length > 0
+              ? first.account_id
+              : typeof first.gaia === "string" && first.gaia.length > 0
+                ? first.gaia
+                : undefined;
+          if (email || accountId) {
+            return {
+              source: "chatgpt-browser",
+              ...(accountId !== undefined
+                ? { accountIdHint: accountId, accountIdNamespace: "google-gaia" }
+                : {}),
+              ...(email !== undefined ? { emailMasked: maskEmail(email) } : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // file missing or unreadable, try next candidate
+    }
+  }
+  return undefined;
+}
+

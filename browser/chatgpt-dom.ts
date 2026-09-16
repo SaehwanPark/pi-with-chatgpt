@@ -263,6 +263,13 @@ export const CHATGPT_SELECTORS = Object.freeze({
   errorNotice: ['[data-testid="banner-title"]', '[role="alert"]', '[data-is-markdown="false"].banner'],
   modelPicker: ['button[aria-label*="model" i]', '[data-testid="model-switcher"]'],
   modelOption: ['[role="menuitem"]', '[data-testid="model-switcher-menu"] [role="option"]'],
+  profileButton: [
+    '[data-testid="profile-button"]',
+    'button[aria-label*="User menu" i]',
+    'button[aria-label*="Open profile menu" i]',
+    'button[aria-label*="Account" i]',
+    'button[aria-haspopup="menu"] img[alt]',
+  ],
   // M4: Project and conversation management. Selector sets, like every other set here, are a fallback
   // chain rather than one guess — and the caller treats "none matched" as `surface-unrecognised`, never
   // as success.
@@ -326,6 +333,8 @@ function assertOpaqueId(value: string): string {
  * hrefs and labels and returns ids, presence, and matches. Playwright only ever supplies strings.
  */
 
+import type { AccountIdentityHint } from "../auth/identity.js";
+import { maskEmail } from "../protocol/masking.js";
 import type { ConversationInspection, ProjectInspection, SurfaceState } from "./runtime-types.js";
 
 /** One Project as the Projects list reports it. */
@@ -444,3 +453,97 @@ function safeChatGptPathname(href: string): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * Extract identity hints from raw ChatGPT session JSON (e.g. from `/api/auth/session`).
+ *
+ * Checks direct user/account fields and decodes any JWT accessToken payload for OpenAI
+ * claims (`https://api.openai.com/auth` / `chatgpt_account_id`).
+ * Does not retain access tokens, cookies, or secrets.
+ */
+export function parseSessionIdentity(raw: unknown): AccountIdentityHint | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const data = raw as Record<string, unknown>;
+
+  let accountId: string | undefined;
+  let email: string | undefined;
+  let plan: string | undefined;
+
+  if (typeof data.user === "object" && data.user !== null) {
+    const user = data.user as Record<string, unknown>;
+    if (typeof user.email === "string" && user.email.includes("@")) {
+      email = user.email;
+    }
+    if (typeof user.id === "string" && user.id.length > 0) {
+      accountId = user.id;
+    }
+  }
+
+  if (typeof data.account === "object" && data.account !== null) {
+    const account = data.account as Record<string, unknown>;
+    if (typeof account.id === "string" && account.id.length > 0) {
+      accountId = account.id;
+    }
+    if (typeof account.plan_type === "string" && account.plan_type.length > 0) {
+      plan = account.plan_type;
+    }
+  }
+
+  if (typeof data.accessToken === "string") {
+    const claims = decodeJwtPayload(data.accessToken);
+    if (claims !== undefined) {
+      const openAiAuth = claims["https://api.openai.com/auth"];
+      if (typeof openAiAuth === "object" && openAiAuth !== null) {
+        const authRecord = openAiAuth as Record<string, unknown>;
+        if (typeof authRecord.chatgpt_account_id === "string" && authRecord.chatgpt_account_id.length > 0) {
+          accountId = authRecord.chatgpt_account_id;
+        } else if (typeof authRecord.user_id === "string" && authRecord.user_id.length > 0) {
+          accountId = authRecord.user_id;
+        }
+        if (typeof authRecord.plan_type === "string") {
+          plan = authRecord.plan_type;
+        }
+      }
+      const openAiProfile = claims["https://api.openai.com/profile"];
+      if (typeof openAiProfile === "object" && openAiProfile !== null) {
+        const profileRecord = openAiProfile as Record<string, unknown>;
+        if (email === undefined && typeof profileRecord.email === "string" && profileRecord.email.includes("@")) {
+          email = profileRecord.email;
+        }
+      }
+      if (accountId === undefined && typeof claims.chatgpt_account_id === "string") {
+        accountId = claims.chatgpt_account_id;
+      }
+      if (accountId === undefined && typeof claims.sub === "string" && claims.sub.length > 0) {
+        accountId = claims.sub;
+      }
+      if (email === undefined && typeof claims.email === "string" && claims.email.includes("@")) {
+        email = claims.email;
+      }
+    }
+  }
+
+  if (accountId === undefined && email === undefined) return undefined;
+
+  return {
+    source: "chatgpt-browser",
+    ...(accountId !== undefined
+      ? { accountIdHint: accountId, accountIdNamespace: "chatgpt-account" }
+      : {}),
+    ...(email !== undefined ? { emailMasked: maskEmail(email) } : {}),
+    ...(plan !== undefined ? { planHint: plan } : {}),
+  };
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return undefined;
+    const json = Buffer.from(parts[1], "base64url").toString("utf8");
+    const parsed = JSON.parse(json);
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
