@@ -537,8 +537,10 @@ describe("ConsultationEngine (M5)", () => {
   it("bounds a hung browser transaction and permits the next consultation after recovery", async () => {
     let hanging = true;
     let recoveries = 0;
+    // Use 100 ms instead of 5 ms so the raceWithDeadline timer fires reliably on macOS
+    // (which has ~10 ms timer resolution and is non-deterministic at 5 ms).
     const fixture = await createEngineFixture({
-      transactionRecoveryAllowanceMs: 5,
+      transactionRecoveryAllowanceMs: 100,
       emergencyRecovery: () => {
         hanging = false;
         recoveries += 1;
@@ -555,9 +557,9 @@ describe("ConsultationEngine (M5)", () => {
         kind: "consult",
         prompt: "Bound this browser transaction.",
         modelId: "gpt-5",
-        timeoutMs: 5,
+        timeoutMs: 100,
       });
-      const first = await resolvesBefore(fixture.engine.submitSync(request("hung")), 500);
+      const first = await resolvesBefore(fixture.engine.submitSync(request("hung")), 2000);
       expect(first.ok).toBe(false);
       if (!first.ok) expect(first.failure).toBe("transaction_timeout");
       expect(recoveries).toBe(1);
@@ -570,8 +572,10 @@ describe("ConsultationEngine (M5)", () => {
   });
 
   it("fails fast with browser-poisoned after recovery cannot prove ownership is safe", async () => {
+    // Use 100 ms instead of 5 ms so the raceWithDeadline timer fires reliably on macOS
+    // (which has ~10 ms timer resolution and is non-deterministic at 5 ms).
     const fixture = await createEngineFixture({
-      transactionRecoveryAllowanceMs: 5,
+      transactionRecoveryAllowanceMs: 100,
       emergencyRecovery: () => Promise.resolve({ ok: false, reusable: false, generation: 2 }),
     });
     try {
@@ -584,9 +588,9 @@ describe("ConsultationEngine (M5)", () => {
         kind: "consult",
         prompt: "Poison the browser.",
         modelId: "gpt-5",
-        timeoutMs: 5,
+        timeoutMs: 100,
       };
-      const first = await resolvesBefore(fixture.engine.submitSync(request), 500);
+      const first = await resolvesBefore(fixture.engine.submitSync(request), 2000);
       expect(first.ok).toBe(false);
       if (!first.ok) expect(first.failure).toBe("browser_poisoned");
       const consulted = fixture.consultedRequests.length;
