@@ -131,6 +131,30 @@ describe("AdviserRuntime startup", () => {
     expect(calls.filter((call) => call.startsWith("start:"))).toHaveLength(1);
   });
 
+  it("relaunches headed when requested on a previously headless browser", async () => {
+    const { instance, calls } = runtime();
+    await instance.ensureReady({ purpose: "capability-probe", headed: false });
+    expect(calls.filter((call) => call.startsWith("start:"))).toStrictEqual(["start:capability-probe"]);
+    expect(calls).not.toContain("shutdown");
+
+    await instance.ensureReady({ purpose: "manual-login", headed: true });
+    expect(calls).toContain("shutdown");
+    expect(calls.filter((call) => call.startsWith("start:"))).toStrictEqual([
+      "start:capability-probe",
+      "start:manual-login",
+    ]);
+  });
+
+  it("reuses a headed browser for unconstrained probes", async () => {
+    const { instance, calls } = runtime();
+    await instance.ensureReady({ purpose: "manual-login", headed: true });
+    expect(calls.filter((call) => call.startsWith("start:"))).toHaveLength(1);
+
+    await instance.ensureReady({ purpose: "capability-probe" });
+    expect(calls).not.toContain("shutdown");
+    expect(calls.filter((call) => call.startsWith("start:"))).toHaveLength(1);
+  });
+
   it("reports a missing Chrome as chrome-not-found rather than a generic launch failure", async () => {
     const { instance } = runtime({
       startResults: [
