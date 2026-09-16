@@ -155,9 +155,9 @@ export function sessionMarkerPath(profile: AdviserProfile): string {
   return join(profile.userDataDir, SESSION_MARKER_FILE);
 }
 
-async function writeSessionMarker(
+export async function writeSessionMarker(
   profile: AdviserProfile,
-  writeMarker: ((path: string, content: string) => Promise<void>) | undefined,
+  writeMarker?: (path: string, content: string) => Promise<void>,
 ): Promise<boolean> {
   try {
     await (writeMarker ?? writePrivateStateFile)(

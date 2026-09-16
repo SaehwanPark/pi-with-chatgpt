@@ -11,6 +11,14 @@ change invalidates (see `AGENTS.md`).
 
 No unreleased changes.
 
+## [1.0.4] - 2026-09-15
+
+### Fixed
+
+- Fixed `/advisor-auth` to automatically open the headed adviser browser window when ChatGPT presents a human verification challenge (`human-verification` / `login-checkpoint`), allowing the user to complete verification interactively instead of failing with a headless warning.
+- Fixed `AdviserRuntime.#ensureReady` to cleanly restart into headed mode when a headed browser window is requested (`options.headed: true`) on a runtime currently running in headless mode.
+- Ensured session sealing and `SESSION-ESTABLISHED` marker creation when `signed-in` state is confirmed during `/advisor-auth`.
+
 ## [1.0.3] - 2026-09-15
 
 ### Fixed

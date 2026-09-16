@@ -30,7 +30,7 @@ import {
   buildFollowUpBrief,
 } from "../drift/index.js";
 import { adviserStatus } from "../auth/status.js";
-import { runManualLogin, type AdviserLoginPort } from "../auth/login-flow.js";
+import { runManualLogin, writeSessionMarker, type AdviserLoginPort } from "../auth/login-flow.js";
 import { authDecisionAllowsConsultation, resolveLiveAdviserAuth, type AdviserAuthDecision } from "../auth/readiness.js";
 import { resolveCheckpoint } from "../git/checkpoint-resolution.js";
 import { createGitExecutor, createNodeCommandRunner, type GitExecutor } from "../git/exec.js";
@@ -802,6 +802,12 @@ export class CommandManager {
     }
 
     if (status.browserSession.state === "signed-in") {
+      if (loginPort) {
+        await loginPort.sealSession(profile).catch(() => undefined);
+        if (!status.profile.everSignedInHere) {
+          await writeSessionMarker(profile).catch(() => undefined);
+        }
+      }
       const plan = status.openAiSignIn.planHint ? ` (${status.openAiSignIn.planHint})` : "";
       const email = status.openAiSignIn.emailMasked ? ` [${status.openAiSignIn.emailMasked}]` : "";
       ctx.ui.notify(
@@ -816,6 +822,21 @@ export class CommandManager {
         `ChatGPT adviser needs human verification (${status.browserSession.challenge}) in the isolated browser window.`,
         "warning",
       );
+      if (loginPort) {
+        ctx.ui.notify("Opening isolated adviser browser window...", "info");
+        try {
+          await loginPort.openAdviserWindow(profile);
+          ctx.ui.notify(
+            "Adviser browser window opened. Please complete the verification / sign in to ChatGPT, then run /advisor-auth again.",
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.notify(
+            `Could not open adviser window: ${err instanceof Error ? err.message : String(err)}`,
+            "error",
+          );
+        }
+      }
       return;
     }
 

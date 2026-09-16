@@ -192,12 +192,16 @@ export class AdviserRuntime implements AdviserBrowserRuntime {
     if (this.#phase === "ready") {
       const healthy = await this.#driver.isHealthy();
       if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
-      if (healthy) return { ok: true };
-      // The common production surprise: the process is gone but the object graph still says "ready".
-      this.#phase = "degraded";
-      this.#emit({ type: "recovered", reason: "unhealthy" });
-      // Do not let start() reuse a renderer that answered the health check as unhealthy. Discard the
-      // complete context first; the driver owns the profile lock and will reacquire it on relaunch.
+      const modeMatches = options.headed === undefined || (options.headed === true) === this.#headed;
+      if (healthy && modeMatches) return { ok: true };
+      if (!healthy) {
+        // The common production surprise: the process is gone but the object graph still says "ready".
+        this.#phase = "degraded";
+        this.#emit({ type: "recovered", reason: "unhealthy" });
+      }
+      // Do not let start() reuse a renderer that answered the health check as unhealthy or whose
+      // display mode differs (headless vs headed). Discard the complete context first; the driver
+      // owns the profile lock and will reacquire it on relaunch.
       await this.#driver.shutdown().catch(() => undefined);
       if (!this.#generationIsCurrent(generation)) return { ok: false, rejection: this.#staleRejection() };
       contextDiscarded = true;
