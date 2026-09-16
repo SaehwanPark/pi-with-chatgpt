@@ -171,7 +171,7 @@ export class ConsultationLedger {
 
       updatedEntry = {
         ...entry,
-        responsePath: join("responses", fileName),
+        responsePath: `responses/${fileName}`,
         responseSha256,
         adviserAnswer: fullResponseMarkdown,
       };
@@ -401,7 +401,7 @@ export class ConsultationLedger {
         await writeFileAtomically(responseFilePath, fullResponseMarkdown, this.#fileSystem);
         updatedEntry = {
           ...entry,
-          responsePath: join("responses", fileName),
+          responsePath: `responses/${fileName}`,
           responseSha256,
           adviserAnswer: fullResponseMarkdown,
         };
@@ -570,7 +570,7 @@ function normalizeLedgerEntry(raw: unknown): LedgerEntry | undefined {
     }
   }
 
-  if (responsePath !== undefined && responsePath !== `responses/${consultationId}.md`) return undefined;
+  if (responsePath !== undefined && responsePath.replace(/\\/gu, "/") !== `responses/${consultationId}.md`) return undefined;
 
   return {
     schemaVersion: LEDGER_ENTRY_SCHEMA_VERSION,

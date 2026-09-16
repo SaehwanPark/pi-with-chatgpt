@@ -108,6 +108,7 @@ export async function writePrivateFileNoFollow(
   } catch (error) {
     const code = errorCode(error);
     if (code === "EEXIST") {
+      if (!noFollow && (await isSymlink(path))) throw new StateStorageError("symlink-refused", path, symlinkMessage(path));
       // A private file we wrote earlier: replace it, still without following a symlink.
       try {
         await writeWith(open, path, data, replace, mode);
@@ -175,6 +176,7 @@ const nodeFileSystem: StateStorageFileSystem = {
     await writePrivateFileNoFollow(path, data, mode);
   },
   directoryMode: async (path) => {
+    if (process.platform === "win32") return undefined;
     try {
       return (await lstat(path)).mode & 0o777;
     } catch {

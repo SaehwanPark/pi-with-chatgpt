@@ -61,6 +61,7 @@ export const nodeStateStore: StateStoreFileSystem = {
     // `mkdir` ignores the mode of a directory that already exists, so privacy has to be asserted after.
     await assertPrivateDirectory(path, {
       directoryMode: async (target) => {
+        if (process.platform === "win32") return undefined;
         try {
           return (await stat(target)).mode & 0o777;
         } catch {
