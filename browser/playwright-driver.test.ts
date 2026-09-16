@@ -55,7 +55,12 @@ function node(text: string): FakeNode {
   return { text, visible: true };
 }
 
-function fakePage(thread: FakeThread, startUrl: string, title: () => Promise<string> = () => Promise.resolve("ChatGPT")) {
+function fakePage(
+  thread: FakeThread,
+  startUrl: string,
+  title: () => Promise<string> = () => Promise.resolve("ChatGPT"),
+  evaluate?: <R>(pageFunction: any) => Promise<R>,
+) {
   const navigations: string[] = [];
   const typed: string[] = [];
   const clicked: string[] = [];
@@ -78,6 +83,7 @@ function fakePage(thread: FakeThread, startUrl: string, title: () => Promise<str
       page.closed = true;
       return Promise.resolve();
     },
+    evaluate: evaluate ?? (() => Promise.resolve(undefined as any)),
     locator: (selector: string) => {
       // Read per call: a locator made before a DOM change must not see the thread as it was.
       const nodes = thread[selector] ?? [];
@@ -138,14 +144,17 @@ async function startedDriver(options: {
   readonly pollIntervalMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly title?: () => Promise<string>;
+  readonly evaluate?: <R>(pageFunction: any) => Promise<R>;
+  readonly profile?: typeof PROFILE;
 }) {
   const { clicked, navigations, page, typed } = fakePage(
     options.thread,
     options.url ?? "https://chatgpt.com/",
     options.title,
+    options.evaluate,
   );
   const driver = new PlaywrightAdviserDriver({
-    profile: PROFILE,
+    profile: options.profile ?? PROFILE,
     launch: launcherFor(page),
     pollIntervalMs: options.pollIntervalMs ?? 1,
     ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
@@ -487,3 +496,48 @@ describe("PlaywrightAdviserDriver.selectModel", () => {
     ]);
   });
 });
+
+describe("PlaywrightAdviserDriver.observeSurface", () => {
+  it("populates identity from in-page session observation", async () => {
+    const thread: FakeThread = {
+      [COMPOSER]: [node("")],
+    };
+    const { driver } = await startedDriver({
+      thread,
+      evaluate: () =>
+        Promise.resolve({
+          user: { id: "user-test-456", email: "saehwan.simon.park@gmail.com" },
+          account: { plan_type: "plus" },
+        }),
+    });
+
+    const observation = await driver.observeSurface();
+    expect(observation.state).toBe("conversation-ready");
+    expect(observation.identity).toEqual({
+      source: "chatgpt-browser",
+      accountIdHint: "user-test-456",
+      accountIdNamespace: "chatgpt-account",
+      emailMasked: "s***@gmail.com",
+      planHint: "plus",
+    });
+  });
+
+  it("does not attach identity when page is signed out", async () => {
+    const SIGN_IN = '[data-testid="login-button"]';
+    const thread: FakeThread = {
+      [SIGN_IN]: [node("Log in")],
+    };
+    const { driver } = await startedDriver({
+      thread,
+      evaluate: () =>
+        Promise.resolve({
+          user: { id: "user-test-456", email: "saehwan.simon.park@gmail.com" },
+        }),
+    });
+
+    const observation = await driver.observeSurface();
+    expect(observation.state).toBe("signed-out");
+    expect(observation.identity).toBeUndefined();
+  });
+});
+
