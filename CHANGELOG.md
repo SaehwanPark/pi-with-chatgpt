@@ -11,6 +11,12 @@ change invalidates (see `AGENTS.md`).
 
 No unreleased changes.
 
+## [1.0.5] - 2026-09-15
+
+### Fixed
+
+- Removed default automation flags (`--enable-automation`, `--enable-unsafe-swiftshader`), added `--disable-blink-features=AutomationControlled`, disabled viewport emulation (`viewport: null`), and masked `navigator.webdriver` in `launchChrome`. This prevents Cloudflare Turnstile from flagging the isolated browser as an automated test runner and allows human verification challenges to succeed.
+
 ## [1.0.4] - 2026-09-15
 
 ### Fixed
